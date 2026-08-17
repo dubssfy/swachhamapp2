@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "Swachham",
+    "slug": "swachham",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/logo.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#F8FFF9",
+        "foregroundImage": "./assets/logo.png"
+      },
+      "package": "com.anonymous.swachham"
+    },
+    "web": {
+      "favicon": "./assets/logo.png"
+    },
+    "plugins": [
+      "expo-font",
+      "expo-secure-store",
+      "expo-asset"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "96c48761-101a-412b-81d4-613e3657cf22"
+      }
+    },
+    "owner": "swachhamapps-team"
+  }
+}

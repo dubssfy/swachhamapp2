@@ -1,0 +1,726 @@
+{
+ "weight_unit": "kg",
+ "items": [
+  {
+   "sr_no": 1,
+   "name": "Face Towel",
+   "category_slug": "bath-linen",
+   "weight_kg": 0.06,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 2,
+   "name": "Hand Towel",
+   "category_slug": "bath-linen",
+   "weight_kg": 0.12,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 3,
+   "name": "Bath Towel",
+   "category_slug": "bath-linen",
+   "weight_kg": 0.55,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 4,
+   "name": "Pool Towel",
+   "category_slug": "bath-linen",
+   "weight_kg": 0.75,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 5,
+   "name": "Bath Sheet",
+   "category_slug": "bed-linen",
+   "weight_kg": 0.9,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 6,
+   "name": "Bath Robe",
+   "category_slug": "bath-linen",
+   "weight_kg": 0.7,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 7,
+   "name": "Bath Mat",
+   "category_slug": "bath-linen",
+   "weight_kg": 0.3,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 8,
+   "name": "Single Bed Sheet",
+   "category_slug": "bed-linen",
+   "weight_kg": 0.45,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 9,
+   "name": "Double Bed Sheet",
+   "category_slug": "bed-linen",
+   "weight_kg": 0.65,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 10,
+   "name": "King Bed Sheet",
+   "category_slug": "bed-linen",
+   "weight_kg": 0.8,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 11,
+   "name": "Single Duvet",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 1.0,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 12,
+   "name": "Double Duvet",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 1.4,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 13,
+   "name": "Single Duvet Cover",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 0.55,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 14,
+   "name": "Double Duvet Cover",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 0.75,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 15,
+   "name": "King Duvet Cover",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 0.9,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 16,
+   "name": "Pillow",
+   "category_slug": "bed-linen",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 17,
+   "name": "Pillow Cover",
+   "category_slug": "bed-linen",
+   "weight_kg": 0.08,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 18,
+   "name": "Pillow Protestor",
+   "category_slug": "bed-linen",
+   "weight_kg": 0.1,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 19,
+   "name": "Single Mattress Protector",
+   "category_slug": "bed-linen",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 20,
+   "name": "Double Mattress Protector",
+   "category_slug": "bed-linen",
+   "weight_kg": 0.85,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 21,
+   "name": "King Matress Protector",
+   "category_slug": "bed-linen",
+   "weight_kg": 1.0,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 22,
+   "name": "Single Bed Runner",
+   "category_slug": "room-furnishing",
+   "weight_kg": 0.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 23,
+   "name": "Double Bed Runner",
+   "category_slug": "room-furnishing",
+   "weight_kg": 0.25,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 24,
+   "name": "Sheer Curtains",
+   "category_slug": "room-furnishing",
+   "weight_kg": 0.8,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 25,
+   "name": "Silk Curtains",
+   "category_slug": "room-furnishing",
+   "weight_kg": 1.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 26,
+   "name": "Cotton Curtains",
+   "category_slug": "room-furnishing",
+   "weight_kg": 1.3,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 27,
+   "name": "Shower Curtains",
+   "category_slug": "room-furnishing",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 28,
+   "name": "Polyester Curtains",
+   "category_slug": "room-furnishing",
+   "weight_kg": 1.0,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 29,
+   "name": "Blackout Curtain",
+   "category_slug": "room-furnishing",
+   "weight_kg": 1.8,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 30,
+   "name": "Blinds",
+   "category_slug": "room-furnishing",
+   "weight_kg": 1.0,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 31,
+   "name": "Curtain Lining",
+   "category_slug": "room-furnishing",
+   "weight_kg": 0.7,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 32,
+   "name": "Cushion",
+   "category_slug": "room-furnishing",
+   "weight_kg": 0.45,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 33,
+   "name": "Cushion Cover",
+   "category_slug": "room-furnishing",
+   "weight_kg": 0.1,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 34,
+   "name": "Sofa Cover - Per Seat",
+   "category_slug": "living-room",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 35,
+   "name": "Sofa Cushion Cover",
+   "category_slug": "living-room",
+   "weight_kg": 0.15,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 36,
+   "name": "Sofa Throw",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 0.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 37,
+   "name": "Table Cloth",
+   "category_slug": "dining-and-kitchen",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 38,
+   "name": "Table Runner",
+   "category_slug": "fb-banquets",
+   "weight_kg": 0.15,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 39,
+   "name": "Table Napkin",
+   "category_slug": "dining-and-kitchen",
+   "weight_kg": 0.06,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 40,
+   "name": "Chair Cover",
+   "category_slug": "fb-banquets",
+   "weight_kg": 0.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 41,
+   "name": "Kitchen Towel",
+   "category_slug": "dining-and-kitchen",
+   "weight_kg": 0.1,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 42,
+   "name": "Kitchen Cloth",
+   "category_slug": "dining-and-kitchen",
+   "weight_kg": 0.06,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 43,
+   "name": "Oven Glove",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.08,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 44,
+   "name": "Single Blanket",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 1.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 45,
+   "name": "Double Blanket",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 1.8,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 46,
+   "name": "King Blanket",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 2.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 47,
+   "name": "Single Quilt",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 1.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 48,
+   "name": "Double Quilt",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 2.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 49,
+   "name": "King Quilt",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 2.7,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 50,
+   "name": "Single Comforter",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 1.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 51,
+   "name": "Double Comforter",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 2.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 52,
+   "name": "King Comforter",
+   "category_slug": "blanket-and-heavy-linens",
+   "weight_kg": 2.7,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 53,
+   "name": "Room Floor Rug - Small",
+   "category_slug": "carpet-and-rugs",
+   "weight_kg": 0.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 54,
+   "name": "Lobby Floor Rug – Big",
+   "category_slug": "carpet-and-rugs",
+   "weight_kg": 1.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 55,
+   "name": "Small Rugs",
+   "category_slug": "carpet-and-rugs",
+   "weight_kg": 0.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 56,
+   "name": "Medium Rug",
+   "category_slug": "carpet-and-rugs",
+   "weight_kg": 0.9,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 57,
+   "name": "Large Rug",
+   "category_slug": "carpet-and-rugs",
+   "weight_kg": 1.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 58,
+   "name": "Small carpet",
+   "category_slug": "carpet-and-rugs",
+   "weight_kg": 1.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 59,
+   "name": "Medium Carpet",
+   "category_slug": "carpet-and-rugs",
+   "weight_kg": 2.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 60,
+   "name": "Large Carpet",
+   "category_slug": "carpet-and-rugs",
+   "weight_kg": 4.0,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 61,
+   "name": "Door Mat",
+   "category_slug": "floor-and-upholstery",
+   "weight_kg": 0.25,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 62,
+   "name": "Bathroom Mat",
+   "category_slug": "bath-linen",
+   "weight_kg": 0.3,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 63,
+   "name": "Floor Mat",
+   "category_slug": "floor-and-upholstery",
+   "weight_kg": 0.45,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 64,
+   "name": "Shirt",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.25,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 65,
+   "name": "T-Shirt",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 66,
+   "name": "Trouser",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.35,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 67,
+   "name": "Jeans",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 68,
+   "name": "Dress",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.4,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 69,
+   "name": "Saree",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 70,
+   "name": "Kurta",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.3,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 71,
+   "name": "Salwar Suit",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.55,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 72,
+   "name": "Scarf",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.1,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 73,
+   "name": "Handkerchief",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.03,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 74,
+   "name": "Cap",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.08,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 75,
+   "name": "Duster",
+   "category_slug": "housekeeping-utility",
+   "weight_kg": 0.05,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 76,
+   "name": "Wiping Cloth",
+   "category_slug": "housekeeping-utility",
+   "weight_kg": 0.08,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 77,
+   "name": "Microfiber Cloth",
+   "category_slug": "housekeeping-utility",
+   "weight_kg": 0.06,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 78,
+   "name": "Mop Head",
+   "category_slug": "housekeeping-utility",
+   "weight_kg": 0.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 79,
+   "name": "Cleaning Towel",
+   "category_slug": "bath-linen",
+   "weight_kg": 0.12,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 80,
+   "name": "Apron",
+   "category_slug": "housekeeping-utility",
+   "weight_kg": 0.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 81,
+   "name": "Raincoat",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 82,
+   "name": "Security Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 83,
+   "name": "Kitchen Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 84,
+   "name": "Kitchen Utility Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 85,
+   "name": "Housekeeping Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 86,
+   "name": "F&B Uniform Set - Vest Coat, Trouser & Shirt",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.9,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 87,
+   "name": "Captain Uniform - Shirt, Trouser & Coat",
+   "category_slug": "staff-uniform",
+   "weight_kg": 1.0,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 88,
+   "name": "Front Office Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.7,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 89,
+   "name": "Bell Desk Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.8,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 90,
+   "name": "Driver Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 91,
+   "name": "Maintenance Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.7,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 92,
+   "name": "Gardener Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.7,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 93,
+   "name": "Pool Deck Attendant Uniform Set",
+   "category_slug": "staff-uniform",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 94,
+   "name": "F&B Table Cloth",
+   "category_slug": "dining-and-kitchen",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 96,
+   "name": "Banquet Table Cloth",
+   "category_slug": "fb-banquets",
+   "weight_kg": 0.9,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 97,
+   "name": "Banquet Chair Cover",
+   "category_slug": "fb-banquets",
+   "weight_kg": 0.2,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 98,
+   "name": "Table Frill",
+   "category_slug": "fb-banquets",
+   "weight_kg": 0.6,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 99,
+   "name": "Restaurant Full-Length Curtain",
+   "category_slug": "room-furnishing",
+   "weight_kg": 1.8,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 100,
+   "name": "Napkin",
+   "category_slug": "dining-and-kitchen",
+   "weight_kg": 0.06,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 101,
+   "name": "Spa Towel",
+   "category_slug": "spa-linen",
+   "weight_kg": 0.55,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 102,
+   "name": "Spa Napkin",
+   "category_slug": "spa-linen",
+   "weight_kg": 0.06,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 103,
+   "name": "Spa Sheet",
+   "category_slug": "spa-linen",
+   "weight_kg": 0.5,
+   "weight_unit": "kg"
+  },
+  {
+   "sr_no": 104,
+   "name": "Boiler Suit / Dangri",
+   "category_slug": "industrial",
+   "weight_kg": 0.7,
+   "weight_unit": "kg"
+  }
+ ]
+}

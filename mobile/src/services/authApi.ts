@@ -1,0 +1,175 @@
+import apiClient from './api';
+import { ApiResponse, User, LoginPayload, RegisterPayload, BusinessRegisterPayload } from '../types';
+import { API_ENDPOINTS } from '../constants/api';
+
+export interface AuthResponse {
+  user: User;
+  accessToken: string;
+  refreshToken?: string;
+}
+
+export interface MessageResponse {
+  message: string;
+}
+
+const normalizeMobile = (mobile: string): string => {
+  let cleaned = mobile.replace(/\D/g, '');
+  if (cleaned.length === 12 && cleaned.startsWith('91')) {
+    cleaned = cleaned.substring(2);
+  }
+  if (cleaned.length === 11 && cleaned.startsWith('0')) {
+    cleaned = cleaned.substring(1);
+  }
+  if (cleaned.length !== 10) {
+    throw new Error('Please enter a valid 10-digit mobile number.');
+  }
+  return cleaned;
+};
+
+export const authApi = {
+  customerRegister: async (payload: RegisterPayload): Promise<ApiResponse<MessageResponse>> => {
+    payload.mobile = normalizeMobile(payload.mobile);
+    const response = await apiClient.post<ApiResponse<MessageResponse>>(
+      API_ENDPOINTS.AUTH_CUSTOMER_REGISTER,
+      payload
+    );
+    return response.data;
+  },
+
+  businessRegister: async (payload: BusinessRegisterPayload): Promise<AuthResponse> => {
+    const response = await apiClient.post(
+      API_ENDPOINTS.AUTH_BUSINESS_REGISTER,
+      payload
+    );
+    const authData = response.data?.data ?? response.data;
+    if (!authData?.accessToken || !authData?.user) {
+      throw new Error('Authentication token or user info missing.');
+    }
+    return {
+      user: authData.user,
+      accessToken: authData.accessToken,
+      refreshToken: authData.refreshToken,
+    };
+  },
+
+  sendEntryOtp: async (mobile: string): Promise<ApiResponse<MessageResponse>> => {
+    const response = await apiClient.post<ApiResponse<MessageResponse>>(
+      API_ENDPOINTS.AUTH_ENTRY_SEND_OTP,
+      { mobile: normalizeMobile(mobile) }
+    );
+    return response.data;
+  },
+
+  verifyEntryOtp: async (mobile: string, otp: string): Promise<ApiResponse<MessageResponse>> => {
+    const response = await apiClient.post<ApiResponse<MessageResponse>>(
+      API_ENDPOINTS.AUTH_ENTRY_VERIFY_OTP,
+      { mobile: normalizeMobile(mobile), otp: otp.replace(/\D/g, '') }
+    );
+    return response.data;
+  },
+
+  resendEntryOtp: async (mobile: string): Promise<ApiResponse<MessageResponse>> => {
+    const response = await apiClient.post<ApiResponse<MessageResponse>>(
+      API_ENDPOINTS.AUTH_ENTRY_RESEND_OTP,
+      { mobile: normalizeMobile(mobile) }
+    );
+    return response.data;
+  },
+
+  customerLogin: async (payload: LoginPayload): Promise<AuthResponse> => {
+    const response = await apiClient.post(
+      API_ENDPOINTS.AUTH_CUSTOMER_LOGIN,
+      payload
+    );
+    const authData = response.data?.data ?? response.data;
+    if (!authData?.accessToken || !authData?.user) {
+      throw new Error('Authentication token or user info missing.');
+    }
+    return {
+      user: authData.user,
+      accessToken: authData.accessToken,
+      refreshToken: authData.refreshToken,
+    };
+  },
+
+  verifyMobileOtp: async (mobile: string, otp: string): Promise<AuthResponse> => {
+    const response = await apiClient.post(
+      API_ENDPOINTS.AUTH_CUSTOMER_VERIFY_MOBILE,
+      { mobile: normalizeMobile(mobile), otp: otp.replace(/\D/g, '') }
+    );
+    const authData = response.data?.data ?? response.data;
+    if (!authData?.accessToken || !authData?.user) {
+      throw new Error('Authentication token or user info missing.');
+    }
+    return {
+      user: authData.user,
+      accessToken: authData.accessToken,
+      refreshToken: authData.refreshToken,
+    };
+  },
+
+  resendOtp: async (mobile: string): Promise<ApiResponse<MessageResponse>> => {
+    const response = await apiClient.post<ApiResponse<MessageResponse>>(
+      API_ENDPOINTS.AUTH_CUSTOMER_RESEND_OTP,
+      { mobile: normalizeMobile(mobile) }
+    );
+    return response.data;
+  },
+
+  forgotPassword: async (mobile: string): Promise<ApiResponse<MessageResponse>> => {
+    const response = await apiClient.post<ApiResponse<MessageResponse>>(
+      API_ENDPOINTS.AUTH_CUSTOMER_FORGOT_PASSWORD,
+      { mobile: normalizeMobile(mobile) }
+    );
+    return response.data;
+  },
+
+  verifyResetOtp: async (mobile: string, otp: string): Promise<ApiResponse<MessageResponse>> => {
+    const response = await apiClient.post<ApiResponse<MessageResponse>>(
+      API_ENDPOINTS.AUTH_CUSTOMER_VERIFY_RESET_OTP,
+      { mobile: normalizeMobile(mobile), otp: otp.replace(/\D/g, '') }
+    );
+    return response.data;
+  },
+
+  resetPassword: async (mobile: string, otp: string, newPassword: string): Promise<ApiResponse<MessageResponse>> => {
+    const response = await apiClient.post<ApiResponse<MessageResponse>>(
+      API_ENDPOINTS.AUTH_CUSTOMER_RESET_PASSWORD,
+      { mobile: normalizeMobile(mobile), otp: otp.replace(/\D/g, ''), newPassword, confirmPassword: newPassword }
+    );
+    return response.data;
+  },
+
+  businessLogin: async (payload: LoginPayload): Promise<AuthResponse> => {
+    const response = await apiClient.post(
+      API_ENDPOINTS.AUTH_BUSINESS_LOGIN,
+      payload
+    );
+    const authData = response.data?.data ?? response.data;
+    if (!authData?.accessToken || !authData?.user) {
+      throw new Error('Authentication token or user info missing.');
+    }
+    return {
+      user: authData.user,
+      accessToken: authData.accessToken,
+      refreshToken: authData.refreshToken,
+    };
+  },
+
+  getMe: async (): Promise<ApiResponse<User>> => {
+    const response = await apiClient.get<ApiResponse<User>>(API_ENDPOINTS.AUTH_ME);
+    return response.data;
+  },
+
+  updateProfile: async (data: Partial<User>): Promise<ApiResponse<User>> => {
+    const response = await apiClient.put<ApiResponse<User>>(API_ENDPOINTS.PROFILE_UPDATE, data);
+    return response.data;
+  },
+
+  logout: async (): Promise<ApiResponse<MessageResponse>> => {
+    const response = await apiClient.post<ApiResponse<MessageResponse>>(API_ENDPOINTS.AUTH_LOGOUT);
+    return response.data;
+  },
+};
+
+export default authApi;

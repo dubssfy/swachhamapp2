@@ -1,0 +1,449 @@
+import React, { useEffect, useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  ActivityIndicator,
+  TouchableOpacity,
+  Alert,
+  Image,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { Asset } from 'expo-asset';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
+import BusinessHeader from '../../components/business/BusinessHeader';
+import businessOrderApi, { BusinessOrderDetail } from '../../services/businessOrderApi';
+import { extractErrorMessage } from '../../services/api';
+import { useBusinessOrderStore } from '../../store/businessOrderStore';
+import {
+  buildBusinessOrderPdfHtml,
+  buildPdfFileName,
+  formatDateTime,
+  formatWeightKg,
+  LAUNDRY_LABEL,
+  ORDER_LABEL,
+  SERVICE_LABEL,
+} from '../../utils/businessOrderPdf';
+
+export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
+  const { orderId } = route.params || {};
+  const [order, setOrder] = useState<BusinessOrderDetail | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isRepeating, setIsRepeating] = useState(false);
+  const { repeatIntoCart } = useBusinessOrderStore();
+
+  const load = useCallback(async () => {
+    try {
+      setError('');
+      setIsLoading(true);
+      const response = await businessOrderApi.getOrderById(String(orderId));
+      setOrder(response.data);
+    } catch (err: any) {
+      setError(extractErrorMessage(err, 'Failed to load order'));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [orderId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  /** Logo is embedded as a data URI so the PDF renders it offline. */
+  const getLogoDataUri = async (): Promise<string | null> => {
+    try {
+      const asset = Asset.fromModule(require('../../../assets/logo.png'));
+      await asset.downloadAsync();
+      const uri = asset.localUri || asset.uri;
+      if (!uri) return null;
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+      return `data:image/png;base64,${base64}`;
+    } catch {
+      return null;
+    }
+  };
+
+
+
+  /**
+   * Copies this order's items/selections into the cart. The business then
+   * reviews and confirms, so the repeat goes through the normal validated
+   * create-order flow and receives its own new order number.
+   */
+  const handleRepeatOrder = async () => {
+    if (isRepeating) return;
+    try {
+      setIsRepeating(true);
+      setError('');
+      // The store is populated from the rebuilt cart the server returns, so the
+      // Cart shows the repeated items the moment it opens. No order is created
+      // here — the new order number is issued when the business confirms.
+      await repeatIntoCart(String(orderId));
+      navigation.navigate('BusinessCart');
+    } catch (err: any) {
+      setError(err?.message || 'Failed to repeat order');
+    } finally {
+      setIsRepeating(false);
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    if (isGenerating) return;
+    try {
+      setIsGenerating(true);
+      setError('');
+
+      // Re-fetch so the PDF is built from authoritative server data.
+      const fresh = (await businessOrderApi.getOrderById(String(orderId))).data;
+      const logo = await getLogoDataUri();
+      const { uri } = await Print.printToFileAsync({ html: buildBusinessOrderPdfHtml(fresh, logo) });
+
+      // printToFileAsync names the file with a random id, so it is moved to
+      // <business name><order number>.pdf before sharing.
+      const fileName = buildPdfFileName(fresh.business_name, fresh.order_number);
+      const targetUri = `${FileSystem.cacheDirectory}${fileName}`;
+      let shareUri = uri;
+      try {
+        const existing = await FileSystem.getInfoAsync(targetUri);
+        if (existing.exists) {
+          await FileSystem.deleteAsync(targetUri, { idempotent: true });
+        }
+        await FileSystem.moveAsync({ from: uri, to: targetUri });
+        shareUri = targetUri;
+      } catch {
+        // Fall back to the generated path rather than failing the download.
+        shareUri = uri;
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(shareUri, {
+          mimeType: 'application/pdf',
+          dialogTitle: fileName,
+          UTI: 'com.adobe.pdf',
+        });
+      } else {
+        Alert.alert('PDF ready', `Saved to:\n${shareUri}`);
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to generate PDF');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <BusinessHeader title="Order Details" onBack={() => navigation.goBack()} />
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color={COLORS.Primary} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (error && !order) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <BusinessHeader title="Order Details" onBack={() => navigation.goBack()} />
+        <View style={styles.centered}>
+          <Ionicons name="alert-circle-outline" size={44} color={COLORS.Error} />
+          <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={load}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!order) return null;
+
+  const { date, time } = formatDateTime(order.created_at);
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <BusinessHeader title="Order Details" subtitle={order.order_number} onBack={() => navigation.goBack()} />
+
+      <ScrollView contentContainerStyle={styles.scroll}>
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+        {/* Brand mark, then Business Information — mirrors the PDF. */}
+        <Text style={styles.brand}>SWACHHAM</Text>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Business Information</Text>
+          </View>
+          <Row label="Business Name" value={order.business_name} />
+          {/* Loaded from the authenticated Business record, never re-entered. */}
+          <Row label="Mobile Number" value={order.business_mobile || '—'} />
+          <Row label="Contact Person" value={order.contact_person_name || '—'} />
+          <Row label="Address" value={order.business_address || '—'} />
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Order Information</Text>
+            <View style={styles.statusPill}>
+              <Text style={styles.statusText}>{(order.status || '').replace(/_/g, ' ')}</Text>
+            </View>
+          </View>
+          <Row label="Order Number" value={order.order_number} />
+          <Row label="Order Date" value={date} />
+          <Row label="Order Time" value={time} />
+          <Row label="Laundry Type" value={LAUNDRY_LABEL[order.laundry_type || ''] || '—'} />
+          <Row label="Order Type" value={ORDER_LABEL[order.order_type || ''] || '—'} />
+          <Row
+            label="Service"
+            value={SERVICE_LABEL[order.service_type || ''] || order.service_name || '—'}
+          />
+          <Row label="Order Status" value={(order.status || '').replace(/_/g, ' ')} />
+          {/* Total order weight = SUM(item weight x quantity). */}
+          <Row label="Total Weight" value={formatWeightKg(order.total_weight_kg)} />
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Items ({order.item_count})</Text>
+          {order.items.map((item) => (
+            <View key={item.id} style={styles.itemRow}>
+              <View style={styles.itemImage}>
+                {item.image_url ? (
+                  <Image source={{ uri: item.image_url }} style={styles.itemImageInner} resizeMode="contain" />
+                ) : (
+                  <Ionicons name="shirt-outline" size={22} color={COLORS.Primary} />
+                )}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.itemName}>{item.service_name}</Text>
+                <Text style={styles.itemMeta}>
+                  {item.category_name || '—'} · {item.quantity} {item.unit}
+                </Text>
+              </View>
+              <Text style={styles.itemWeight}>{formatWeightKg(item.total_weight_kg)}</Text>
+            </View>
+          ))}
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Total Weight</Text>
+            <Text style={styles.summaryValue}>{formatWeightKg(order.total_weight_kg)}</Text>
+          </View>
+        </View>
+
+        <TouchableOpacity
+          style={[styles.primaryButton, isGenerating && styles.buttonDisabled]}
+          onPress={handleDownloadPdf}
+          disabled={isGenerating}
+          activeOpacity={0.85}
+        >
+          {isGenerating ? (
+            <ActivityIndicator size="small" color={COLORS.Surface} />
+          ) : (
+            <>
+              <Ionicons name="download-outline" size={20} color={COLORS.Surface} />
+              <Text style={styles.primaryButtonText}>Download PDF</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.secondaryButton, isRepeating && styles.buttonDisabled]}
+          onPress={handleRepeatOrder}
+          disabled={isRepeating}
+          activeOpacity={0.85}
+        >
+          {isRepeating ? (
+            <ActivityIndicator size="small" color={COLORS.Primary} />
+          ) : (
+            <>
+              <Ionicons name="repeat-outline" size={20} color={COLORS.Primary} />
+              <Text style={styles.secondaryButtonText}>Repeat Order</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={() =>
+            navigation.navigate('BusinessOrderTrackingScreen', {
+              orderId: order.id,
+              orderNumber: order.order_number,
+            })
+          }
+          activeOpacity={0.85}
+        >
+          <Ionicons name="navigate-outline" size={20} color={COLORS.Primary} />
+          <Text style={styles.secondaryButtonText}>Track Order</Text>
+        </TouchableOpacity>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.rowLabel}>{label}</Text>
+      <Text style={styles.rowValue}>{value}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: COLORS.Background },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: SPACING.sm, padding: SPACING.xl },
+  scroll: { padding: SPACING.md, paddingBottom: SPACING.xxl },
+  brand: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xl,
+    fontWeight: 'bold',
+    letterSpacing: 1.5,
+    color: COLORS.PrimaryDark,
+    marginBottom: SPACING.sm,
+  },
+  card: {
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+    ...SHADOWS.light,
+  },
+  cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  cardTitle: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: 'bold',
+    color: COLORS.TextPrimary,
+    marginBottom: SPACING.xs,
+  },
+  statusPill: {
+    backgroundColor: COLORS.Accent + '40',
+    borderRadius: BORDER_RADIUS.full,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 2,
+  },
+  statusText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.PrimaryDark,
+    textTransform: 'capitalize',
+  },
+  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5, gap: SPACING.md },
+  rowLabel: { fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.sm, color: COLORS.TextSecondary },
+  rowValue: {
+    flex: 1,
+    textAlign: 'right',
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '600',
+    color: COLORS.TextPrimary,
+  },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    paddingVertical: SPACING.sm,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.Border,
+  },
+  itemImage: {
+    width: 42,
+    height: 42,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: COLORS.Background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  itemImageInner: { width: '100%', height: '100%' },
+  itemName: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '600',
+    color: COLORS.TextPrimary,
+  },
+  itemMeta: { fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.sm, color: COLORS.TextSecondary },
+  itemWeight: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '600',
+    color: COLORS.PrimaryDark,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: SPACING.sm,
+    paddingTop: SPACING.sm,
+    borderTopWidth: 2,
+    borderTopColor: COLORS.Border,
+  },
+  summaryLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: 'bold',
+    color: COLORS.TextPrimary,
+  },
+  summaryValue: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: 'bold',
+    color: COLORS.Primary,
+  },
+  primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.sm,
+    height: 52,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: COLORS.Primary,
+    ...SHADOWS.medium,
+    marginBottom: SPACING.md,
+  },
+  primaryButtonText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: 'bold',
+    color: COLORS.Surface,
+  },
+  secondaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.sm,
+    height: 52,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: COLORS.Surface,
+    borderWidth: 2,
+    borderColor: COLORS.Primary,
+  },
+  secondaryButtonText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: 'bold',
+    color: COLORS.Primary,
+  },
+  buttonDisabled: { opacity: 0.6 },
+  errorText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.Error,
+    textAlign: 'center',
+    marginBottom: SPACING.sm,
+  },
+  retryButton: {
+    backgroundColor: COLORS.Primary,
+    paddingHorizontal: SPACING.xl,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+  },
+  retryButtonText: { color: COLORS.Surface, fontFamily: TYPOGRAPHY.fontFamily, fontWeight: '600' },
+});

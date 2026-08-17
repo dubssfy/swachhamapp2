@@ -1,0 +1,60 @@
+import { Router, Request, Response, NextFunction } from 'express';
+import { createOrder, getOrders, getOrderById, cancelOrder, getOrderTracking } from '../services/order.service';
+import { sendSuccess } from '../utils/response';
+import { authenticate, AuthenticatedRequest } from '../middleware/auth';
+
+const router = Router();
+router.use(authenticate);
+
+router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const order = await createOrder(authReq.user!.id, req.body);
+    sendSuccess(res, order, 'Order created successfully', 201);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const orders = await getOrders(authReq.user!.id, req.query.status as string, page, limit);
+    sendSuccess(res, orders, 'Orders fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const order = await getOrderById(authReq.user!.id, req.params.id);
+    sendSuccess(res, order, 'Order fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/:id/tracking', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tracking = await getOrderTracking(req.params.id);
+    sendSuccess(res, tracking, 'Tracking info fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:id/cancel', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const order = await cancelOrder(authReq.user!.id, req.params.id, req.body.reason);
+    sendSuccess(res, order, 'Order cancelled successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+export default router;

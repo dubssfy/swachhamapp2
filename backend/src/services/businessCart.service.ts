@@ -1,0 +1,387 @@
+import { query } from '../config/database';
+import { AppError } from '../utils/appError';
+
+export type LaundryType = 'hotel' | 'guest';
+export type OrderType = 'standard' | 'quick';
+export type ServiceType = 'wash_iron' | 'dry_clean';
+
+export interface BusinessCartItem {
+  id: string;
+  item_id: string;
+  item_name: string;
+  category_id: string;
+  category_name: string;
+  image_url?: string;
+  unit: string;
+  quantity: number;
+  /** Standard weight per piece, in `weight_unit`. */
+  weight_kg: number | null;
+  weight_unit: string;
+  /** weight_kg x quantity. */
+  total_weight_kg: number;
+  /** The service this line was added for, e.g. 'wash_iron'. */
+  service_type: ServiceType | null;
+  service_name: string | null;
+  /** The services this item supports, so the line can be switched. */
+  available_service_types: string[];
+}
+
+export interface BusinessCart {
+  id: string;
+  laundry_type: LaundryType | null;
+  order_type: OrderType | null;
+  service_type: ServiceType | null;
+  items: BusinessCartItem[];
+  /** SUM(item weight x quantity) across the cart, in kg. */
+  total_weight_kg: number;
+}
+
+const LAUNDRY_TYPES = ['hotel', 'guest'];
+const ORDER_TYPES = ['standard', 'quick'];
+const SERVICE_TYPES = ['wash_iron', 'dry_clean'];
+
+type CartItemRow = Omit<BusinessCartItem, 'available_service_types'> & {
+  available_service_codes: string | null;
+};
+
+function toCartItem(row: CartItemRow): BusinessCartItem {
+  const { available_service_codes, ...item } = row;
+  return {
+    ...item,
+    available_service_types: available_service_codes ? available_service_codes.split(',') : [],
+  };
+}
+
+async function getOrCreateCartId(businessUserId: string): Promise<string> {
+  const existing = await query<{ id: string }>(
+    `SELECT id FROM carts WHERE business_user_id = ?`,
+    [businessUserId]
+  );
+  if (existing.rows[0]) return existing.rows[0].id;
+
+  const inserted = await query(
+    `INSERT INTO carts (business_user_id) VALUES (?)`,
+    [businessUserId]
+  );
+  return inserted.insertId!;
+}
+
+async function getCart(businessUserId: string): Promise<BusinessCart> {
+  const cartResult = await query<{
+    id: string;
+    laundry_type: LaundryType | null;
+    order_type: OrderType | null;
+    service_type: ServiceType | null;
+  }>(
+    `SELECT id, laundry_type, order_type, service_type FROM carts WHERE business_user_id = ?`,
+    [businessUserId]
+  );
+
+  if (!cartResult.rows[0]) {
+    return { id: '', laundry_type: null, order_type: null, service_type: null, items: [], total_weight_kg: 0 };
+  }
+  const cart = cartResult.rows[0];
+
+  // Unit weight is always read from the catalogue row, never from the cart
+  // line, so a line can never carry a stale or invented weight.
+  const itemsResult = await query<CartItemRow>(
+    `SELECT ci.id, ci.service_id AS item_id, s.name AS item_name,
+            s.category_id, c.name AS category_name, s.image_url, s.unit, ci.quantity,
+            s.weight_kg, s.weight_unit,
+            ROUND(COALESCE(s.weight_kg, 0) * ci.quantity, 3) AS total_weight_kg,
+            st.code AS service_type, st.name AS service_name,
+            (SELECT GROUP_CONCAT(a.code ORDER BY a.display_order ASC, a.name ASC)
+               FROM item_service_types m
+               JOIN services a ON a.id = m.service_id
+              WHERE m.item_id = s.id AND a.kind = 'SERVICE_TYPE' AND a.is_active = true
+            ) AS available_service_codes
+     FROM cart_items ci
+     JOIN services s ON s.id = ci.service_id
+     JOIN service_categories c ON c.id = s.category_id
+     LEFT JOIN services st ON st.id = ci.laundry_service_id AND st.kind = 'SERVICE_TYPE'
+     WHERE ci.cart_id = ?
+     ORDER BY ci.created_at ASC`,
+    [cart.id]
+  );
+
+  const items = itemsResult.rows.map(toCartItem);
+  // Total order weight = SUM(item weight x quantity).
+  const totalWeight = items.reduce((sum, item) => sum + Number(item.total_weight_kg || 0), 0);
+
+  return { ...cart, items, total_weight_kg: Number(totalWeight.toFixed(3)) };
+}
+
+function validateContext(laundryType?: string, orderType?: string, serviceType?: string) {
+  if (laundryType !== undefined && !LAUNDRY_TYPES.includes(laundryType)) {
+    throw new AppError('Invalid laundry type', 400);
+  }
+  if (orderType !== undefined && !ORDER_TYPES.includes(orderType)) {
+    throw new AppError('Invalid order type', 400);
+  }
+  if (serviceType !== undefined && !SERVICE_TYPES.includes(serviceType)) {
+    throw new AppError('Invalid service type', 400);
+  }
+}
+
+/**
+ * Maps a service_type code to the real Laundry service row, so the cart
+ * records the service the user actually picked instead of trusting a
+ * client-supplied id.
+ */
+async function resolveServiceId(serviceType: string): Promise<string> {
+  const result = await query<{ id: string }>(
+    `SELECT s.id
+     FROM services s
+     JOIN service_categories c ON c.id = s.category_id
+     WHERE s.code = ? AND s.kind = 'SERVICE_TYPE' AND s.is_active = true
+       AND c.kind = 'SERVICE_CATEGORY'`,
+    [serviceType]
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new AppError('Selected laundry service is unavailable', 400);
+  }
+  return row.id;
+}
+
+/** The services an item can be given, in catalogue order. */
+async function getSupportedServices(itemId: string): Promise<Array<{ id: string; code: string }>> {
+  const result = await query<{ id: string; code: string }>(
+    `SELECT st.id, st.code
+     FROM item_service_types m
+     JOIN services st ON st.id = m.service_id
+     WHERE m.item_id = ? AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
+     ORDER BY st.display_order ASC, st.name ASC`,
+    [itemId]
+  );
+  return result.rows;
+}
+
+/**
+ * Decides which service a cart line carries.
+ *
+ * An explicit choice wins but must be one the item actually supports — a
+ * Dry Clean only carpet can never end up on a Wash & Iron line. With no
+ * choice, an item that supports a single service takes it, otherwise the
+ * service already selected on the cart is used, and failing that the first
+ * service the catalogue lists for the item. `null` only ever comes back for
+ * an item with no service mapping at all.
+ */
+async function resolveItemServiceId(
+  itemId: string,
+  requestedCode: string | undefined,
+  cartServiceCode: string | null
+): Promise<string | null> {
+  const supported = await getSupportedServices(itemId);
+  if (supported.length === 0) return null;
+
+  if (requestedCode) {
+    const match = supported.find((service) => service.code === requestedCode);
+    if (!match) {
+      throw new AppError('This item is not available for the selected service', 400);
+    }
+    return match.id;
+  }
+
+  if (supported.length === 1) return supported[0].id;
+
+  const fromCart = cartServiceCode
+    ? supported.find((service) => service.code === cartServiceCode)
+    : undefined;
+  return (fromCart || supported[0]).id;
+}
+
+/** The cart-level service code, used only as a fallback for new lines. */
+async function getCartServiceCode(cartId: string): Promise<string | null> {
+  const result = await query<{ service_type: string | null }>(
+    `SELECT service_type FROM carts WHERE id = ?`,
+    [cartId]
+  );
+  return result.rows[0]?.service_type || null;
+}
+
+async function addItem(
+  businessUserId: string,
+  itemId: string,
+  quantity: number,
+  laundryType?: string,
+  orderType?: string,
+  serviceType?: string,
+  itemServiceType?: string
+): Promise<BusinessCart> {
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    throw new AppError('Quantity must be a positive whole number', 400);
+  }
+  validateContext(laundryType, orderType, serviceType);
+  if (itemServiceType !== undefined && !SERVICE_TYPES.includes(itemServiceType)) {
+    throw new AppError('Invalid service type', 400);
+  }
+
+  const itemResult = await query<{ id: string; is_active: boolean }>(
+    `SELECT id, is_active FROM services WHERE id = ? AND scope = 'BUSINESS' AND kind = 'ITEM'`,
+    [itemId]
+  );
+  const item = itemResult.rows[0];
+  if (!item || !item.is_active) {
+    throw new AppError('Item not found or unavailable', 404);
+  }
+
+  const cartId = await getOrCreateCartId(businessUserId);
+
+  const contextFields: string[] = [];
+  const contextValues: unknown[] = [];
+  if (laundryType !== undefined) { contextFields.push('laundry_type = ?'); contextValues.push(laundryType); }
+  if (orderType !== undefined) { contextFields.push('order_type = ?'); contextValues.push(orderType); }
+  if (serviceType !== undefined) {
+    contextFields.push('service_type = ?', 'service_id = ?');
+    contextValues.push(serviceType, await resolveServiceId(serviceType));
+  }
+  if (contextFields.length > 0) {
+    await query(`UPDATE carts SET ${contextFields.join(', ')}, updated_at = NOW() WHERE id = ?`, [...contextValues, cartId]);
+  }
+
+  // The line keeps its own service. Adding the same item again tops up the
+  // quantity, and re-states the service only when one was asked for.
+  const lineServiceId = await resolveItemServiceId(
+    itemId,
+    itemServiceType,
+    serviceType || (await getCartServiceCode(cartId))
+  );
+
+  await query(
+    `INSERT INTO cart_items (cart_id, service_id, laundry_service_id, quantity, price_at_add)
+     VALUES (?, ?, ?, ?, (SELECT base_price FROM services WHERE id = ?))
+     ON DUPLICATE KEY UPDATE
+       quantity = quantity + VALUES(quantity),
+       laundry_service_id = COALESCE(VALUES(laundry_service_id), laundry_service_id),
+       updated_at = NOW()`,
+    [cartId, itemId, lineServiceId, quantity, itemId]
+  );
+
+  return getCart(businessUserId);
+}
+
+/**
+ * Order Type + Laundry Type are chosen on one page before the catalogue, so
+ * they are persisted onto the cart straight away rather than only riding along
+ * with the first added item.
+ */
+async function setCartContext(
+  businessUserId: string,
+  laundryType?: string,
+  orderType?: string
+): Promise<BusinessCart> {
+  validateContext(laundryType, orderType, undefined);
+
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  if (laundryType !== undefined) { fields.push('laundry_type = ?'); values.push(laundryType); }
+  if (orderType !== undefined) { fields.push('order_type = ?'); values.push(orderType); }
+  if (fields.length === 0) {
+    return getCart(businessUserId);
+  }
+
+  const cartId = await getOrCreateCartId(businessUserId);
+  await query(`UPDATE carts SET ${fields.join(', ')}, updated_at = NOW() WHERE id = ?`, [...values, cartId]);
+  return getCart(businessUserId);
+}
+
+/**
+ * Service is picked in the Cart, not before the catalogue. Exactly one of
+ * wash_iron | dry_clean is accepted.
+ */
+async function setCartService(businessUserId: string, serviceType: string): Promise<BusinessCart> {
+  if (!serviceType || !SERVICE_TYPES.includes(serviceType)) {
+    throw new AppError('Please select a service before placing your order.', 400);
+  }
+
+  const cartId = await getOrCreateCartId(businessUserId);
+  await query(
+    `UPDATE carts SET service_type = ?, service_id = ?, updated_at = NOW() WHERE id = ?`,
+    [serviceType, await resolveServiceId(serviceType), cartId]
+  );
+  return getCart(businessUserId);
+}
+
+/**
+ * Updates one cart line: its quantity, its service, or both. The same
+ * endpoint covers both so the cart keeps a single update call.
+ *
+ * The line weight is not stored, so changing the quantity here is all it
+ * takes for the line total and the cart total to come back correct.
+ */
+async function updateItemQuantity(
+  businessUserId: string,
+  itemId: string,
+  quantity?: number,
+  itemServiceType?: string
+): Promise<BusinessCart> {
+  if (quantity === undefined && itemServiceType === undefined) {
+    throw new AppError('Nothing to update', 400);
+  }
+  if (quantity !== undefined && (!Number.isInteger(quantity) || quantity <= 0)) {
+    throw new AppError('Quantity must be a positive whole number', 400);
+  }
+  if (itemServiceType !== undefined && !SERVICE_TYPES.includes(itemServiceType)) {
+    throw new AppError('Invalid service type', 400);
+  }
+
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  if (quantity !== undefined) {
+    fields.push('ci.quantity = ?');
+    values.push(quantity);
+  }
+  if (itemServiceType !== undefined) {
+    // Rejects a service the item does not support.
+    fields.push('ci.laundry_service_id = ?');
+    values.push(await resolveItemServiceId(itemId, itemServiceType, null));
+  }
+
+  const result = await query(
+    `UPDATE cart_items ci
+     JOIN carts c ON c.id = ci.cart_id
+     SET ${fields.join(', ')}, ci.updated_at = NOW()
+     WHERE c.business_user_id = ? AND ci.service_id = ?`,
+    [...values, businessUserId, itemId]
+  );
+  if (result.rowCount === 0) {
+    throw new AppError('Cart item not found', 404);
+  }
+
+  return getCart(businessUserId);
+}
+
+async function removeItem(businessUserId: string, itemId: string): Promise<BusinessCart> {
+  const result = await query(
+    `DELETE ci FROM cart_items ci
+     JOIN carts c ON c.id = ci.cart_id
+     WHERE c.business_user_id = ? AND ci.service_id = ?`,
+    [businessUserId, itemId]
+  );
+  if (result.rowCount === 0) {
+    throw new AppError('Cart item not found', 404);
+  }
+
+  return getCart(businessUserId);
+}
+
+async function clearCart(businessUserId: string): Promise<void> {
+  await query(
+    `DELETE ci FROM cart_items ci
+     JOIN carts c ON c.id = ci.cart_id
+     WHERE c.business_user_id = ?`,
+    [businessUserId]
+  );
+}
+
+export {
+  getCart,
+  addItem,
+  setCartContext,
+  setCartService,
+  updateItemQuantity,
+  removeItem,
+  clearCart,
+  getOrCreateCartId,
+};

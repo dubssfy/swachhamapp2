@@ -1,0 +1,27 @@
+﻿# Environment variables
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+mobile/node_modules/
+backend/node_modules/
+
+# Expo / React Native
+.expo/
+.expo-shared/
+dist/
+web-build/
+
+# Build outputs
+android/.gradle/
+android/app/build/
+ios/build/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
