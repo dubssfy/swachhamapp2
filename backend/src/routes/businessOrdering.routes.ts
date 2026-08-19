@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import {
-  getCategories,
+  getMainCategories,
+  getSubCategories,
   getItemsByCategory,
   searchItems,
   getServiceCategory,
@@ -10,7 +11,6 @@ import {
   getCart,
   addItem,
   setCartContext,
-  setCartService,
   updateItemQuantity,
   removeItem,
   clearCart,
@@ -67,8 +67,20 @@ router.get('/services', async (req: Request, res: Response, next: NextFunction) 
 
 router.get('/categories', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const categories = await getCategories();
+    const categories = await getMainCategories(req.query.serviceType as string | undefined);
     sendSuccess(res, categories, 'Categories fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/categories/:categoryId/subcategories', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const subcategories = await getSubCategories(
+      req.params.categoryId,
+      req.query.serviceType as string | undefined
+    );
+    sendSuccess(res, subcategories, 'Sub-categories fetched successfully');
   } catch (error) {
     next(error);
   }
@@ -126,7 +138,8 @@ router.get('/cart', async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
-// Order Type + Laundry Type, chosen together on one page before the catalogue.
+// Order Type + Laundry Type, both chosen in the Cart. Either may be sent on
+// its own, so selecting one never clears the other.
 router.put('/cart/context', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authReq = req as AuthenticatedRequest;
@@ -138,32 +151,13 @@ router.put('/cart/context', async (req: Request, res: Response, next: NextFuncti
   }
 });
 
-// Service is selected in the Cart, before the order can be confirmed.
-router.put('/cart/service', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const authReq = req as AuthenticatedRequest;
-    const cart = await setCartService(authReq.user!.id, req.body?.serviceType);
-    sendSuccess(res, cart, 'Service selected');
-  } catch (error) {
-    next(error);
-  }
-});
-
 router.post('/cart/items', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authReq = req as AuthenticatedRequest;
-    // `serviceType` is the cart-level context; `itemServiceType` is the
-    // service this one line is added for.
-    const { itemId, quantity, laundryType, orderType, serviceType, itemServiceType } = req.body;
-    const cart = await addItem(
-      authReq.user!.id,
-      itemId,
-      Number(quantity),
-      laundryType,
-      orderType,
-      serviceType,
-      itemServiceType
-    );
+    // `itemServiceType` is the service this one line is added for, and it is
+    // required — there is no order-wide service to fall back on.
+    const { itemId, quantity, itemServiceType } = req.body;
+    const cart = await addItem(authReq.user!.id, itemId, Number(quantity), itemServiceType);
     sendSuccess(res, cart, 'Item added to cart');
   } catch (error) {
     next(error);

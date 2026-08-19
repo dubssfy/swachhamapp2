@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -7,245 +7,245 @@ import {
   FlatList,
   TextInput,
   ActivityIndicator,
+  Modal,
+  Pressable,
+  Image,
+  Animated,
+  Easing,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import BusinessHeader from '../../components/business/BusinessHeader';
+import CategoryGridCard from '../../components/business/CategoryGridCard';
 import businessOrderApi, { BusinessCategory, BusinessItem } from '../../services/businessOrderApi';
+import { getCategoryImage } from '../../constants/categoryImages';
+import { filterHiddenCategories, isHiddenCategory } from '../../constants/hiddenCategories';
 import { extractErrorMessage } from '../../services/api';
-import { useBusinessOrderStore, SERVICE_OPTIONS } from '../../store/businessOrderStore';
-import { formatWeightKg } from '../../utils/businessOrderPdf';
+import { useBusinessOrderStore } from '../../store/businessOrderStore';
 
-/**
- * Service filter for the catalogue. `null` is "All" and applies no filter.
- * The options come from the Laundry service rows the API returns, so the
- * filter can never offer a service the catalogue does not have; SERVICE_OPTIONS
- * is only the fallback if that call fails. Filtering here is a view concern —
- * it does not touch the cart, whose service is still chosen in the Cart.
- */
-type ServiceFilter = { value: string | null; label: string };
-
-const ALL_SERVICES: ServiceFilter = { value: null, label: 'All' };
-
+/** Icon fallback per main-category slug, used when no artwork is mapped. */
 const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
-  'bath-linen': 'water-outline',
-  'bed-linen': 'bed-outline',
-  'room-furnishing': 'home-outline',
-  'living-room': 'tv-outline',
-  'dining-and-kitchen': 'restaurant-outline',
-  'blanket-and-heavy-linens': 'snow-outline',
-  'floor-and-upholstery': 'square-outline',
-  'carpet-and-rugs': 'grid-outline',
-  'housekeeping-utility': 'brush-outline',
-  'staff-uniform': 'shirt-outline',
-  'fb-banquets': 'wine-outline',
-  'spa-linen': 'flower-outline',
-  industrial: 'construct-outline',
-  'special-services': 'star-outline',
+  'room-linen': 'bed-outline',
+  'spa-and-pool': 'water-outline',
+  'f-and-b-service': 'restaurant-outline',
+  'f-and-b-production': 'flame-outline',
+  uniforms: 'shirt-outline',
 };
 
-const COLUMNS = 3;
+/**
+ * The two cards whose grid positions are swapped, each listed by every key it
+ * may arrive under (slug or display name, lower-cased).
+ */
+const SWAPPED_CARDS = [
+  ['f-and-b-service', 'f&b service'],
+  ['uniforms'],
+];
 
+/**
+ * Swaps the F&B Service and Uniforms cards in the grid, leaving the API's own
+ * ordering of everything else untouched. A no-op when either card is absent.
+ */
+function swapFnbAndUniforms(categories: BusinessCategory[]): BusinessCategory[] {
+  const indexOf = (keys: string[]) =>
+    categories.findIndex((category) =>
+      [category.slug, category.name].some((value) =>
+        keys.includes(String(value ?? '').trim().toLowerCase())
+      )
+    );
+
+  const [first, second] = SWAPPED_CARDS.map(indexOf);
+  if (first < 0 || second < 0) return categories;
+
+  const ordered = [...categories];
+  [ordered[first], ordered[second]] = [ordered[second], ordered[first]];
+  return ordered;
+}
+
+const COLUMNS = 2;
+const GRID_PADDING = 10;   // screen edge -> card
+const GRID_GAP = 10;       // between the two columns
+const GRID_ROWS = 2;       // the four main categories, as a 2 x 2 grid
+const MIN_CARD_SIZE = 140;
+
+/**
+ * Select Items — Main Categories. This is also the Business home page.
+ *
+ * A 2 x 2 grid of large SQUARE image buttons. The side is the largest square
+ * that fits both the screen width and the measured height of the grid area,
+ * so the four categories dominate the page, stay square on any device, and
+ * are never clipped or overflowed. The block is centred in whatever height is
+ * left. Extra categories, if any are ever added, simply scroll at that size.
+ *
+ * The whole card navigates: to the Sub Category page when the category has
+ * children, straight to Items when it does not, so an empty sub-category
+ * screen can never appear. Service selection lives on the Items page only.
+ */
 export default function BusinessCategoriesScreen({ navigation }: any) {
   const [categories, setCategories] = useState<BusinessCategory[]>([]);
-  const [items, setItems] = useState<BusinessItem[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<BusinessCategory | null>(null);
   const [search, setSearch] = useState('');
-  const [serviceFilters, setServiceFilters] = useState<ServiceFilter[]>([
-    ALL_SERVICES,
-    ...SERVICE_OPTIONS.map((option) => ({ value: option.value as string, label: option.label })),
-  ]);
-  const [serviceFilter, setServiceFilter] = useState<string | null>(null);
-  const [isLoadingCategories, setIsLoadingCategories] = useState(true);
-  const [isLoadingItems, setIsLoadingItems] = useState(false);
+  const [searchResults, setSearchResults] = useState<BusinessItem[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [quantities, setQuantities] = useState<Record<string, string>>({});
-  const [addingItemId, setAddingItemId] = useState<string | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { cart, loadCart, addItem, laundryType, orderType } = useBusinessOrderStore();
 
-  // Service is NOT part of this step — it is chosen in the Cart. The subtitle
-  // shows the selections made on the Order Type page instead.
-  const contextSubtitle = [
-    orderType === 'quick' ? 'Quick Order' : orderType === 'standard' ? 'Standard Order' : null,
-    laundryType === 'hotel' ? 'Hotel Laundry' : laundryType === 'guest' ? 'Guest Laundry' : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  // Long-pressing a card previews its full artwork.
+  const [zoomed, setZoomed] = useState<BusinessCategory | null>(null);
+  const zoomScale = useRef(new Animated.Value(0.85)).current;
 
+  const { width, height } = useWindowDimensions();
+
+  // Height of the area the grid actually gets, measured rather than guessed,
+  // so the header, the search bar and the tab bar are all accounted for on
+  // every screen size.
+  const [gridHeight, setGridHeight] = useState(0);
+
+  // The card is square: the largest side that fits two columns across the
+  // width AND two rows down the measured height. Width normally wins, so the
+  // buttons span the screen; on a short screen the height caps them instead,
+  // which is what stops the second row being cut off.
+  const cardSize = useMemo(() => {
+    const byWidth = Math.floor((width - GRID_PADDING * 2 - GRID_GAP) / COLUMNS);
+    if (!gridHeight) return byWidth;
+    // Every row carries a bottom margin, the last one included, so all
+    // GRID_ROWS gaps come off the usable height.
+    const byHeight = Math.floor(
+      (gridHeight - GRID_PADDING * 2 - GRID_GAP * GRID_ROWS) / GRID_ROWS
+    );
+    return Math.max(MIN_CARD_SIZE, Math.min(byWidth, byHeight));
+  }, [width, gridHeight]);
+
+  const { cart, loadCart } = useBusinessOrderStore();
   const cartCount = useMemo(
     () => (cart?.items || []).reduce((sum, item) => sum + item.quantity, 0),
     [cart]
   );
 
-  const activeServiceLabel = useMemo(
-    () => serviceFilters.find((option) => option.value === serviceFilter)?.label || ALL_SERVICES.label,
-    [serviceFilters, serviceFilter]
-  );
+  const load = useCallback(async () => {
+    try {
+      setError('');
+      setIsLoading(true);
+      const response = await businessOrderApi.getCategories();
+      // Hidden purely in the UI — the API and database are left untouched.
+      setCategories(swapFnbAndUniforms(filterHiddenCategories(response.data)));
+    } catch (err: any) {
+      setError(extractErrorMessage(err, 'Failed to load categories'));
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    (async () => {
-      try {
-        setError('');
-        const response = await businessOrderApi.getCategories();
-        setCategories(response.data);
-      } catch (err: any) {
-        setError(extractErrorMessage(err, 'Failed to load categories'));
-      } finally {
-        setIsLoadingCategories(false);
-      }
-    })();
-    // Real service rows, so the filter names match the catalogue exactly.
-    businessOrderApi
-      .getLaundryServices()
-      .then((response) => {
-        const types = response.data.serviceTypes || [];
-        if (types.length > 0) {
-          setServiceFilters([ALL_SERVICES, ...types.map((type) => ({ value: type.code, label: type.name }))]);
-        }
-      })
-      .catch(() => {});
+    load();
     loadCart().catch(() => {});
-  }, [loadCart]);
+  }, [load, loadCart]);
 
-  /** Items are always resolved server-side from category + search + service. */
-  const fetchItems = useCallback(
-    async (searchText: string, categoryId?: string, serviceType?: string | null) => {
-      if (!searchText.trim() && !categoryId && !serviceType) {
-        setItems([]);
-        return;
-      }
-      try {
-        setError('');
-        setIsLoadingItems(true);
-        const response = await businessOrderApi.searchItems({
-          search: searchText.trim() || undefined,
-          categoryId,
-          serviceType: serviceType || undefined,
-        });
-        setItems(response.data);
-      } catch (err: any) {
-        setError(extractErrorMessage(err, 'Failed to load items'));
-      } finally {
-        setIsLoadingItems(false);
-      }
-    },
-    []
-  );
+  const openCategory = (category: BusinessCategory) => {
+    if (category.has_subcategories) {
+      navigation.navigate('BusinessSubCategoriesScreen', {
+        categoryId: category.id,
+        categoryName: category.name,
+      });
+      return;
+    }
+    navigation.navigate('BusinessItemsScreen', {
+      categoryId: category.id,
+      categoryName: category.name,
+    });
+  };
+
+  const openZoom = (category: BusinessCategory) => {
+    if (!getCategoryImage(category.slug, category.name) && !category.image_url) return;
+    setZoomed(category);
+    zoomScale.setValue(0.85);
+    Animated.timing(zoomScale, {
+      toValue: 1,
+      duration: 200,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const artworkSource = (category: BusinessCategory) => {
+    const bundled = getCategoryImage(category.slug, category.name);
+    return bundled ?? (category.image_url ? { uri: category.image_url } : null);
+  };
+
+  const runSearch = useCallback(async (text: string) => {
+    if (!text.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+    try {
+      setError('');
+      setIsSearching(true);
+      const response = await businessOrderApi.searchItems({ search: text.trim() });
+      setSearchResults(
+        response.data.filter(
+          (item) =>
+            !isHiddenCategory(item.parent_category_name) && !isHiddenCategory(item.category_name)
+        )
+      );
+    } catch (err: any) {
+      setError(extractErrorMessage(err, 'Failed to search items'));
+    } finally {
+      setIsSearching(false);
+    }
+  }, []);
 
   const handleSearchChange = (text: string) => {
     setSearch(text);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      fetchItems(text, selectedCategory?.id, serviceFilter);
-    }, 350);
+    debounceRef.current = setTimeout(() => runSearch(text), 350);
   };
 
-  const handleCategoryPress = (category: BusinessCategory) => {
-    const next = selectedCategory?.id === category.id ? null : category;
-    setSelectedCategory(next);
-    fetchItems(search, next?.id, serviceFilter);
-  };
+  const searching = Boolean(search.trim());
 
-  /** Tapping the active filter again returns to All. */
-  const handleServicePress = (value: string | null) => {
-    const next = serviceFilter === value ? null : value;
-    setServiceFilter(next);
-    fetchItems(search, selectedCategory?.id, next);
-  };
+  const renderCategory = ({ item }: { item: BusinessCategory }) => (
+    <CategoryGridCard
+      name={item.name}
+      source={artworkSource(item)}
+      fallbackIcon={CATEGORY_ICONS[item.slug] || 'cube-outline'}
+      size={cardSize}
+      onPress={() => openCategory(item)}
+      onLongPress={() => openZoom(item)}
+    />
+  );
 
-  const getQuantity = (itemId: string) => {
-    const raw = quantities[itemId];
-    return raw === undefined ? 1 : parseInt(raw, 10) || 0;
-  };
-
-  const setQuantity = (itemId: string, value: number) => {
-    setQuantities((prev) => ({ ...prev, [itemId]: String(Math.max(1, value)) }));
-  };
-
-  const handleQuantityInput = (itemId: string, text: string) => {
-    setQuantities((prev) => ({ ...prev, [itemId]: text.replace(/[^0-9]/g, '') }));
-  };
-
-  const handleAddToCart = async (item: BusinessItem) => {
-    if (addingItemId) return;
-    const quantity = getQuantity(item.id);
-    if (!quantity || quantity < 1) {
-      setError('Quantity must be at least 1');
-      return;
-    }
-    try {
-      setAddingItemId(item.id);
-      setError('');
-      // With a service filter on, the line is added for that service. On
-      // "All" the server picks from the services the item supports.
-      await addItem(item.id, quantity, serviceFilter || undefined);
-      setQuantities((prev) => ({ ...prev, [item.id]: '1' }));
-    } catch (err: any) {
-      setError(err?.message || 'Failed to add item to cart');
-    } finally {
-      setAddingItemId(null);
-    }
-  };
-
-  const showingItems = Boolean(search.trim() || selectedCategory || serviceFilter);
-
-  const renderItem = ({ item }: { item: BusinessItem }) => {
-    const quantity = quantities[item.id] === undefined ? '1' : quantities[item.id];
-    return (
-      <View style={styles.itemCard}>
-        <View style={styles.itemImage}>
-          <Ionicons name="shirt-outline" size={26} color={COLORS.Primary} />
-        </View>
-        <View style={styles.itemInfo}>
-          <Text style={styles.itemName}>{item.name}</Text>
-          <Text style={styles.itemMeta}>
-            Unit: {item.unit}
-            {item.weight_kg != null ? ` · Std. weight: ${formatWeightKg(item.weight_kg)}` : ''}
-          </Text>
-          <View style={styles.itemActions}>
-            <View style={styles.stepper}>
-              <TouchableOpacity
-                style={styles.stepperButton}
-                onPress={() => setQuantity(item.id, getQuantity(item.id) - 1)}
-              >
-                <Ionicons name="remove" size={16} color={COLORS.Primary} />
-              </TouchableOpacity>
-              <TextInput
-                style={styles.stepperInput}
-                value={quantity}
-                onChangeText={(text) => handleQuantityInput(item.id, text)}
-                keyboardType="number-pad"
-              />
-              <TouchableOpacity
-                style={styles.stepperButton}
-                onPress={() => setQuantity(item.id, getQuantity(item.id) + 1)}
-              >
-                <Ionicons name="add" size={16} color={COLORS.Primary} />
-              </TouchableOpacity>
-            </View>
-            <TouchableOpacity
-              style={styles.addButton}
-              onPress={() => handleAddToCart(item)}
-              disabled={addingItemId === item.id}
-            >
-              {addingItemId === item.id ? (
-                <ActivityIndicator size="small" color={COLORS.Surface} />
-              ) : (
-                <Text style={styles.addButtonText}>Add to Cart</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
+  const renderSearchResult = ({ item }: { item: BusinessItem }) => (
+    <TouchableOpacity
+      style={styles.resultCard}
+      activeOpacity={0.85}
+      onPress={() =>
+        navigation.navigate('BusinessItemsScreen', {
+          categoryId: item.category_id,
+          categoryName: item.category_name,
+          parentName: item.parent_category_name,
+        })
+      }
+    >
+      <View style={styles.resultIcon}>
+        <Ionicons name="shirt-outline" size={20} color={COLORS.Primary} />
       </View>
-    );
-  };
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={styles.resultName}>{item.name}</Text>
+        <Text style={styles.resultMeta}>
+          {item.parent_category_name ? `${item.parent_category_name} › ` : ''}
+          {item.category_name}
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={COLORS.TextSecondary} />
+    </TouchableOpacity>
+  );
 
-  const header = (
-    <View>
-      {/* Search sits above the category grid. */}
+  // Rendered above both lists rather than inside them, so the grid area below
+  // can be measured on its own.
+  const searchBar = (
+    <View style={styles.searchWrap}>
       <View style={styles.searchContainer}>
         <Ionicons name="search-outline" size={20} color={COLORS.TextSecondary} />
         <TextInput
@@ -254,12 +254,13 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
           placeholderTextColor={COLORS.TextSecondary}
           value={search}
           onChangeText={handleSearchChange}
+          returnKeyType="search"
         />
         {search ? (
           <TouchableOpacity
             onPress={() => {
               setSearch('');
-              fetchItems('', selectedCategory?.id, serviceFilter);
+              setSearchResults([]);
             }}
           >
             <Ionicons name="close-circle" size={18} color={COLORS.TextSecondary} />
@@ -267,82 +268,7 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
         ) : null}
       </View>
 
-      {/* Service filter — All / Wash & Iron / Dry Clean. */}
-      <View style={styles.serviceFilterRow}>
-        {serviceFilters.map((option) => {
-          const active = serviceFilter === option.value;
-          return (
-            <TouchableOpacity
-              key={option.value ?? 'all'}
-              style={[styles.serviceChip, active && styles.serviceChipActive]}
-              onPress={() => handleServicePress(option.value)}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.serviceChipLabel, active && styles.serviceChipLabelActive]} numberOfLines={1}>
-                {option.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {isLoadingCategories ? (
-        <ActivityIndicator color={COLORS.Primary} style={{ marginVertical: SPACING.lg }} />
-      ) : (
-        <View style={styles.grid}>
-          {categories.map((category, index) => {
-            const active = selectedCategory?.id === category.id;
-            const isRowEnd = index % COLUMNS === COLUMNS - 1;
-            return (
-              <TouchableOpacity
-                key={category.id}
-                style={[
-                  styles.categoryBox,
-                  isRowEnd && styles.categoryBoxRowEnd,
-                  active && styles.categoryBoxActive,
-                ]}
-                onPress={() => handleCategoryPress(category)}
-                activeOpacity={0.8}
-              >
-                <Ionicons
-                  name={CATEGORY_ICONS[category.slug] || 'cube-outline'}
-                  size={20}
-                  color={active ? COLORS.Surface : COLORS.Primary}
-                />
-
-                <Text
-                  style={[styles.categoryLabel, active && styles.categoryLabelActive]}
-                  numberOfLines={2}
-                >
-                  {category.name}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      )}
-
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
-      {showingItems ? (
-        <View style={styles.resultsHeader}>
-          <Text style={styles.resultsTitle}>
-            {selectedCategory ? selectedCategory.name : search.trim() ? 'Search results' : activeServiceLabel}
-          </Text>
-          {selectedCategory ? (
-            <TouchableOpacity
-              onPress={() => {
-                setSelectedCategory(null);
-                fetchItems(search, undefined, serviceFilter);
-              }}
-            >
-              <Text style={styles.clearLink}>Clear filter</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      ) : null}
-
-      {isLoadingItems ? <ActivityIndicator color={COLORS.Primary} style={{ marginTop: SPACING.md }} /> : null}
     </View>
   );
 
@@ -350,7 +276,6 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
     <SafeAreaView style={styles.container} edges={['top']}>
       <BusinessHeader
         title="Select Items"
-        subtitle={contextSubtitle || undefined}
         action={
           <TouchableOpacity
             style={styles.cartButton}
@@ -366,45 +291,111 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
         }
       />
 
-      <FlatList
-        data={showingItems ? items : []}
-        keyExtractor={(item) => item.id}
-        renderItem={renderItem}
-        ListHeaderComponent={header}
-        contentContainerStyle={styles.listContent}
-        keyboardShouldPersistTaps="handled"
-        ListEmptyComponent={
-          showingItems && !isLoadingItems ? (
-            <Text style={styles.emptyText}>No items found</Text>
-          ) : !showingItems ? (
-            <Text style={styles.hintText}>Pick a category or search to see items</Text>
-          ) : null
-        }
-      />
+      {searchBar}
+
+      {isLoading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color={COLORS.Primary} />
+        </View>
+      ) : searching ? (
+        <FlatList
+          data={searchResults}
+          keyExtractor={(item) => item.id}
+          renderItem={renderSearchResult}
+          contentContainerStyle={styles.listContent}
+          keyboardShouldPersistTaps="handled"
+          ListEmptyComponent={
+            isSearching ? (
+              <ActivityIndicator color={COLORS.Primary} style={{ marginTop: SPACING.lg }} />
+            ) : (
+              <Text style={styles.emptyText}>No items match your search</Text>
+            )
+          }
+        />
+      ) : (
+        // The grid owns all the remaining height; onLayout reports it so the
+        // cards can be sized to fill it exactly.
+        <View
+          style={styles.gridArea}
+          onLayout={(event) => setGridHeight(event.nativeEvent.layout.height)}
+        >
+          <FlatList
+            data={categories}
+            keyExtractor={(item) => item.id}
+            renderItem={renderCategory}
+            numColumns={COLUMNS}
+            columnWrapperStyle={styles.row}
+            contentContainerStyle={styles.gridContent}
+            style={styles.gridList}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={
+              error ? (
+                <TouchableOpacity style={styles.retryButton} onPress={load}>
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+              ) : (
+                <Text style={styles.emptyText}>No categories available</Text>
+              )
+            }
+          />
+        </View>
+      )}
+
+      {/* Full artwork preview, opened by long-pressing a card. */}
+      <Modal
+        visible={zoomed !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setZoomed(null)}
+        statusBarTranslucent
+      >
+        <Pressable style={styles.zoomBackdrop} onPress={() => setZoomed(null)}>
+          <Animated.View style={{ transform: [{ scale: zoomScale }] }}>
+            <Pressable onPress={() => {}}>
+              {zoomed && artworkSource(zoomed) ? (
+                <Image
+                  source={artworkSource(zoomed)!}
+                  style={[
+                    styles.zoomImage,
+                    {
+                      width: Math.min(width * 0.9, height * 0.7),
+                      height: Math.min(width * 0.9, height * 0.7),
+                    },
+                  ]}
+                  resizeMode="contain"
+                />
+              ) : null}
+            </Pressable>
+          </Animated.View>
+          <Text style={styles.zoomCaption}>{zoomed?.name}</Text>
+          <TouchableOpacity
+            style={styles.zoomClose}
+            onPress={() => setZoomed(null)}
+            accessibilityLabel="Close image"
+          >
+            <Ionicons name="close" size={26} color={COLORS.Surface} />
+          </TouchableOpacity>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.sm,
-  },
-  title: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.xl,
-    fontWeight: 'bold',
-    color: COLORS.TextPrimary,
-  },
-  subtitle: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.sm,
-    color: COLORS.TextSecondary,
-  },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  listContent: { padding: GRID_PADDING, paddingBottom: SPACING.xxl },
+  // The 2 x 2 grid: no extra bottom padding, so two rows of cards fill the
+  // measured area exactly instead of forcing a scroll.
+  gridArea: { flex: 1 },
+  gridList: { flex: 1 },
+  // flexGrow + centre: the square block sits in the middle of whatever height
+  // is left over, instead of leaving one dead band at the bottom.
+  gridContent: { padding: GRID_PADDING, flexGrow: 1, justifyContent: 'center' },
+  row: { gap: GRID_GAP, marginBottom: GRID_GAP, justifyContent: 'center' },
+  searchWrap: { paddingHorizontal: GRID_PADDING, paddingTop: GRID_PADDING },
+
   cartButton: {
     width: 44,
     height: 44,
@@ -427,7 +418,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   badgeText: { color: COLORS.Surface, fontSize: 11, fontWeight: 'bold' },
-  listContent: { padding: SPACING.md, paddingBottom: SPACING.xxl },
+
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -439,6 +430,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.Border,
     marginBottom: SPACING.md,
+    ...SHADOWS.light,
   },
   searchInput: {
     flex: 1,
@@ -446,134 +438,39 @@ const styles = StyleSheet.create({
     fontSize: TYPOGRAPHY.sizes.base,
     color: COLORS.TextPrimary,
   },
-  // Service filter chips, same surface/border/primary language as the
-  // category boxes below them.
-  serviceFilterRow: {
+
+  resultCard: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: SPACING.sm,
-    marginBottom: SPACING.md,
-  },
-  serviceChip: {
-    flex: 1,
-    height: 36,
-    paddingHorizontal: SPACING.sm,
-    backgroundColor: COLORS.Surface,
-    borderRadius: BORDER_RADIUS.sm,
-    borderWidth: 1,
-    borderColor: COLORS.Border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  serviceChipActive: { backgroundColor: COLORS.Primary, borderColor: COLORS.Primary },
-  serviceChipLabel: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.sm,
-    color: COLORS.TextPrimary,
-  },
-  serviceChipLabelActive: { color: COLORS.Surface, fontWeight: '700' },
-  // Exactly 3 compact boxes per row on mobile.
-  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' },
-  categoryBox: {
-    width: '31.33%',
-    marginRight: '3%',
-    minHeight: 76,
     backgroundColor: COLORS.Surface,
     borderRadius: BORDER_RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.Border,
-    paddingVertical: SPACING.sm,
-    paddingHorizontal: 4,
-    marginBottom: SPACING.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-  },
-  categoryBoxRowEnd: { marginRight: 0 },
-  categoryBoxActive: { backgroundColor: COLORS.Primary, borderColor: COLORS.Primary },
-  categoryLabel: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: 11,
-    color: COLORS.TextPrimary,
-    textAlign: 'center',
-  },
-  categoryLabelActive: { color: COLORS.Surface, fontWeight: '700' },
-  resultsHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: SPACING.sm,
-    marginBottom: SPACING.sm,
-  },
-  resultsTitle: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.base,
-    fontWeight: 'bold',
-    color: COLORS.TextPrimary,
-  },
-  clearLink: { fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.sm, color: COLORS.Primary },
-  itemCard: {
-    flexDirection: 'row',
-    backgroundColor: COLORS.Surface,
-    borderRadius: BORDER_RADIUS.lg,
     padding: SPACING.md,
     marginBottom: SPACING.sm,
-    ...SHADOWS.light,
+    borderWidth: 1,
+    borderColor: COLORS.Border,
   },
-  itemImage: {
-    width: 52,
-    height: 52,
-    borderRadius: BORDER_RADIUS.md,
+  resultIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: BORDER_RADIUS.sm,
     backgroundColor: COLORS.Background,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: SPACING.md,
   },
-  itemInfo: { flex: 1 },
-  itemName: {
+  resultName: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.base,
     fontWeight: '600',
     color: COLORS.TextPrimary,
   },
-  itemMeta: {
+  resultMeta: {
     fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.sm,
+    fontSize: TYPOGRAPHY.sizes.xs,
     color: COLORS.TextSecondary,
     marginTop: 2,
-    marginBottom: SPACING.sm,
   },
-  itemActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: SPACING.sm },
-  stepper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.Border,
-    borderRadius: BORDER_RADIUS.sm,
-  },
-  stepperButton: { padding: SPACING.xs, width: 30, alignItems: 'center' },
-  stepperInput: {
-    width: 34,
-    textAlign: 'center',
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.base,
-    color: COLORS.TextPrimary,
-    paddingVertical: 2,
-  },
-  addButton: {
-    backgroundColor: COLORS.Primary,
-    borderRadius: BORDER_RADIUS.sm,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.sm,
-    minWidth: 100,
-    alignItems: 'center',
-  },
-  addButtonText: {
-    color: COLORS.Surface,
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.sm,
-    fontWeight: '600',
-  },
+
   errorText: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.sm,
@@ -587,11 +484,39 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: SPACING.lg,
   },
-  hintText: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    color: COLORS.TextSecondary,
-    textAlign: 'center',
+  retryButton: {
+    alignSelf: 'center',
+    backgroundColor: COLORS.Primary,
+    paddingHorizontal: SPACING.xl,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
     marginTop: SPACING.md,
-    fontSize: TYPOGRAPHY.sizes.sm,
+  },
+  retryButtonText: { color: COLORS.Surface, fontFamily: TYPOGRAPHY.fontFamily, fontWeight: '600' },
+
+  zoomBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.88)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  zoomImage: { borderRadius: BORDER_RADIUS.lg },
+  zoomCaption: {
+    marginTop: SPACING.lg,
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '700',
+    color: COLORS.Surface,
+  },
+  zoomClose: {
+    position: 'absolute',
+    top: 48,
+    right: SPACING.lg,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

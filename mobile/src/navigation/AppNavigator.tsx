@@ -85,15 +85,18 @@ import BusinessDetailsScreen
   from '../screens/business/BusinessDetailsScreen';
 
 /*
- * Order Type and Laundry Type are ONE page (OrderTypeScreen). There are no
- * longer separate LaundryType / ServiceType screens — service is chosen in the
- * Cart, before the order can be confirmed.
+ * The Business flow opens straight on Select Items. Order Type and Laundry
+ * Type are no longer asked for up front — both are chosen in the Cart, and
+ * the laundry service belongs to each item, chosen on the Items page.
  */
-import OrderTypeScreen
-  from '../screens/business/OrderTypeScreen';
-
 import BusinessCategoriesScreen
   from '../screens/business/BusinessCategoriesScreen';
+
+import BusinessSubCategoriesScreen
+  from '../screens/business/BusinessSubCategoriesScreen';
+
+import BusinessItemsScreen
+  from '../screens/business/BusinessItemsScreen';
 
 
 import BusinessCartScreen
@@ -119,8 +122,29 @@ import BusinessOrderTrackingScreen
   from '../screens/business/BusinessOrderTrackingScreen';
 
 
-import BusinessFooter
-  from '../components/business/BusinessFooter';
+// =========================================================
+// SORTER MODULE
+//
+// Staff-facing. Its own login and stack, gated on the
+// SORTER role, so it can never be reached from a customer
+// or business session.
+// =========================================================
+
+import SorterLoginScreen
+  from '../screens/sorter/SorterLoginScreen';
+
+import SorterDashboardScreen
+  from '../screens/sorter/SorterDashboardScreen';
+
+import SorterOrderDetailsScreen
+  from '../screens/sorter/SorterOrderDetailsScreen';
+
+import SorterScanScreen
+  from '../screens/sorter/SorterScanScreen';
+
+
+// The one bottom bar for both tab sets: Customer and Business.
+import LiquidGlassTabBar from '../components/LiquidGlassTabBar';
 
 
 // =========================================================
@@ -179,6 +203,7 @@ function MainTab() {
 
   return (
     <Tab.Navigator
+     tabBar={(props) => <LiquidGlassTabBar {...props} />}
       initialRouteName="Home"
       screenOptions={({ route }) => ({
 
@@ -287,12 +312,13 @@ function CustomerStack() {
 function BusinessHomeStack() {
   return (
     <Stack.Navigator
-      initialRouteName="OrderTypeScreen"
+      initialRouteName="BusinessCategoriesScreen"
       screenOptions={{ headerShown: false }}
     >
-      {/* One page for Standard/Quick + Hotel/Guest, then straight to items. */}
-      <Stack.Screen name="OrderTypeScreen" component={OrderTypeScreen} />
+      {/* The first page is the four main categories — no pre-selection step. */}
       <Stack.Screen name="BusinessCategoriesScreen" component={BusinessCategoriesScreen} />
+      <Stack.Screen name="BusinessSubCategoriesScreen" component={BusinessSubCategoriesScreen} />
+      <Stack.Screen name="BusinessItemsScreen" component={BusinessItemsScreen} />
     </Stack.Navigator>
   );
 }
@@ -338,8 +364,9 @@ function BusinessProfileStack() {
 // =========================================================
 // BUSINESS TABS
 //
-// The shared Business Footer is the tab bar itself, so the
-// footer exists once and React Navigation owns active state.
+// The frosted LiquidGlassTabBar is the tab bar itself, so it
+// exists once and React Navigation owns active state. The
+// Customer tabs use the same component.
 // =========================================================
 
 function BusinessTabs() {
@@ -347,13 +374,34 @@ function BusinessTabs() {
     <Tab.Navigator
       initialRouteName="BusinessHome"
       screenOptions={{ headerShown: false }}
-      tabBar={(props) => <BusinessFooter {...props} />}
+      tabBar={(props) => <LiquidGlassTabBar {...props} />}
     >
       <Tab.Screen name="BusinessHome" component={BusinessHomeStack} />
       <Tab.Screen name="BusinessOrders" component={BusinessOrdersStack} />
       <Tab.Screen name="BusinessCart" component={BusinessCartStack} />
       <Tab.Screen name="BusinessProfile" component={BusinessProfileStack} />
     </Tab.Navigator>
+  );
+}
+
+
+// =========================================================
+// SORTER STACK
+//
+// Dashboard + order detail. No tabs: the shop floor works
+// one queue, and a bottom bar would only take room from it.
+// =========================================================
+
+function SorterStack() {
+  return (
+    <Stack.Navigator
+      initialRouteName="SorterDashboardScreen"
+      screenOptions={{ headerShown: false }}
+    >
+      <Stack.Screen name="SorterDashboardScreen" component={SorterDashboardScreen} />
+      <Stack.Screen name="SorterOrderDetailsScreen" component={SorterOrderDetailsScreen} />
+      <Stack.Screen name="SorterScanScreen" component={SorterScanScreen} />
+    </Stack.Navigator>
   );
 }
 
@@ -539,6 +587,42 @@ export default function AppNavigator() {
             name="Customer"
             component={
               CustomerStack
+            }
+          />
+
+        )}
+
+
+        {/* =================================================
+            SORTER LOGIN
+
+            Reachable only while signed out, from the link on
+            the customer login screen.
+        ================================================= */}
+
+        {!isAuthenticated && (
+
+          <Stack.Screen
+            name="SorterLoginScreen"
+            component={
+              SorterLoginScreen
+            }
+          />
+
+        )}
+
+
+        {/* =================================================
+            SORTER APPLICATION
+        ================================================= */}
+
+        {isAuthenticated &&
+          role === 'sorter' && (
+
+          <Stack.Screen
+            name="Sorter"
+            component={
+              SorterStack
             }
           />
 

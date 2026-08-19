@@ -73,7 +73,7 @@ export default function LoginScreen({ navigation, route }: any) {
           {/* Header */}
           <View style={styles.headerContainer}>
             <Image
-              source={require('../../../assets/logo.png')}
+              source={require('../../../assets/swachham-logo.png')}
               style={styles.logo}
               resizeMode="contain"
             />
@@ -206,6 +206,16 @@ export default function LoginScreen({ navigation, route }: any) {
                 </Text>
               </TouchableOpacity>
             </View>
+
+            {/* Staff entry point. Separate screen and separate role — it does
+                not change anything about the customer or business login. */}
+            <TouchableOpacity
+              style={styles.staffLink}
+              onPress={() => navigation.navigate('SorterLoginScreen')}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.staffLinkText}>Staff login (Sorter)</Text>
+            </TouchableOpacity>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -373,6 +383,14 @@ const styles = StyleSheet.create({
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.base,
     color: COLORS.TextSecondary,
+  },
+  staffLink: { alignItems: 'center', marginTop: SPACING.lg, paddingVertical: SPACING.sm },
+  staffLinkText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '600',
+    color: COLORS.TextSecondary,
+    textDecorationLine: 'underline',
   },
   registerLink: {
     fontFamily: TYPOGRAPHY.fontFamily,

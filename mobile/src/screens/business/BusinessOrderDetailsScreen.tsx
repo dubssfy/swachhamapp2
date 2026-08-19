@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,11 +8,10 @@ import {
   TouchableOpacity,
   Alert,
   Image,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Asset } from 'expo-asset';
-import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
@@ -21,8 +20,8 @@ import businessOrderApi, { BusinessOrderDetail } from '../../services/businessOr
 import { extractErrorMessage } from '../../services/api';
 import { useBusinessOrderStore } from '../../store/businessOrderStore';
 import {
-  buildBusinessOrderPdfHtml,
-  buildPdfFileName,
+  generateOrderPdf,
+  buildPdfBaseName,
   formatDateTime,
   formatWeightKg,
   LAUNDRY_LABEL,
@@ -35,7 +34,17 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
   const [order, setOrder] = useState<BusinessOrderDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
+  /**
+   * Which PDF action is running, or null. One flag for both buttons is what
+   * stops a second generation starting while the first is still going.
+   */
+  const [pdfAction, setPdfAction] = useState<'share' | 'download' | null>(null);
+  /**
+   * The state above drives the UI; this ref is the actual lock. It flips
+   * synchronously, so two taps in the same frame — before React has
+   * re-rendered the disabled buttons — cannot both start a generation.
+   */
+  const pdfBusyRef = useRef(false);
   const [isRepeating, setIsRepeating] = useState(false);
   const { repeatIntoCart } = useBusinessOrderStore();
 
@@ -55,20 +64,6 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
   useEffect(() => {
     load();
   }, [load]);
-
-  /** Logo is embedded as a data URI so the PDF renders it offline. */
-  const getLogoDataUri = async (): Promise<string | null> => {
-    try {
-      const asset = Asset.fromModule(require('../../../assets/logo.png'));
-      await asset.downloadAsync();
-      const uri = asset.localUri || asset.uri;
-      if (!uri) return null;
-      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
-      return `data:image/png;base64,${base64}`;
-    } catch {
-      return null;
-    }
-  };
 
 
 
@@ -94,47 +89,105 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
     }
   };
 
-  const handleDownloadPdf = async () => {
-    if (isGenerating) return;
+  /**
+   * The PDF is always built from a fresh read of the order, so the document
+   * matches the server rather than a stale screen. Nothing is written back.
+   */
+  const buildPdf = async () => {
+    const fresh = (await businessOrderApi.getOrderById(String(orderId))).data;
+    return generateOrderPdf(fresh);
+  };
+
+  /** Share PDF — hands the real PDF file to the native share sheet. */
+  const handleSharePdf = async () => {
+    if (pdfBusyRef.current) return;
+    pdfBusyRef.current = true;
+    let uri = '';
+    let fileName = '';
     try {
-      setIsGenerating(true);
+      setPdfAction('share');
       setError('');
-
-      // Re-fetch so the PDF is built from authoritative server data.
-      const fresh = (await businessOrderApi.getOrderById(String(orderId))).data;
-      const logo = await getLogoDataUri();
-      const { uri } = await Print.printToFileAsync({ html: buildBusinessOrderPdfHtml(fresh, logo) });
-
-      // printToFileAsync names the file with a random id, so it is moved to
-      // <business name><order number>.pdf before sharing.
-      const fileName = buildPdfFileName(fresh.business_name, fresh.order_number);
-      const targetUri = `${FileSystem.cacheDirectory}${fileName}`;
-      let shareUri = uri;
-      try {
-        const existing = await FileSystem.getInfoAsync(targetUri);
-        if (existing.exists) {
-          await FileSystem.deleteAsync(targetUri, { idempotent: true });
-        }
-        await FileSystem.moveAsync({ from: uri, to: targetUri });
-        shareUri = targetUri;
-      } catch {
-        // Fall back to the generated path rather than failing the download.
-        shareUri = uri;
-      }
-
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(shareUri, {
-          mimeType: 'application/pdf',
-          dialogTitle: fileName,
-          UTI: 'com.adobe.pdf',
-        });
-      } else {
-        Alert.alert('PDF ready', `Saved to:\n${shareUri}`);
-      }
+      ({ uri, fileName } = await buildPdf());
     } catch (err: any) {
-      setError(err?.message || 'Failed to generate PDF');
+      if (__DEV__) console.error('[OrderPdf] generation failed', err);
+      setError('Unable to generate PDF. Please try again.');
+      setPdfAction(null);
+      pdfBusyRef.current = false;
+      return;
+    }
+
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        throw new Error('Sharing is not available on this device');
+      }
+      await Sharing.shareAsync(uri, {
+        mimeType: 'application/pdf',
+        dialogTitle: fileName,
+        UTI: 'com.adobe.pdf',
+      });
+    } catch (err: any) {
+      if (__DEV__) console.error('[OrderPdf] share failed', err);
+      setError('Unable to share PDF. Please try again.');
     } finally {
-      setIsGenerating(false);
+      setPdfAction(null);
+      pdfBusyRef.current = false;
+    }
+  };
+
+  /**
+   * Download PDF — saves the file to the device rather than opening a share
+   * sheet. Android writes into a folder the user picks through the Storage
+   * Access Framework (the supported route on modern Android); iOS writes into
+   * the app's Documents folder, which the Files app exposes.
+   */
+  const handleDownloadPdf = async () => {
+    if (pdfBusyRef.current) return;
+    pdfBusyRef.current = true;
+    let uri = '';
+    let fileName = '';
+    try {
+      setPdfAction('download');
+      setError('');
+      ({ uri, fileName } = await buildPdf());
+    } catch (err: any) {
+      if (__DEV__) console.error('[OrderPdf] generation failed', err);
+      setError('Unable to generate PDF. Please try again.');
+      setPdfAction(null);
+      pdfBusyRef.current = false;
+      return;
+    }
+
+    try {
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+
+      if (Platform.OS === 'android') {
+        const permission =
+          await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (!permission.granted) {
+          setError('Choose a folder to save the PDF, then try again.');
+          return;
+        }
+        // The extension is left to SAF: it appends .pdf for this MIME type, so
+        // the saved file is exactly <order number>.pdf.
+        const savedUri = await FileSystem.StorageAccessFramework.createFileAsync(
+          permission.directoryUri,
+          buildPdfBaseName(order?.order_number || ''),
+          'application/pdf'
+        );
+        await FileSystem.writeAsStringAsync(savedUri, base64, { encoding: 'base64' });
+      } else {
+        const targetUri = `${FileSystem.documentDirectory}${encodeURIComponent(fileName)}`;
+        await FileSystem.deleteAsync(targetUri, { idempotent: true });
+        await FileSystem.writeAsStringAsync(targetUri, base64, { encoding: 'base64' });
+      }
+
+      Alert.alert('PDF downloaded successfully.', fileName);
+    } catch (err: any) {
+      if (__DEV__) console.error('[OrderPdf] download failed', err);
+      setError('Unable to download PDF. Please try again.');
+    } finally {
+      setPdfAction(null);
+      pdfBusyRef.current = false;
     }
   };
 
@@ -226,6 +279,11 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
                 <Text style={styles.itemMeta}>
                   {item.category_name || '—'} · {item.quantity} {item.unit}
                 </Text>
+                {/* This line's own laundry service — the same value the PDF
+                    prints against the item. */}
+                <Text style={styles.itemMeta}>
+                  Service: {item.laundry_service_name || '—'}
+                </Text>
               </View>
               <Text style={styles.itemWeight}>{formatWeightKg(item.total_weight_kg)}</Text>
             </View>
@@ -236,14 +294,38 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
           </View>
         </View>
 
+        {/* Both PDF actions run the same generator; while either is working
+            both are disabled, so only one PDF is ever produced at a time. */}
         <TouchableOpacity
-          style={[styles.primaryButton, isGenerating && styles.buttonDisabled]}
-          onPress={handleDownloadPdf}
-          disabled={isGenerating}
+          style={[styles.primaryButton, pdfAction !== null && styles.buttonDisabled]}
+          onPress={handleSharePdf}
+          disabled={pdfAction !== null}
           activeOpacity={0.85}
         >
-          {isGenerating ? (
-            <ActivityIndicator size="small" color={COLORS.Surface} />
+          {pdfAction === 'share' ? (
+            <>
+              <ActivityIndicator size="small" color={COLORS.Surface} />
+              <Text style={styles.primaryButtonText}>Generating PDF…</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="share-social-outline" size={20} color={COLORS.Surface} />
+              <Text style={styles.primaryButtonText}>Share PDF</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.primaryButton, pdfAction !== null && styles.buttonDisabled]}
+          onPress={handleDownloadPdf}
+          disabled={pdfAction !== null}
+          activeOpacity={0.85}
+        >
+          {pdfAction === 'download' ? (
+            <>
+              <ActivityIndicator size="small" color={COLORS.Surface} />
+              <Text style={styles.primaryButtonText}>Generating PDF…</Text>
+            </>
           ) : (
             <>
               <Ionicons name="download-outline" size={20} color={COLORS.Surface} />

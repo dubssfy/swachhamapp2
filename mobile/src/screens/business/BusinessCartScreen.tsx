@@ -16,41 +16,56 @@ import BusinessHeader from '../../components/business/BusinessHeader';
 import {
   useBusinessOrderStore,
   SERVICE_OPTIONS,
-  SERVICE_REQUIRED_MESSAGE,
   ORDER_TYPE_OPTIONS,
   ORDER_TYPE_REQUIRED_MESSAGE,
-  ServiceType,
+  LAUNDRY_TYPE_OPTIONS,
+  LAUNDRY_TYPE_REQUIRED_MESSAGE,
+  CART_ITEM_SERVICE_REQUIRED_MESSAGE,
+  CART_EMPTY_MESSAGE,
+  LaundryType,
   OrderType,
 } from '../../store/businessOrderStore';
 import { formatWeightKg } from '../../utils/businessOrderPdf';
-
-const SERVICE_ICONS: Record<ServiceType, keyof typeof Ionicons.glyphMap> = {
-  wash_iron: 'water-outline',
-  dry_clean: 'sparkles-outline',
-};
 
 const ORDER_TYPE_ICONS: Record<OrderType, keyof typeof Ionicons.glyphMap> = {
   standard: 'time-outline',
   quick: 'flash-outline',
 };
 
+const LAUNDRY_TYPE_ICONS: Record<LaundryType, keyof typeof Ionicons.glyphMap> = {
+  hotel: 'business-outline',
+  guest: 'person-outline',
+};
+
+/**
+ * Cart / Order Confirmation.
+ *
+ * Two selections are made here and nowhere else: Order Type (Standard/Quick)
+ * and Laundry Type (Hotel/Guest). Both are compulsory. There is deliberately
+ * no order-wide laundry service section — the service belongs to each line,
+ * chosen on the Items page, and is only displayed (and switchable) per item.
+ */
 export default function BusinessCartScreen({ navigation }: any) {
   const {
     cart,
     isLoading,
-    serviceType,
+    laundryType,
     orderType,
     saveOrderType,
+    saveLaundryType,
     loadCart,
     updateItem,
     setItemService,
     removeItem,
-    setServiceType,
     confirmOrder,
   } = useBusinessOrderStore();
   const [error, setError] = useState('');
   const [isConfirming, setIsConfirming] = useState(false);
   const [initialLoad, setInitialLoad] = useState(true);
+
+  const items = cart?.items || [];
+  /** Blocks confirmation until every line carries its own service. */
+  const hasItemWithoutService = items.some((item) => !item.service_type);
 
   const refresh = useCallback(() => {
     loadCart()
@@ -104,26 +119,35 @@ export default function BusinessCartScreen({ navigation }: any) {
     }
   };
 
-  const handleSelectService = async (value: ServiceType) => {
+  /** Laundry type, the second compulsory Cart selection. */
+  const handleSelectLaundryType = async (value: LaundryType) => {
     try {
       setError('');
-      await setServiceType(value);
+      await saveLaundryType(value);
     } catch (err: any) {
-      setError(err?.message || 'Failed to select service');
+      setError(err?.message || 'Failed to select laundry type');
     }
   };
 
   const handleConfirmOrder = async () => {
     if (isConfirming) return;
 
-    // Order type and service are both mandatory before booking. The backend
-    // enforces both too.
+    // The four validations, surfaced one at a time so the user is told
+    // exactly what is missing. The store and the backend re-check all four.
+    if (items.length === 0) {
+      setError(CART_EMPTY_MESSAGE);
+      return;
+    }
+    if (items.some((item) => !item.service_type)) {
+      setError(CART_ITEM_SERVICE_REQUIRED_MESSAGE);
+      return;
+    }
     if (!orderType) {
       setError(ORDER_TYPE_REQUIRED_MESSAGE);
       return;
     }
-    if (!serviceType) {
-      setError(SERVICE_REQUIRED_MESSAGE);
+    if (!laundryType) {
+      setError(LAUNDRY_TYPE_REQUIRED_MESSAGE);
       return;
     }
 
@@ -144,12 +168,12 @@ export default function BusinessCartScreen({ navigation }: any) {
     }
   };
 
-  const items = cart?.items || [];
-
-  // Same card/radio pattern as the service section below it.
+  // Order Type: compulsory, exactly one.
   const orderTypeSection = (
     <View style={styles.serviceCard}>
-      <Text style={styles.serviceTitle}>Order Type</Text>
+      <Text style={styles.serviceTitle}>
+        Order Type <Text style={styles.required}>*</Text>
+      </Text>
       <Text style={styles.serviceHint}>Select one order type for this order</Text>
 
       {ORDER_TYPE_OPTIONS.map((option) => {
@@ -185,18 +209,22 @@ export default function BusinessCartScreen({ navigation }: any) {
     </View>
   );
 
-  const serviceSection = (
+  // Laundry Type: compulsory, exactly one. Asked here rather than before the
+  // catalogue, so the Cart is the single place it is chosen.
+  const laundryTypeSection = (
     <View style={styles.serviceCard}>
-      <Text style={styles.serviceTitle}>Service</Text>
-      <Text style={styles.serviceHint}>Select one service for this order</Text>
+      <Text style={styles.serviceTitle}>
+        Laundry Type <Text style={styles.required}>*</Text>
+      </Text>
+      <Text style={styles.serviceHint}>Select one laundry type for this order</Text>
 
-      {SERVICE_OPTIONS.map((option) => {
-        const isSelected = serviceType === option.value;
+      {LAUNDRY_TYPE_OPTIONS.map((option) => {
+        const isSelected = laundryType === option.value;
         return (
           <TouchableOpacity
             key={option.value}
             style={[styles.serviceOption, isSelected && styles.serviceOptionSelected]}
-            onPress={() => handleSelectService(option.value)}
+            onPress={() => handleSelectLaundryType(option.value)}
             disabled={isLoading}
             activeOpacity={0.8}
             accessibilityRole="radio"
@@ -204,14 +232,23 @@ export default function BusinessCartScreen({ navigation }: any) {
           >
             <View style={[styles.serviceIcon, isSelected && styles.serviceIconSelected]}>
               <Ionicons
-                name={SERVICE_ICONS[option.value]}
+                name={LAUNDRY_TYPE_ICONS[option.value]}
                 size={20}
                 color={isSelected ? COLORS.Surface : COLORS.Primary}
               />
             </View>
-            <Text style={[styles.serviceLabel, isSelected && styles.serviceLabelSelected]}>
-              {option.label}
-            </Text>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.serviceLabel,
+                  styles.serviceLabelStacked,
+                  isSelected && styles.serviceLabelSelected,
+                ]}
+              >
+                {option.label}
+              </Text>
+              <Text style={styles.serviceOptionHint}>{option.hint}</Text>
+            </View>
             {isSelected ? (
               <Ionicons name="checkmark-circle" size={22} color={COLORS.Primary} />
             ) : (
@@ -227,37 +264,9 @@ export default function BusinessCartScreen({ navigation }: any) {
     <SafeAreaView style={styles.container} edges={['top']}>
       <BusinessHeader title="My Cart" />
 
-      {cart && (cart.laundry_type || cart.order_type) ? (
-        <View style={styles.contextRow}>
-          {cart.laundry_type ? (
-            <View style={styles.contextTag}>
-              <Text style={styles.contextText}>
-                {cart.laundry_type === 'hotel' ? 'Hotel Laundry' : 'Guest Laundry'}
-              </Text>
-            </View>
-          ) : null}
-          {cart.order_type ? (
-            <View style={styles.contextTag}>
-              <Text style={styles.contextText}>
-                {cart.order_type === 'quick' ? 'Quick Order' : 'Standard Order'}
-              </Text>
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-
       {initialLoad ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={COLORS.Primary} />
-        </View>
-      ) : items.length === 0 ? (
-        <View style={styles.centered}>
-          <Ionicons name="cart-outline" size={48} color={COLORS.TextSecondary} />
-          <Text style={styles.emptyText}>Your cart is empty</Text>
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          <TouchableOpacity style={styles.browseButton} onPress={() => navigation.navigate('BusinessHome')}>
-            <Text style={styles.browseButtonText}>Browse Items</Text>
-          </TouchableOpacity>
         </View>
       ) : (
         <>
@@ -265,11 +274,28 @@ export default function BusinessCartScreen({ navigation }: any) {
             data={items}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
-            ListFooterComponent={
+            /* The two compulsory selections are the FIRST thing on the page:
+               they are the list header, so they sit above the cart items and
+               are on screen the moment the Cart opens — with an empty cart
+               too. */
+            ListHeaderComponent={
               <>
                 {orderTypeSection}
-                {serviceSection}
+                {laundryTypeSection}
+                {items.length > 0 ? <Text style={styles.itemsHeading}>Cart Items</Text> : null}
               </>
+            }
+            ListEmptyComponent={
+              <View style={styles.emptyBlock}>
+                <Ionicons name="cart-outline" size={48} color={COLORS.TextSecondary} />
+                <Text style={styles.emptyText}>Your cart is empty</Text>
+                <TouchableOpacity
+                  style={styles.browseButton}
+                  onPress={() => navigation.navigate('BusinessHome')}
+                >
+                  <Text style={styles.browseButtonText}>Browse Items</Text>
+                </TouchableOpacity>
+              </View>
             }
             renderItem={({ item }) => (
               <View style={styles.itemCard}>
@@ -293,8 +319,20 @@ export default function BusinessCartScreen({ navigation }: any) {
                     {item.quantity} = {formatWeightKg(item.total_weight_kg)}
                   </Text>
 
-                  {/* This line's service. Only the services the item supports
-                      are offered, so a switch can never be invalid. */}
+                  {/* This line's own service — the only place a service is
+                      shown in the Cart. Only the services the item supports
+                      are offered, so a switch can never be invalid, and
+                      changing one line never touches another. */}
+                  <Text style={styles.itemServiceLabel}>
+                    Service:{' '}
+                    <Text style={styles.itemServiceValue}>
+                      {item.service_type
+                        ? SERVICE_OPTIONS.find((o) => o.value === item.service_type)?.label ||
+                          item.service_name ||
+                          item.service_type
+                        : 'Not selected'}
+                    </Text>
+                  </Text>
                   <View style={styles.itemServiceRow}>
                     {(item.available_service_types.length > 0
                       ? item.available_service_types
@@ -304,13 +342,12 @@ export default function BusinessCartScreen({ navigation }: any) {
                     ).map((code) => {
                       const isSelected = item.service_type === code;
                       const label = SERVICE_OPTIONS.find((o) => o.value === code)?.label || code;
-                      const onlyOne = item.available_service_types.length <= 1;
                       return (
                         <TouchableOpacity
                           key={code}
                           style={[styles.itemServiceChip, isSelected && styles.itemServiceChipSelected]}
                           onPress={() => handleItemService(item.item_id, code)}
-                          disabled={isLoading || onlyOne}
+                          disabled={isLoading || isSelected}
                           activeOpacity={0.8}
                           accessibilityRole="radio"
                           accessibilityState={{ selected: isSelected }}
@@ -327,6 +364,12 @@ export default function BusinessCartScreen({ navigation }: any) {
                       );
                     })}
                   </View>
+
+                  {!item.service_type ? (
+                    <Text style={styles.itemServiceMissing}>
+                      Select a laundry service for this item.
+                    </Text>
+                  ) : null}
 
                   <View style={styles.itemActions}>
                     <View style={styles.stepper}>
@@ -363,27 +406,33 @@ export default function BusinessCartScreen({ navigation }: any) {
             </View>
           ) : null}
 
-          {/* Weight, not price — the Business flow never surfaces amounts. */}
-          <View style={styles.weightRow}>
-            <Text style={styles.weightLabel}>Total Weight</Text>
-            <Text style={styles.weightValue}>{formatWeightKg(cart?.total_weight_kg)}</Text>
-          </View>
+          {/* Order summary and Confirm belong to a cart that has items. */}
+          {items.length > 0 ? (
+            <>
+              {/* Weight, not price — the Business flow never surfaces amounts. */}
+              <View style={styles.weightRow}>
+                <Text style={styles.weightLabel}>Total Weight</Text>
+                <Text style={styles.weightValue}>{formatWeightKg(cart?.total_weight_kg)}</Text>
+              </View>
 
-          <TouchableOpacity
-            style={[
-              styles.confirmButton,
-              (isConfirming || !orderType || !serviceType) && styles.confirmButtonDisabled,
-            ]}
-            onPress={handleConfirmOrder}
-            disabled={isConfirming}
-            activeOpacity={0.8}
-          >
-            {isConfirming ? (
-              <ActivityIndicator size="small" color={COLORS.Surface} />
-            ) : (
-              <Text style={styles.confirmButtonText}>Confirm Order</Text>
-            )}
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.confirmButton,
+                  (isConfirming || !orderType || !laundryType || hasItemWithoutService) &&
+                    styles.confirmButtonDisabled,
+                ]}
+                onPress={handleConfirmOrder}
+                disabled={isConfirming}
+                activeOpacity={0.8}
+              >
+                {isConfirming ? (
+                  <ActivityIndicator size="small" color={COLORS.Surface} />
+                ) : (
+                  <Text style={styles.confirmButtonText}>Confirm Order</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          ) : null}
         </>
       )}
     </SafeAreaView>
@@ -407,6 +456,17 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.md,
   },
   browseButtonText: { color: COLORS.Surface, fontFamily: TYPOGRAPHY.fontFamily, fontWeight: '600' },
+  // Empty cart, shown below the two selection cards rather than instead of
+  // them, so the selections stay the first thing on the page.
+  emptyBlock: { alignItems: 'center', paddingVertical: SPACING.xl },
+  itemsHeading: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.lg,
+    fontWeight: 'bold',
+    color: COLORS.TextPrimary,
+    marginTop: SPACING.md,
+    marginBottom: SPACING.sm,
+  },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -441,25 +501,6 @@ const styles = StyleSheet.create({
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.sm,
     color: COLORS.Error,
-  },
-  contextRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: SPACING.xs,
-    paddingHorizontal: SPACING.md,
-    marginBottom: SPACING.sm,
-  },
-  contextTag: {
-    backgroundColor: COLORS.Accent + '35',
-    borderRadius: BORDER_RADIUS.full,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: 4,
-  },
-  contextText: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.PrimaryDark,
   },
   listContent: { padding: SPACING.md },
   itemCard: {
@@ -496,7 +537,20 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
   },
   // Per-line service, in the same surface/border/primary language as the
-  // cart's own service options below the list.
+  // Order Type and Laundry Type options below the list.
+  itemServiceLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xs,
+    color: COLORS.TextSecondary,
+    marginBottom: 4,
+  },
+  itemServiceValue: { fontWeight: '700', color: COLORS.PrimaryDark },
+  itemServiceMissing: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xs,
+    color: COLORS.Error,
+    marginBottom: SPACING.sm,
+  },
   itemServiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.xs, marginBottom: SPACING.sm },
   itemServiceChip: {
     borderWidth: 1,
@@ -529,12 +583,12 @@ const styles = StyleSheet.create({
     color: COLORS.TextPrimary,
   },
 
-  // ---- Service selection (moved here from its own pre-catalogue page) ----
+  // ---- Order Type + Laundry Type, the two compulsory Cart selections ----
   serviceCard: {
     backgroundColor: COLORS.Surface,
     borderRadius: BORDER_RADIUS.lg,
     padding: SPACING.md,
-    marginTop: SPACING.xs,
+    marginBottom: SPACING.md,
     ...SHADOWS.light,
   },
   serviceTitle: {
@@ -543,6 +597,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: COLORS.TextPrimary,
   },
+  required: { color: COLORS.Error },
   serviceHint: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.xs,
@@ -577,7 +632,16 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.TextPrimary,
   },
+  // Used when the label sits above a hint inside its own column, where the
+  // row-level flex would otherwise stretch it.
+  serviceLabelStacked: { flex: 0 },
   serviceLabelSelected: { color: COLORS.PrimaryDark },
+  serviceOptionHint: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xs,
+    color: COLORS.TextSecondary,
+    marginTop: 2,
+  },
   radioOuter: {
     width: 20,
     height: 20,

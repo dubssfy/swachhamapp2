@@ -1,0 +1,565 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  FlatList,
+  TextInput,
+  ActivityIndicator,
+  Image,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
+import BusinessHeader from '../../components/business/BusinessHeader';
+import businessOrderApi, { BusinessItem, LaundryServiceType } from '../../services/businessOrderApi';
+import { extractErrorMessage } from '../../services/api';
+import {
+  useBusinessOrderStore,
+  ITEM_SERVICE_REQUIRED_MESSAGE,
+} from '../../store/businessOrderStore';
+
+const SERVICE_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
+  wash_iron: 'water-outline',
+  dry_clean: 'sparkles-outline',
+};
+
+/**
+ * Item selection for one category.
+ *
+ * The cards stay horizontal — artwork on the left, everything else in the
+ * column beside it: details and this item's service buttons share the top
+ * row, then a typed quantity, then Add to Cart.
+ *
+ * The service is picked per item, never once for the whole order, so Shirt
+ * can go to Wash & Iron while Trousers goes to Dry Clean. An item offering a
+ * single service has it selected automatically; one offering several must be
+ * chosen before it can be added. There is no service filter in the search
+ * area: services belong to the item cards only.
+ */
+export default function BusinessItemsScreen({ navigation, route }: any) {
+  const { categoryId, categoryName, parentName } = route.params || {};
+
+  const [items, setItems] = useState<BusinessItem[]>([]);
+  const [services, setServices] = useState<LaundryServiceType[]>([]);
+  const [search, setSearch] = useState('');
+
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [quantities, setQuantities] = useState<Record<string, string>>({});
+  const [addingItemId, setAddingItemId] = useState<string | null>(null);
+  /** The service chosen for each item, kept per item id so lines never share one. */
+  const [itemServices, setItemServices] = useState<Record<string, string>>({});
+  /** Item ids whose Add was blocked because no service was chosen. */
+  const [serviceErrors, setServiceErrors] = useState<Record<string, boolean>>({});
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { cart, loadCart, addItem } = useBusinessOrderStore();
+
+  const cartCount = useMemo(
+    () => (cart?.items || []).reduce((sum, item) => sum + item.quantity, 0),
+    [cart]
+  );
+
+  // Service names come from the catalogue so the per-item buttons can never
+  // drift from it. They label the item buttons — there is no service filter.
+  useEffect(() => {
+    businessOrderApi
+      .getLaundryServices()
+      .then((response) => setServices(response.data.serviceTypes || []))
+      .catch(() => {});
+    loadCart().catch(() => {});
+  }, [loadCart]);
+
+  const fetchItems = useCallback(
+    async (searchText: string) => {
+      try {
+        setError('');
+        setIsLoading(true);
+        const response = searchText.trim()
+          ? await businessOrderApi.searchItems({ search: searchText.trim(), categoryId })
+          : await businessOrderApi.getItemsByCategory(categoryId);
+        setItems(response.data);
+      } catch (err: any) {
+        setError(extractErrorMessage(err, 'Failed to load items'));
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [categoryId]
+  );
+
+  useEffect(() => {
+    fetchItems('');
+  }, [fetchItems]);
+
+  /**
+   * An item the catalogue offers exactly one service for has nothing to
+   * choose: that service is selected for it as soon as the list loads, so the
+   * user only enters a quantity. Items with several services are deliberately
+   * left unselected — the user must pick one. An existing choice is never
+   * overwritten, so a selection survives a re-fetch.
+   */
+  useEffect(() => {
+    setItemServices((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const item of items) {
+        if (item.service_types.length === 1 && next[item.id] === undefined) {
+          next[item.id] = item.service_types[0];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [items]);
+
+  const handleSearchChange = (text: string) => {
+    setSearch(text);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchItems(text), 350);
+  };
+
+  /** The raw text in the field; '' while the user is clearing it. */
+  const getQuantityText = (itemId: string) =>
+    quantities[itemId] === undefined ? '1' : quantities[itemId];
+
+  const handleQuantityInput = (itemId: string, text: string) => {
+    // Digits only, so the field can never hold a decimal, a sign or letters.
+    setQuantities((prev) => ({ ...prev, [itemId]: text.replace(/[^0-9]/g, '') }));
+  };
+
+  /** One item's service choice, stored against that item id alone. */
+  const handleSelectItemService = (itemId: string, code: string) => {
+    setItemServices((prev) => ({ ...prev, [itemId]: code }));
+    setServiceErrors((prev) => ({ ...prev, [itemId]: false }));
+  };
+
+  const serviceLabel = (code: string) =>
+    services.find((service) => service.code === code)?.name ||
+    (code === 'dry_clean' ? 'Dry Clean' : 'Wash & Iron');
+
+  const handleAddToCart = async (item: BusinessItem) => {
+    if (addingItemId) return;
+
+    // Quantity first: it must be present and a whole number of at least 1.
+    const raw = getQuantityText(item.id).trim();
+    if (!raw) {
+      setError('Please enter a valid quantity.');
+      return;
+    }
+    const quantity = Number.parseInt(raw, 10);
+    if (!Number.isFinite(quantity)) {
+      setError('Please enter a valid quantity.');
+      return;
+    }
+    if (quantity < 1) {
+      setError('Quantity must be at least 1.');
+      return;
+    }
+
+    // Then the service. A single-service item already has it selected, and
+    // falls back to its only service defensively; anything with a choice to
+    // make must have been chosen. Validated BEFORE the item is added.
+    const lineService =
+      itemServices[item.id] ||
+      (item.service_types.length === 1 ? item.service_types[0] : undefined);
+    if (!lineService) {
+      setServiceErrors((prev) => ({ ...prev, [item.id]: true }));
+      setError(ITEM_SERVICE_REQUIRED_MESSAGE);
+      return;
+    }
+
+    try {
+      setAddingItemId(item.id);
+      setError('');
+      // Quantity travels to the cart as entered; the line weight stays
+      // standard weight x quantity, computed from the catalogue as before.
+      await addItem(item.id, quantity, lineService);
+      setQuantities((prev) => ({ ...prev, [item.id]: '1' }));
+    } catch (err: any) {
+      setError(err?.message || 'Failed to add item to cart');
+    } finally {
+      setAddingItemId(null);
+    }
+  };
+
+  const renderItem = ({ item }: { item: BusinessItem }) => {
+    const quantityText = getQuantityText(item.id);
+    const selectedService = itemServices[item.id];
+    const showServiceError = Boolean(serviceErrors[item.id]);
+    const hasNoService = item.service_types.length === 0;
+    const artwork = item.image_url ? { uri: item.image_url } : null;
+
+    return (
+      // Horizontal card: artwork on the left, everything else in the column
+      // beside it — details, then the service buttons, the quantity field and
+      // Add to Cart, each at full size rather than squeezed into a corner.
+      <View style={styles.itemCard}>
+        <View style={styles.itemImage}>
+          {artwork ? (
+            <Image source={artwork} style={styles.itemImageInner} resizeMode="contain" />
+          ) : (
+            <Ionicons name="shirt-outline" size={32} color={COLORS.Primary} />
+          )}
+        </View>
+
+        <View style={styles.itemInfo}>
+          <Text style={styles.itemName}>{item.name}</Text>
+          {item.standard_size ? (
+            <Text style={styles.itemMeta}>Standard size: {item.standard_size}</Text>
+          ) : null}
+          {item.weight_kg ? (
+            <Text style={styles.itemMeta}>
+              Standard weight: {item.weight_kg} {item.weight_unit}
+            </Text>
+          ) : null}
+          <Text style={styles.itemMeta}>Unit: {item.unit}</Text>
+
+          {/* This item's own laundry services, from the catalogue. A single
+              service arrives already selected; several stay unselected until
+              the user picks one. Selection is per item.
+
+              They get a full row rather than a narrow right-hand column, so
+              the buttons can be full size without cramping the details. */}
+          <Text style={styles.sectionLabel}>Laundry Service</Text>
+          <View style={styles.serviceRow}>
+            {hasNoService ? (
+              <Text style={styles.serviceErrorText}>No service available for this item</Text>
+            ) : null}
+            {item.service_types.map((code) => {
+              const isSelected = selectedService === code;
+              return (
+                <TouchableOpacity
+                  key={code}
+                  style={[styles.serviceTag, isSelected && styles.serviceTagSelected]}
+                  onPress={() => handleSelectItemService(item.id, code)}
+                  activeOpacity={0.8}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: isSelected }}
+                >
+                  <Ionicons
+                    name={isSelected ? 'checkmark-circle' : SERVICE_ICONS[code] || 'ellipse-outline'}
+                    size={20}
+                    color={isSelected ? COLORS.Surface : COLORS.PrimaryDark}
+                  />
+                  <Text
+                    style={[styles.serviceTagText, isSelected && styles.serviceTagTextSelected]}
+                  >
+                    {serviceLabel(code)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {showServiceError ? (
+            <Text style={styles.serviceErrorText}>{ITEM_SERVICE_REQUIRED_MESSAGE}</Text>
+          ) : null}
+
+          {/* A typed numeric field, sized to be read and tapped easily. */}
+          <View style={styles.quantityBlock}>
+            <Text style={styles.quantityLabel}>Quantity</Text>
+            <TextInput
+              style={styles.quantityInput}
+              value={quantityText}
+              onChangeText={(text) => handleQuantityInput(item.id, text)}
+              keyboardType="number-pad"
+              inputMode="numeric"
+              maxLength={5}
+              selectTextOnFocus
+              accessibilityLabel={`Quantity for ${item.name}`}
+            />
+          </View>
+
+          <View style={styles.itemActions}>
+            <TouchableOpacity
+              style={[styles.addButton, hasNoService && styles.addButtonDisabled]}
+              onPress={() => handleAddToCart(item)}
+              disabled={addingItemId === item.id || hasNoService}
+              activeOpacity={0.85}
+            >
+              {addingItemId === item.id ? (
+                <ActivityIndicator size="small" color={COLORS.Surface} />
+              ) : (
+                <Text style={styles.addButtonText}>ADD TO CART</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const header = (
+    <View>
+      <View style={styles.searchContainer}>
+        <Ionicons name="search-outline" size={20} color={COLORS.TextSecondary} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder={`Search in ${categoryName || 'items'}...`}
+          placeholderTextColor={COLORS.TextSecondary}
+          value={search}
+          onChangeText={handleSearchChange}
+        />
+        {search ? (
+          <TouchableOpacity
+            onPress={() => {
+              setSearch('');
+              fetchItems('');
+            }}
+          >
+            <Ionicons name="close-circle" size={18} color={COLORS.TextSecondary} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
+
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+      <Text style={styles.countLine}>
+        {isLoading ? 'Loading…' : `${items.length} item${items.length === 1 ? '' : 's'}`}
+      </Text>
+    </View>
+  );
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <BusinessHeader
+        title={categoryName || 'Items'}
+        subtitle={parentName || undefined}
+        onBack={() => navigation.goBack()}
+        action={
+          <TouchableOpacity
+            style={styles.cartButton}
+            onPress={() => navigation.navigate('BusinessCart')}
+          >
+            <Ionicons name="cart-outline" size={24} color={COLORS.TextPrimary} />
+            {cartCount > 0 ? (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{cartCount}</Text>
+              </View>
+            ) : null}
+          </TouchableOpacity>
+        }
+      />
+
+      <FlatList
+        data={items}
+        keyExtractor={(item) => item.id}
+        renderItem={renderItem}
+        ListHeaderComponent={header}
+        contentContainerStyle={styles.listContent}
+        keyboardShouldPersistTaps="handled"
+        ListEmptyComponent={
+          isLoading ? (
+            <ActivityIndicator color={COLORS.Primary} style={{ marginTop: SPACING.lg }} />
+          ) : (
+            <Text style={styles.emptyText}>No items found</Text>
+          )
+        }
+      />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: COLORS.Background },
+  listContent: { padding: SPACING.md, paddingBottom: SPACING.xxl },
+
+  cartButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: COLORS.Surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...SHADOWS.light,
+  },
+  badge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    backgroundColor: COLORS.Error,
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  badgeText: { color: COLORS.Surface, fontSize: 11, fontWeight: 'bold' },
+
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.md,
+    paddingHorizontal: SPACING.md,
+    height: 48,
+    borderWidth: 1,
+    borderColor: COLORS.Border,
+    marginBottom: SPACING.md,
+    ...SHADOWS.light,
+  },
+  searchInput: {
+    flex: 1,
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    color: COLORS.TextPrimary,
+  },
+
+  countLine: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xs,
+    color: COLORS.TextSecondary,
+    marginBottom: SPACING.sm,
+  },
+
+  itemCard: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.md,
+    marginBottom: SPACING.sm,
+    borderWidth: 1,
+    borderColor: COLORS.Border,
+    ...SHADOWS.light,
+  },
+  // The artwork keeps its size as the controls grow — the card gets taller,
+  // nothing else gets squeezed.
+  itemImage: {
+    width: 68,
+    height: 68,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: COLORS.Accent + '30',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: SPACING.md,
+    overflow: 'hidden',
+  },
+  itemImageInner: { width: '100%', height: '100%' },
+  itemInfo: { flex: 1, minWidth: 0 },
+  itemName: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.lg,
+    fontWeight: '700',
+    color: COLORS.TextPrimary,
+  },
+  itemMeta: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+    marginTop: 3,
+  },
+
+  // ---- Laundry service buttons ----
+  // Full-size buttons rather than pills. `flexBasis` with `flexGrow` is what
+  // makes them share a row on a wide screen and take a full row each on a
+  // narrow one, so the label always has room and the target stays large.
+  sectionLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '700',
+    color: COLORS.TextPrimary,
+    marginTop: SPACING.md,
+    marginBottom: SPACING.xs,
+  },
+  serviceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
+  serviceTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.xs,
+    flexGrow: 1,
+    flexBasis: 150,
+    minHeight: 52,
+    paddingHorizontal: SPACING.md,
+    backgroundColor: COLORS.Surface,
+    borderWidth: 2,
+    borderColor: COLORS.Border,
+    borderRadius: BORDER_RADIUS.md,
+  },
+  // Selected reads at a glance: filled in the theme green, dark border,
+  // white bold label and a checkmark, against a plain outlined button.
+  serviceTagSelected: {
+    backgroundColor: COLORS.Primary,
+    borderColor: COLORS.PrimaryDark,
+    ...SHADOWS.medium,
+  },
+  serviceTagText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '600',
+    color: COLORS.TextPrimary,
+  },
+  serviceTagTextSelected: { color: COLORS.Surface, fontWeight: '800' },
+  serviceErrorText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.Error,
+    marginTop: SPACING.xs,
+  },
+
+  // ---- Quantity ----
+  // A labelled numeric field, sized to be read and tapped at arm's length.
+  quantityBlock: { marginTop: SPACING.md },
+  quantityLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '700',
+    color: COLORS.TextPrimary,
+    marginBottom: SPACING.xs,
+  },
+  quantityInput: {
+    width: 130,
+    height: 58,
+    borderWidth: 2,
+    borderColor: COLORS.Primary,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: COLORS.Surface,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 0,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xxl,
+    fontWeight: '700',
+    color: COLORS.TextPrimary,
+  },
+
+  // ---- Add to Cart ----
+  // The card's most prominent control: full width of the content column.
+  itemActions: { marginTop: SPACING.md },
+  addButton: {
+    backgroundColor: COLORS.Primary,
+    borderRadius: BORDER_RADIUS.md,
+    height: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...SHADOWS.medium,
+  },
+  addButtonDisabled: { opacity: 0.5 },
+  addButtonText: {
+    color: COLORS.Surface,
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.lg,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+
+  errorText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.Error,
+    textAlign: 'center',
+    marginBottom: SPACING.sm,
+  },
+  emptyText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    color: COLORS.TextSecondary,
+    textAlign: 'center',
+    marginTop: SPACING.lg,
+  },
+});

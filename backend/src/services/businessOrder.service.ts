@@ -3,6 +3,7 @@ import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
 import { config } from '../config/env';
 import { getCart, BusinessCart } from './businessCart.service';
+import { generateGarmentsForOrder } from './garment.service';
 
 const LAUNDRY_TYPE_CODE: Record<string, string> = { hotel: 'H', guest: 'G' };
 
@@ -103,15 +104,9 @@ async function createOrder(businessUserId: string): Promise<BusinessOrderResult>
   if (!cart.order_type) {
     throw new AppError('Order type has not been selected', 400);
   }
-  // Service is chosen in the Cart, and the order cannot be booked without
-  // it. Enforced here so a direct API call is rejected too, not only the UI.
-  if (!cart.service_type) {
-    throw new AppError('Please select a service before placing your order.', 400);
-  }
-  if (!VALID_SERVICE_TYPES.includes(cart.service_type)) {
-    throw new AppError('Please select a service before placing your order.', 400);
-  }
 
+  // The service belongs to each line, not to the order, so the cart-level
+  // service is no longer required — every line having one is.
   const itemsResult = await query<{
     service_id: string;
     name: string;
@@ -121,11 +116,15 @@ async function createOrder(businessUserId: string): Promise<BusinessOrderResult>
     weight_kg: number | null;
     is_active: boolean;
     quantity: number;
+    laundry_service_id: string | null;
+    laundry_service_code: string | null;
   }>(
     `SELECT s.id AS service_id, s.name, s.category_id, s.unit, s.base_price,
-            s.weight_kg, s.is_active, ci.quantity
+            s.weight_kg, s.is_active, ci.quantity,
+            ci.laundry_service_id, st.code AS laundry_service_code
      FROM cart_items ci
      JOIN services s ON s.id = ci.service_id
+     LEFT JOIN services st ON st.id = ci.laundry_service_id AND st.kind = 'SERVICE_TYPE'
      WHERE ci.cart_id = ? AND s.kind = 'ITEM'`,
     [cart.id]
   );
@@ -137,6 +136,26 @@ async function createOrder(businessUserId: string): Promise<BusinessOrderResult>
   if (inactiveItem) {
     throw new AppError(`Item "${inactiveItem.name}" is no longer available. Please remove it from the cart.`, 400);
   }
+
+  // Enforced here so a direct API call is rejected too, not only the UI.
+  const itemWithoutService = cartItems.find(
+    (item) => !item.laundry_service_code || !VALID_SERVICE_TYPES.includes(item.laundry_service_code)
+  );
+  if (itemWithoutService) {
+    throw new AppError(
+      `Please select at least one laundry service for "${itemWithoutService.name}".`,
+      400
+    );
+  }
+
+  // The order records a service only when every line shares the same one;
+  // with a mix of services it stays null and each line speaks for itself.
+  const distinctServices = Array.from(
+    new Set(cartItems.map((item) => item.laundry_service_code as string))
+  );
+  const orderServiceType = distinctServices.length === 1 ? distinctServices[0] : null;
+  const orderServiceId =
+    orderServiceType !== null ? cartItems[0].laundry_service_id : null;
 
   const subtotal = cartItems.reduce((sum, item) => sum + Number(item.base_price) * item.quantity, 0);
 
@@ -157,7 +176,7 @@ async function createOrder(businessUserId: string): Promise<BusinessOrderResult>
     const [orderInsert]: any = await connection.execute(
       `INSERT INTO orders (order_number, business_user_id, laundry_type, order_type, service_type, service_id, status, subtotal, total_weight_kg, total)
        VALUES (?, ?, ?, ?, ?, ?, 'ORDER_PLACED', ?, ?, ?)`,
-      [orderNumber, businessUserId, cart.laundry_type, cart.order_type, cart.service_type, cart.service_id, subtotal, totalWeightKg, subtotal]
+      [orderNumber, businessUserId, cart.laundry_type, cart.order_type, orderServiceType, orderServiceId, subtotal, totalWeightKg, subtotal]
     );
     const orderId = orderInsert.insertId;
 
@@ -171,6 +190,11 @@ async function createOrder(businessUserId: string): Promise<BusinessOrderResult>
         [orderId, item.service_id, item.category_id, item.name, item.unit, item.weight_kg, lineWeight(item), item.quantity, item.base_price, totalPrice]
       );
     }
+
+    // One barcode per physical piece, inside the same transaction as the
+    // order: an order can never exist without its garment labels, and a
+    // failure here rolls the whole order back rather than half-creating it.
+    await generateGarmentsForOrder(String(orderId), connection);
 
     // Seed the tracking history so progression is real data, not a stub.
     await connection.execute(
@@ -194,7 +218,7 @@ async function createOrder(businessUserId: string): Promise<BusinessOrderResult>
       order_number: orderNumber,
       laundry_type: cart.laundry_type,
       order_type: cart.order_type,
-      service_type: cart.service_type,
+      service_type: orderServiceType || '',
       status: 'ORDER_PLACED',
       subtotal,
       total: subtotal,
@@ -267,7 +291,10 @@ export interface BusinessOrderDetail extends BusinessOrderSummary {
   items: Array<{
     id: string;
     service_id: string | null;
+    /** The item's own name — legacy column name, not the laundry service. */
     service_name: string;
+    /** The laundry service for this line; null when it cannot be resolved. */
+    laundry_service_name: string | null;
     category_id: string | null;
     category_name: string | null;
     image_url: string | null;
@@ -311,13 +338,24 @@ async function getOrderById(
     throw new AppError('Order not found', 404);
   }
 
-  const itemsResult = await query<BusinessOrderDetail['items'][number]>(
+  const itemsResult = await query<
+    BusinessOrderDetail['items'][number] & { sole_service_name: string | null }
+  >(
     `SELECT oi.id, oi.service_id, oi.service_name, oi.category_id,
             c.name AS category_name, s.image_url,
             oi.quantity, oi.unit,
             COALESCE(oi.weight_kg, s.weight_kg) AS weight_kg,
             COALESCE(oi.total_weight_kg, ROUND(s.weight_kg * oi.quantity, 3), 0) AS total_weight_kg,
-            oi.unit_price, oi.total_price
+            oi.unit_price, oi.total_price,
+            -- The item's service, when the catalogue leaves no doubt: an item
+            -- mapped to exactly one service can only have been ordered for
+            -- that service. HAVING COUNT(*) = 1 is what makes it definite.
+            (SELECT MIN(st.name)
+               FROM item_service_types m
+               JOIN services st ON st.id = m.service_id
+              WHERE m.item_id = oi.service_id
+                AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
+             HAVING COUNT(*) = 1) AS sole_service_name
      FROM order_items oi
      LEFT JOIN service_categories c ON c.id = oi.category_id
      LEFT JOIN services s ON s.id = oi.service_id
@@ -326,7 +364,14 @@ async function getOrderById(
     [orderId]
   );
 
-  const items = itemsResult.rows;
+  // Per-line service: the order's own service when it has one (it is only set
+  // when every line shared it), otherwise the item's single supported service.
+  // Anything still unresolved stays null rather than being guessed at.
+  const items = itemsResult.rows.map(({ sole_service_name, ...item }) => ({
+    ...item,
+    laundry_service_name: order.service_name || sole_service_name || null,
+  }));
+
   return {
     ...order,
     items,
@@ -493,6 +538,33 @@ async function repeatOrder(
     }
   }
 
+  // Each repeated line needs its own service, since the Cart requires one per
+  // item. The order's service is reused where the item supports it; failing
+  // that an item with a single service takes it, and anything else is left
+  // for the user to choose in the Cart.
+  const repeatIds = usableItems.map((item) => String(item.service_id));
+  const supportedResult = await query<{ item_id: string; service_id: string }>(
+    `SELECT m.item_id, m.service_id
+     FROM item_service_types m
+     JOIN services st ON st.id = m.service_id
+     WHERE m.item_id IN (${repeatIds.map(() => '?').join(', ')})
+       AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
+     ORDER BY st.display_order ASC, st.name ASC`,
+    repeatIds
+  );
+  const supportedByItem = new Map<string, string[]>();
+  for (const row of supportedResult.rows) {
+    const list = supportedByItem.get(String(row.item_id)) || [];
+    list.push(String(row.service_id));
+    supportedByItem.set(String(row.item_id), list);
+  }
+  const lineServiceFor = (itemId: string): string | null => {
+    const supported = supportedByItem.get(String(itemId)) || [];
+    if (supported.length === 0) return null;
+    if (serviceId && supported.includes(String(serviceId))) return String(serviceId);
+    return supported.length === 1 ? supported[0] : null;
+  };
+
   const connection = await getClient();
   try {
     await connection.beginTransaction();
@@ -520,10 +592,13 @@ async function repeatOrder(
 
     for (const item of usableItems) {
       await connection.execute(
-        `INSERT INTO cart_items (cart_id, service_id, quantity, price_at_add)
-         VALUES (?, ?, ?, (SELECT base_price FROM services WHERE id = ?))
-         ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity), updated_at = NOW()`,
-        [cartId, item.service_id, item.quantity, item.service_id]
+        `INSERT INTO cart_items (cart_id, service_id, laundry_service_id, quantity, price_at_add)
+         VALUES (?, ?, ?, ?, (SELECT base_price FROM services WHERE id = ?))
+         ON DUPLICATE KEY UPDATE
+           quantity = quantity + VALUES(quantity),
+           laundry_service_id = COALESCE(VALUES(laundry_service_id), laundry_service_id),
+           updated_at = NOW()`,
+        [cartId, item.service_id, lineServiceFor(item.service_id!), item.quantity, item.service_id]
       );
     }
 

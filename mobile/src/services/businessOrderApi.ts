@@ -5,15 +5,25 @@ export interface BusinessCategory {
   id: string;
   name: string;
   slug: string;
+  /** null = Main Category; set = Sub Category of that parent. */
+  parent_id: string | null;
   image_url?: string | null;
   icon_name?: string | null;
   display_order: number;
+  /** False means items come next rather than another category level. */
+  has_subcategories: boolean;
+  item_count: number;
+  /** Sample item names shown as preview text on the card. */
+  preview_items: string[];
 }
 
 export interface BusinessItem {
   id: string;
   category_id: string;
   category_name: string;
+  parent_category_id: string | null;
+  parent_category_name: string | null;
+  standard_size: string | null;
   name: string;
   unit: string;
   /** Standard weight per piece, numeric, in `weight_unit`. */
@@ -49,6 +59,10 @@ export interface BusinessCart {
   id: string;
   laundry_type: 'hotel' | 'guest' | null;
   order_type: 'standard' | 'quick' | null;
+  /**
+   * Legacy cart-wide service still returned by the API. The app no longer
+   * sets or reads it: the service lives on each cart item instead.
+   */
   service_type: 'wash_iron' | 'dry_clean' | null;
   items: BusinessCartItem[];
   /** SUM(item weight x quantity) across the cart, in kg. */
@@ -108,7 +122,13 @@ export interface LaundryServices {
 export interface BusinessOrderItem {
   id: string;
   service_id: string | null;
+  /** The item's own name — legacy column name, not the laundry service. */
   service_name: string;
+  /**
+   * The laundry service for THIS line (e.g. "Wash & Iron"), null when the
+   * order predates per-item services and cannot be resolved.
+   */
+  laundry_service_name: string | null;
   category_id: string | null;
   category_name: string | null;
   image_url: string | null;
@@ -211,8 +231,21 @@ export const businessOrderApi = {
     return response.data;
   },
 
-  getCategories: async (): Promise<ApiResponse<BusinessCategory[]>> => {
-    const response = await apiClient.get<ApiResponse<BusinessCategory[]>>('/api/businesses/categories');
+  getCategories: async (serviceType?: string): Promise<ApiResponse<BusinessCategory[]>> => {
+    const response = await apiClient.get<ApiResponse<BusinessCategory[]>>('/api/businesses/categories', {
+      params: serviceType ? { serviceType } : undefined,
+    });
+    return response.data;
+  },
+
+  getSubCategories: async (
+    categoryId: string,
+    serviceType?: string
+  ): Promise<ApiResponse<BusinessCategory[]>> => {
+    const response = await apiClient.get<ApiResponse<BusinessCategory[]>>(
+      `/api/businesses/categories/${categoryId}/subcategories`,
+      { params: serviceType ? { serviceType } : undefined }
+    );
     return response.data;
   },
 
@@ -242,7 +275,7 @@ export const businessOrderApi = {
     return response.data;
   },
 
-  /** Order Type + Laundry Type, chosen together on one page. */
+  /** Order Type + Laundry Type, both chosen in the Cart. */
   setCartContext: async (context: {
     laundryType?: string;
     orderType?: string;
@@ -254,29 +287,19 @@ export const businessOrderApi = {
     return response.data;
   },
 
-  /** Service is chosen in the Cart, before the order can be confirmed. */
-  setCartService: async (serviceType: string): Promise<ApiResponse<BusinessCart>> => {
-    const response = await apiClient.put<ApiResponse<BusinessCart>>('/api/businesses/cart/service', {
-      serviceType,
-    });
-    return response.data;
-  },
-
-  /** `itemServiceType` is the service for this line, not for the cart. */
+  /**
+   * `itemServiceType` is the service for this line. It is required: there is
+   * no order-wide service, so every line carries its own.
+   */
   addCartItem: async (
     itemId: string,
     quantity: number,
-    context?: {
-      laundryType?: string;
-      orderType?: string;
-      serviceType?: string;
-      itemServiceType?: string;
-    }
+    itemServiceType: string
   ): Promise<ApiResponse<BusinessCart>> => {
     const response = await apiClient.post<ApiResponse<BusinessCart>>('/api/businesses/cart/items', {
       itemId,
       quantity,
-      ...context,
+      itemServiceType,
     });
     return response.data;
   },

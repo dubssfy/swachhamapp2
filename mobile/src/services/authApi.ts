@@ -140,6 +140,26 @@ export const authApi = {
     return response.data;
   },
 
+  /**
+   * Sorter sign-in. Staff use a username, not an email, so this does not reuse
+   * LoginPayload; everything else about the response is identical.
+   */
+  sorterLogin: async (payload: { username: string; password: string }): Promise<AuthResponse> => {
+    const response = await apiClient.post(
+      API_ENDPOINTS.AUTH_SORTER_LOGIN,
+      payload
+    );
+    const authData = response.data?.data ?? response.data;
+    if (!authData?.accessToken || !authData?.user) {
+      throw new Error('Authentication token or user info missing.');
+    }
+    return {
+      user: authData.user,
+      accessToken: authData.accessToken,
+      refreshToken: authData.refreshToken,
+    };
+  },
+
   businessLogin: async (payload: LoginPayload): Promise<AuthResponse> => {
     const response = await apiClient.post(
       API_ENDPOINTS.AUTH_BUSINESS_LOGIN,

@@ -102,7 +102,7 @@ export default function BusinessProfileScreen({ navigation }: any) {
           {/* Swachham logo, top-left, matching the shared Business header. */}
           <View style={styles.headerTopRow}>
             <Image
-              source={require('../../../assets/logo.png')}
+              source={require('../../../assets/swachham-logo.png')}
               style={styles.headerLogo}
               resizeMode="contain"
               accessibilityLabel="Swachham"

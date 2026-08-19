@@ -8,6 +8,9 @@ export type OrderType = 'standard' | 'quick';
 /**
  * Exactly two Business services. Wash + Iron is ONE combined service — there
  * is no standalone Wash and no standalone Iron.
+ *
+ * A service is never chosen for the order as a whole: it belongs to each cart
+ * line, so a Shirt on Wash & Iron can sit next to Trousers on Dry Clean.
  */
 export type ServiceType = 'wash_iron' | 'dry_clean';
 
@@ -16,36 +19,46 @@ export const SERVICE_OPTIONS: Array<{ value: ServiceType; label: string }> = [
   { value: 'dry_clean', label: 'Dry Clean' },
 ];
 
-export const SERVICE_REQUIRED_MESSAGE = 'Please select a service before placing your order.';
+/** Shown on the Items page when an item is added with no service picked. */
+export const ITEM_SERVICE_REQUIRED_MESSAGE =
+  'Please select at least one laundry service for this item.';
 
-/** The two Business order types, also offered in the Cart. */
+/** Shown in the Cart when a line is still missing its service. */
+export const CART_ITEM_SERVICE_REQUIRED_MESSAGE =
+  'Every item must have at least one laundry service selected.';
+
+/** The two Business order types, chosen in the Cart. */
 export const ORDER_TYPE_OPTIONS: Array<{ value: OrderType; label: string }> = [
   { value: 'standard', label: 'Standard Order' },
   { value: 'quick', label: 'Quick Order' },
 ];
 
-export const ORDER_TYPE_REQUIRED_MESSAGE = 'Please select an order type before placing your order.';
+export const ORDER_TYPE_REQUIRED_MESSAGE = 'Please select an order type.';
+
+/** Hotel / Guest, also chosen in the Cart — never before the catalogue. */
+export const LAUNDRY_TYPE_OPTIONS: Array<{ value: LaundryType; label: string; hint: string }> = [
+  { value: 'hotel', label: 'Hotel Laundry', hint: 'Linen and property-owned items' },
+  { value: 'guest', label: 'Guest Laundry', hint: 'Items belonging to your guests' },
+];
+
+export const LAUNDRY_TYPE_REQUIRED_MESSAGE = 'Please select Hotel Laundry or Guest Laundry.';
+
+export const CART_EMPTY_MESSAGE = 'Add at least one item to your cart before placing your order.';
 
 interface BusinessOrderState {
   laundryType: LaundryType | null;
   orderType: OrderType | null;
-  serviceType: ServiceType | null;
   cart: BusinessCart | null;
   isLoading: boolean;
 
-  setLaundryType: (value: LaundryType) => void;
-  setOrderType: (value: OrderType) => void;
-
-  /** Persists the Order Type + Laundry Type page selections onto the cart. */
-  saveSelections: () => Promise<void>;
-  /** Persists the order type chosen in the Cart, leaving laundry type as is. */
+  /** Persists the order type chosen in the Cart. */
   saveOrderType: (value: OrderType) => Promise<void>;
-  /** Persists the service chosen in the Cart. */
-  setServiceType: (value: ServiceType) => Promise<void>;
+  /** Persists the laundry type chosen in the Cart. */
+  saveLaundryType: (value: LaundryType) => Promise<void>;
 
   loadCart: () => Promise<void>;
-  /** `itemServiceType` fixes the service for this line only. */
-  addItem: (itemId: string, quantity: number, itemServiceType?: string) => Promise<void>;
+  /** `itemServiceType` is mandatory: it fixes the service for this line only. */
+  addItem: (itemId: string, quantity: number, itemServiceType: string) => Promise<void>;
   updateItem: (itemId: string, quantity: number) => Promise<void>;
   /** Switches one cart line to another service the item supports. */
   setItemService: (itemId: string, itemServiceType: string) => Promise<void>;
@@ -62,41 +75,20 @@ function fromCart(cart: BusinessCart) {
     cart,
     laundryType: (cart.laundry_type as LaundryType | null) ?? null,
     orderType: (cart.order_type as OrderType | null) ?? null,
-    serviceType: (cart.service_type as ServiceType | null) ?? null,
   };
 }
 
 export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
   laundryType: null,
   orderType: null,
-  serviceType: null,
   cart: null,
   isLoading: false,
-
-  setLaundryType: (value) => set({ laundryType: value }),
-  setOrderType: (value) => set({ orderType: value }),
-
-  saveSelections: async () => {
-    const { laundryType, orderType } = get();
-    try {
-      set({ isLoading: true });
-      const response = await businessOrderApi.setCartContext({
-        laundryType: laundryType || undefined,
-        orderType: orderType || undefined,
-      });
-      set(fromCart(response.data));
-    } catch (error: any) {
-      throw new Error(extractErrorMessage(error, 'Failed to save your selection'));
-    } finally {
-      set({ isLoading: false });
-    }
-  },
 
   saveOrderType: async (value: OrderType) => {
     try {
       set({ isLoading: true });
-      // Same cart-context call the Order Type page uses — only order type is
-      // sent, so the laundry type already on the cart is left untouched.
+      // Only the order type is sent, so the laundry type already on the cart
+      // is left untouched.
       const response = await businessOrderApi.setCartContext({ orderType: value });
       set(fromCart(response.data));
     } catch (error: any) {
@@ -106,13 +98,13 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
     }
   },
 
-  setServiceType: async (value: ServiceType) => {
+  saveLaundryType: async (value: LaundryType) => {
     try {
       set({ isLoading: true });
-      const response = await businessOrderApi.setCartService(value);
+      const response = await businessOrderApi.setCartContext({ laundryType: value });
       set(fromCart(response.data));
     } catch (error: any) {
-      throw new Error(extractErrorMessage(error, 'Failed to select service'));
+      throw new Error(extractErrorMessage(error, 'Failed to select laundry type'));
     } finally {
       set({ isLoading: false });
     }
@@ -130,18 +122,14 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
     }
   },
 
-  addItem: async (itemId: string, quantity: number, itemServiceType?: string) => {
+  addItem: async (itemId: string, quantity: number, itemServiceType: string) => {
     if (get().isLoading) return;
-    const { laundryType, orderType } = get();
+    // Guarded here as well as on the Items page, so no path can create a
+    // cart line without a service.
+    if (!itemServiceType) throw new Error(ITEM_SERVICE_REQUIRED_MESSAGE);
     try {
       set({ isLoading: true });
-      // The cart-level service is still chosen in the Cart; what travels here
-      // is the service for this line, taken from the catalogue filter.
-      const response = await businessOrderApi.addCartItem(itemId, quantity, {
-        laundryType: laundryType || undefined,
-        orderType: orderType || undefined,
-        itemServiceType: itemServiceType || undefined,
-      });
+      const response = await businessOrderApi.addCartItem(itemId, quantity, itemServiceType);
       set(fromCart(response.data));
     } catch (error: any) {
       throw new Error(extractErrorMessage(error, 'Failed to add item to cart'));
@@ -206,11 +194,22 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
 
   confirmOrder: async () => {
     if (get().isLoading) throw new Error('Please wait...');
-    if (!get().serviceType) throw new Error(SERVICE_REQUIRED_MESSAGE);
+
+    // The four Cart validations, in the order the user meets them. The
+    // backend enforces the same rules, so a direct API call is rejected too.
+    const { cart, orderType, laundryType } = get();
+    const items = cart?.items || [];
+    if (items.length === 0) throw new Error(CART_EMPTY_MESSAGE);
+    if (items.some((item) => !item.service_type)) {
+      throw new Error(CART_ITEM_SERVICE_REQUIRED_MESSAGE);
+    }
+    if (!orderType) throw new Error(ORDER_TYPE_REQUIRED_MESSAGE);
+    if (!laundryType) throw new Error(LAUNDRY_TYPE_REQUIRED_MESSAGE);
+
     try {
       set({ isLoading: true });
       const response = await businessOrderApi.confirmOrder();
-      set({ cart: null, laundryType: null, orderType: null, serviceType: null });
+      set({ cart: null, laundryType: null, orderType: null });
       return response.data;
     } catch (error: any) {
       throw new Error(extractErrorMessage(error, 'Failed to place order'));
@@ -219,5 +218,5 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
     }
   },
 
-  resetFlow: () => set({ laundryType: null, orderType: null, serviceType: null, cart: null }),
+  resetFlow: () => set({ laundryType: null, orderType: null, cart: null }),
 }));

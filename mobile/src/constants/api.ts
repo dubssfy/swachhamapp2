@@ -45,6 +45,7 @@ export const API_ENDPOINTS = {
   AUTH_CUSTOMER_RESET_PASSWORD: '/api/auth/customer/reset-password',
   AUTH_BUSINESS_LOGIN: '/api/auth/business/login',
   AUTH_ME: '/api/auth/me',
+  AUTH_SORTER_LOGIN: '/api/auth/sorter/login',
   AUTH_LOGOUT: '/api/auth/logout',
   AUTH_CHANGE_PASSWORD: '/api/auth/change-password',
   AUTH_BUSINESS_REGISTER: '/api/auth/business/register',

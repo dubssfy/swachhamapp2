@@ -111,37 +111,13 @@ async function getCart(businessUserId: string): Promise<BusinessCart> {
   return { ...cart, items, total_weight_kg: Number(totalWeight.toFixed(3)) };
 }
 
-function validateContext(laundryType?: string, orderType?: string, serviceType?: string) {
+function validateContext(laundryType?: string, orderType?: string) {
   if (laundryType !== undefined && !LAUNDRY_TYPES.includes(laundryType)) {
     throw new AppError('Invalid laundry type', 400);
   }
   if (orderType !== undefined && !ORDER_TYPES.includes(orderType)) {
     throw new AppError('Invalid order type', 400);
   }
-  if (serviceType !== undefined && !SERVICE_TYPES.includes(serviceType)) {
-    throw new AppError('Invalid service type', 400);
-  }
-}
-
-/**
- * Maps a service_type code to the real Laundry service row, so the cart
- * records the service the user actually picked instead of trusting a
- * client-supplied id.
- */
-async function resolveServiceId(serviceType: string): Promise<string> {
-  const result = await query<{ id: string }>(
-    `SELECT s.id
-     FROM services s
-     JOIN service_categories c ON c.id = s.category_id
-     WHERE s.code = ? AND s.kind = 'SERVICE_TYPE' AND s.is_active = true
-       AND c.kind = 'SERVICE_CATEGORY'`,
-    [serviceType]
-  );
-  const row = result.rows[0];
-  if (!row) {
-    throw new AppError('Selected laundry service is unavailable', 400);
-  }
-  return row.id;
 }
 
 /** The services an item can be given, in catalogue order. */
@@ -158,62 +134,43 @@ async function getSupportedServices(itemId: string): Promise<Array<{ id: string;
 }
 
 /**
- * Decides which service a cart line carries.
+ * Resolves the service a cart line carries from the code the user chose for
+ * that item.
  *
- * An explicit choice wins but must be one the item actually supports — a
- * Dry Clean only carpet can never end up on a Wash & Iron line. With no
- * choice, an item that supports a single service takes it, otherwise the
- * service already selected on the cart is used, and failing that the first
- * service the catalogue lists for the item. `null` only ever comes back for
- * an item with no service mapping at all.
+ * The choice must be one the item actually supports — a Dry Clean only carpet
+ * can never end up on a Wash & Iron line. There is no fallback: a service is
+ * always chosen explicitly, per item.
  */
-async function resolveItemServiceId(
-  itemId: string,
-  requestedCode: string | undefined,
-  cartServiceCode: string | null
-): Promise<string | null> {
+async function resolveItemServiceId(itemId: string, requestedCode: string): Promise<string> {
   const supported = await getSupportedServices(itemId);
-  if (supported.length === 0) return null;
-
-  if (requestedCode) {
-    const match = supported.find((service) => service.code === requestedCode);
-    if (!match) {
-      throw new AppError('This item is not available for the selected service', 400);
-    }
-    return match.id;
+  const match = supported.find((service) => service.code === requestedCode);
+  if (!match) {
+    throw new AppError('This item is not available for the selected service', 400);
   }
-
-  if (supported.length === 1) return supported[0].id;
-
-  const fromCart = cartServiceCode
-    ? supported.find((service) => service.code === cartServiceCode)
-    : undefined;
-  return (fromCart || supported[0]).id;
+  return match.id;
 }
 
-/** The cart-level service code, used only as a fallback for new lines. */
-async function getCartServiceCode(cartId: string): Promise<string | null> {
-  const result = await query<{ service_type: string | null }>(
-    `SELECT service_type FROM carts WHERE id = ?`,
-    [cartId]
-  );
-  return result.rows[0]?.service_type || null;
-}
-
+/**
+ * Adds one line to the cart.
+ *
+ * The service is per line and compulsory: the same rule the Items page
+ * enforces, repeated here so a direct API call cannot create a line without
+ * one. Order Type and Laundry Type are not accepted here at all — both are
+ * chosen in the Cart, through setCartContext.
+ */
 async function addItem(
   businessUserId: string,
   itemId: string,
   quantity: number,
-  laundryType?: string,
-  orderType?: string,
-  serviceType?: string,
-  itemServiceType?: string
+  itemServiceType: string
 ): Promise<BusinessCart> {
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new AppError('Quantity must be a positive whole number', 400);
   }
-  validateContext(laundryType, orderType, serviceType);
-  if (itemServiceType !== undefined && !SERVICE_TYPES.includes(itemServiceType)) {
+  if (!itemServiceType) {
+    throw new AppError('Please select at least one laundry service for this item.', 400);
+  }
+  if (!SERVICE_TYPES.includes(itemServiceType)) {
     throw new AppError('Invalid service type', 400);
   }
 
@@ -228,25 +185,9 @@ async function addItem(
 
   const cartId = await getOrCreateCartId(businessUserId);
 
-  const contextFields: string[] = [];
-  const contextValues: unknown[] = [];
-  if (laundryType !== undefined) { contextFields.push('laundry_type = ?'); contextValues.push(laundryType); }
-  if (orderType !== undefined) { contextFields.push('order_type = ?'); contextValues.push(orderType); }
-  if (serviceType !== undefined) {
-    contextFields.push('service_type = ?', 'service_id = ?');
-    contextValues.push(serviceType, await resolveServiceId(serviceType));
-  }
-  if (contextFields.length > 0) {
-    await query(`UPDATE carts SET ${contextFields.join(', ')}, updated_at = NOW() WHERE id = ?`, [...contextValues, cartId]);
-  }
-
   // The line keeps its own service. Adding the same item again tops up the
-  // quantity, and re-states the service only when one was asked for.
-  const lineServiceId = await resolveItemServiceId(
-    itemId,
-    itemServiceType,
-    serviceType || (await getCartServiceCode(cartId))
-  );
+  // quantity and re-states the service that was asked for.
+  const lineServiceId = await resolveItemServiceId(itemId, itemServiceType);
 
   await query(
     `INSERT INTO cart_items (cart_id, service_id, laundry_service_id, quantity, price_at_add)
@@ -262,16 +203,15 @@ async function addItem(
 }
 
 /**
- * Order Type + Laundry Type are chosen on one page before the catalogue, so
- * they are persisted onto the cart straight away rather than only riding along
- * with the first added item.
+ * Order Type + Laundry Type, both chosen in the Cart. Either can be sent on
+ * its own, so selecting one never clears the other.
  */
 async function setCartContext(
   businessUserId: string,
   laundryType?: string,
   orderType?: string
 ): Promise<BusinessCart> {
-  validateContext(laundryType, orderType, undefined);
+  validateContext(laundryType, orderType);
 
   const fields: string[] = [];
   const values: unknown[] = [];
@@ -283,23 +223,6 @@ async function setCartContext(
 
   const cartId = await getOrCreateCartId(businessUserId);
   await query(`UPDATE carts SET ${fields.join(', ')}, updated_at = NOW() WHERE id = ?`, [...values, cartId]);
-  return getCart(businessUserId);
-}
-
-/**
- * Service is picked in the Cart, not before the catalogue. Exactly one of
- * wash_iron | dry_clean is accepted.
- */
-async function setCartService(businessUserId: string, serviceType: string): Promise<BusinessCart> {
-  if (!serviceType || !SERVICE_TYPES.includes(serviceType)) {
-    throw new AppError('Please select a service before placing your order.', 400);
-  }
-
-  const cartId = await getOrCreateCartId(businessUserId);
-  await query(
-    `UPDATE carts SET service_type = ?, service_id = ?, updated_at = NOW() WHERE id = ?`,
-    [serviceType, await resolveServiceId(serviceType), cartId]
-  );
   return getCart(businessUserId);
 }
 
@@ -335,7 +258,7 @@ async function updateItemQuantity(
   if (itemServiceType !== undefined) {
     // Rejects a service the item does not support.
     fields.push('ci.laundry_service_id = ?');
-    values.push(await resolveItemServiceId(itemId, itemServiceType, null));
+    values.push(await resolveItemServiceId(itemId, itemServiceType));
   }
 
   const result = await query(
@@ -379,7 +302,6 @@ export {
   getCart,
   addItem,
   setCartContext,
-  setCartService,
   updateItemQuantity,
   removeItem,
   clearCart,

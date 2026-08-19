@@ -7,7 +7,7 @@ import { User, LoginPayload, RegisterPayload, BusinessRegisterPayload } from '..
 
 interface AuthState {
   user: User | null;
-  userType: 'customer' | 'business' | null;
+  userType: 'customer' | 'business' | 'sorter' | null;
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
@@ -16,6 +16,8 @@ interface AuthState {
   businessRegister: (payload: BusinessRegisterPayload) => Promise<void>;
   customerLogin: (payload: LoginPayload) => Promise<void>;
   businessLogin: (payload: LoginPayload) => Promise<void>;
+  /** Staff sign-in. Username, not email — see authApi.sorterLogin. */
+  sorterLogin: (payload: { username: string; password: string }) => Promise<void>;
   
   sendEntryOtp: (mobile: string) => Promise<void>;
   verifyEntryOtp: (mobile: string, otp: string) => Promise<void>;
@@ -31,11 +33,19 @@ interface AuthState {
   restoreSession: () => Promise<void>;
   logout: () => Promise<void>;
   updateUser: (user: Partial<User>) => void;
-  setUserType: (type: 'customer' | 'business' | null) => void;
+  setUserType: (type: 'customer' | 'business' | 'sorter' | null) => void;
 }
 
 const TOKEN_KEY = 'swachham_access_token';
 const USER_KEY = 'swachham_user';
+
+/** Maps the role on the account to the stack the app should show. */
+function userTypeFor(role?: string | null): 'customer' | 'business' | 'sorter' {
+  const value = String(role || '').toLowerCase();
+  if (value === 'business') return 'business';
+  if (value === 'sorter') return 'sorter';
+  return 'customer';
+}
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
@@ -190,6 +200,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  sorterLogin: async (payload: { username: string; password: string }) => {
+    try {
+      set({ isLoading: true });
+      const response = await authApi.sorterLogin(payload);
+
+      await SecureStore.setItemAsync(TOKEN_KEY, response.accessToken);
+      await SecureStore.setItemAsync(USER_KEY, JSON.stringify(response.user));
+
+      set({
+        token: response.accessToken,
+        user: response.user,
+        userType: 'sorter',
+        isAuthenticated: true,
+      });
+    } catch (error: any) {
+      const message = error?.response?.data?.message || error?.message || 'Login failed';
+      throw new Error(message);
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
   verifyMobileOtp: async (mobile: string, otp: string) => {
     try {
       set({ isLoading: true });
@@ -201,7 +233,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({
         token: response.accessToken,
         user: response.user,
-        userType: response.user.role === 'business' ? 'business' : 'customer',
+        userType: userTypeFor(response.user.role),
         isAuthenticated: true,
       });
     } catch (error: any) {
@@ -279,7 +311,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           set({
             token,
             user,
-            userType: user.role === 'business' ? 'business' : 'customer',
+            userType: userTypeFor(user.role),
             isAuthenticated: true,
           });
           return;
@@ -294,7 +326,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           set({
             token,
             user,
-            userType: user.role === 'business' ? 'business' : 'customer',
+            userType: userTypeFor(user.role),
             isAuthenticated: true,
           });
           return;

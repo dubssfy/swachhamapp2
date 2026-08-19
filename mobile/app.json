@@ -4,25 +4,50 @@
     "slug": "swachham",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/logo.png",
+    "icon": "./assets/swachham-logo.png",
     "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/swachham-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
+    },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true
+      }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#F8FFF9",
-        "foregroundImage": "./assets/logo.png"
+        "foregroundImage": "./assets/swachham-logo.png"
       },
       "package": "com.anonymous.swachham"
     },
     "web": {
-      "favicon": "./assets/logo.png"
+      "favicon": "./assets/swachham-logo.png"
     },
     "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Swachham uses the camera to scan garment barcodes during sorting and delivery verification."
+        }
+      ],
       "expo-font",
       "expo-secure-store",
-      "expo-asset"
+      "expo-asset",
+      "expo-audio",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/swachham-logo.png",
+          "imageWidth": 288,
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFFFF"
+        }
+      ]
     ],
     "extra": {
       "eas": {

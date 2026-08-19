@@ -7,6 +7,7 @@ import {
 
 import {
   sendSuccess,
+  sendError,
 } from '../utils/response';
 
 import {
@@ -25,6 +26,7 @@ import {
   sendEntryOtp,
   verifyEntryOtp,
   resendEntryOtp,
+  sorterLogin,
 } from '../services/auth.service';
 
 import {
@@ -414,6 +416,62 @@ router.post(
         res,
         result,
         'Business login successful.'
+      );
+
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+// ======================================================
+// SORTER LOGIN
+//
+// Staff sign in with a username. Rate limited and role
+// pinned exactly like the customer and business logins.
+// ======================================================
+
+router.post(
+  '/sorter/login',
+  authLimiter,
+
+  async (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
+
+    try {
+
+      const {
+        username,
+        password,
+      } = req.body;
+
+
+      if (!username || !password) {
+        sendError(
+          res,
+          'Username and password are required.',
+          400
+        );
+
+        return;
+      }
+
+
+      const result =
+        await sorterLogin(
+          username,
+          password
+        );
+
+
+      sendSuccess(
+        res,
+        result,
+        'Sorter login successful.'
       );
 
     } catch (error) {

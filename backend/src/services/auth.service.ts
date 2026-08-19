@@ -207,6 +207,54 @@ export async function businessLogin(email: string, password: string): Promise<Au
   return { user: userWithoutPassword as UserProfile, accessToken, refreshToken };
 }
 
+/**
+ * Sorter login.
+ *
+ * Staff sign in with a username rather than an email address; the existing
+ * `users` table has no separate username column, so the username IS the value
+ * stored in `users.email` for that account. Everything else — bcrypt, the JWT
+ * helpers, the role claim — is the same machinery the customer login uses, so
+ * there is no second authentication system to keep in step.
+ *
+ * The role is pinned in the query: an account that is not a SORTER can never
+ * obtain a sorter token through this endpoint.
+ */
+export async function sorterLogin(username: string, password: string): Promise<AuthResult> {
+  logger.debug('[AuthService] Sorter login attempt');
+
+  const userResult = await query<UserProfile & { password_hash: string }>(
+    `SELECT id, name, email, mobile_number as mobile, role, profile_image,
+            is_active, password_hash, created_at, updated_at
+       FROM users WHERE email = ? AND role = 'SORTER'`,
+    [String(username || '').trim().toLowerCase()]
+  );
+  const user = userResult.rows[0];
+
+  // One message for both branches, so the response cannot be used to find out
+  // which usernames exist.
+  if (!user || !user.password_hash) {
+    throw new AppError('Invalid username or password', 401);
+  }
+  if (!user.is_active) {
+    throw new AppError('Account is inactive', 403);
+  }
+
+  const passwordMatch = await bcrypt.compare(password, user.password_hash);
+  if (!passwordMatch) {
+    throw new AppError('Invalid username or password', 401);
+  }
+
+  await query(`UPDATE users SET last_login_at = NOW() WHERE id = ?`, [user.id]);
+
+  const tokenPayload = { id: user.id.toString(), email: user.email, role: 'SORTER' };
+  const accessToken = generateAccessToken(tokenPayload);
+  const refreshToken = generateRefreshToken(tokenPayload);
+
+  // The hash never leaves this function.
+  const { password_hash, ...userWithoutPassword } = user;
+  return { user: userWithoutPassword as UserProfile, accessToken, refreshToken };
+}
+
 export async function verifyMobileOtp(mobile: string, otp: string): Promise<AuthResult> {
   const normalizedMobile = normalizeMobile(mobile);
   await verifyOtpInternal(normalizedMobile, otp, 'REGISTRATION');
