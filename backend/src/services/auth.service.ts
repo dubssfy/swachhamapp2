@@ -255,6 +255,52 @@ export async function sorterLogin(username: string, password: string): Promise<A
   return { user: userWithoutPassword as UserProfile, accessToken, refreshToken };
 }
 
+/**
+ * Admin sign-in.
+ *
+ * `users` holds CUSTOMER, ADMIN and SUPER_ADMIN rows in the same table, and
+ * customerLogin deliberately filters `role = 'CUSTOMER'` — so without this an
+ * admin row can authenticate nowhere. Both admin tiers sign in here; the token
+ * carries whichever role the row actually has, and the route guards decide what
+ * that role may reach. The filter is applied in SQL rather than checked after
+ * the fetch, so a customer can never obtain an admin token from this endpoint.
+ *
+ * Unlike customerLogin there is no mobile_verified gate: admins are created
+ * directly against the database and never pass through the mobile OTP flow.
+ */
+export async function adminLogin(email: string, password: string): Promise<AuthResult> {
+  logger.debug(`[AuthService] Admin login attempt for: ${email}`);
+  const userResult = await query<UserProfile & { password_hash: string }>(
+    `SELECT id, name, email, mobile_number as mobile, role, profile_image, is_active,
+            mobile_verified, password_hash, created_at, updated_at
+     FROM users WHERE email = ? AND role IN ('ADMIN', 'SUPER_ADMIN')`,
+    [email.toLowerCase()]
+  );
+  const user = userResult.rows[0];
+
+  // Same opaque message for "no such admin" and "wrong password", so this
+  // endpoint cannot be used to enumerate which emails are admins.
+  if (!user || !user.password_hash) {
+    throw new AppError('Invalid email or password', 401);
+  }
+  if (!user.is_active) {
+    throw new AppError('Account is inactive', 403);
+  }
+
+  const passwordMatch = await bcrypt.compare(password, user.password_hash);
+  if (!passwordMatch) {
+    throw new AppError('Invalid email or password', 401);
+  }
+
+  await query(`UPDATE users SET last_login_at = NOW() WHERE id = ?`, [user.id]);
+  const tokenPayload = { id: user.id.toString(), email: user.email, role: user.role };
+  const accessToken = generateAccessToken(tokenPayload);
+  const refreshToken = generateRefreshToken(tokenPayload);
+
+  const { password_hash, ...userWithoutPassword } = user;
+  return { user: userWithoutPassword as UserProfile, accessToken, refreshToken };
+}
+
 export async function verifyMobileOtp(mobile: string, otp: string): Promise<AuthResult> {
   const normalizedMobile = normalizeMobile(mobile);
   await verifyOtpInternal(normalizedMobile, otp, 'REGISTRATION');

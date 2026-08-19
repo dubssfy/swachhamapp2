@@ -14,6 +14,7 @@ import {
   register,
   customerLogin,
   businessLogin,
+  adminLogin,
   getMe,
   updateProfile,
   changePassword,
@@ -472,6 +473,52 @@ router.post(
         res,
         result,
         'Sorter login successful.'
+      );
+
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+// ======================================================
+// ADMIN LOGIN
+// ======================================================
+
+router.post(
+  '/admin/login',
+  authLimiter,
+  // Same shape as the customer form (email + password), so the existing
+  // chain is reused rather than duplicated.
+  customerLoginValidation,
+  handleValidation,
+
+  async (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
+
+    try {
+
+      const {
+        email,
+        password,
+      } = req.body;
+
+
+      const result =
+        await adminLogin(
+          email,
+          password
+        );
+
+
+      sendSuccess(
+        res,
+        result,
+        'Admin login successful.'
       );
 
     } catch (error) {
