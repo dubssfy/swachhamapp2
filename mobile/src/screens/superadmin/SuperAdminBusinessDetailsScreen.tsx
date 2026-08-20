@@ -6,9 +6,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS } from '../../constants/theme';
+import { COLORS, SPACING } from '../../constants/theme';
 import { sa } from './styles';
 import { Pill } from './SuperAdminApprovalsScreen';
+import BusinessMobilesSection from './BusinessMobilesSection';
 import superAdminApi, { BusinessDetail } from '../../services/superAdminApi';
 
 /** The six the server refuses to let a business order without. */
@@ -191,6 +192,12 @@ export default function SuperAdminBusinessDetailsScreen({ navigation, route }: a
             keyboardType: 'email-address',
             autoCapitalize: 'none',
           })}
+
+          {/* The Mobile number field above is the business's primary
+              contact; every other number it answers on lives here. */}
+          <View style={{ marginTop: SPACING.lg }}>
+            <BusinessMobilesSection businessId={businessId} />
+          </View>
 
           <Text style={[sa.label, { marginTop: 24 }]}>OPTIONAL</Text>
           {field('PAN number', 'panNumber', 'pan_number', { autoCapitalize: 'characters' })}

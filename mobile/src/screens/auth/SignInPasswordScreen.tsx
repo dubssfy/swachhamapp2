@@ -50,7 +50,7 @@ export default function SignInPasswordScreen({ navigation, route }: any) {
       // Nothing to navigate: AppNavigator swaps stacks on auth state.
     } catch (e: any) {
       setError(e.message);
-      // The token from step 1 lasts 5 minutes. If it lapsed, go back to
+      // The token from step 1 lasts 15 minutes. If it lapsed, go back to
       // the number rather than sit on a step that can no longer succeed.
       if (/expired|verification/i.test(e.message)) {
         navigation.reset({ index: 0, routes: [{ name: 'MobileVerificationScreen' }] });

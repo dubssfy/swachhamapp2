@@ -94,6 +94,26 @@ export interface BusinessDetail {
   missing_fields: MissingField[];
 }
 
+
+export interface BusinessMobile {
+  id: string;
+  mobile_number: string;
+  label: string | null;
+  is_primary: boolean;
+  created_at: string;
+}
+
+export interface MobileList {
+  business_id: string;
+  /** How many this business may hold, set by the super admin. */
+  max_mobiles: number;
+  used: number;
+  remaining: number;
+  mobiles: BusinessMobile[];
+  /** Non-fatal: the number was added but is now ambiguous. */
+  warning?: string;
+}
+
 const superAdminApi = {
   getSalesSummary: async (from?: string, to?: string): Promise<SalesSummary> => {
     const res = await apiClient.get<ApiResponse<SalesSummary>>('/api/super-admin/sales/summary', {
@@ -181,6 +201,51 @@ const superAdminApi = {
     const res = await apiClient.post<ApiResponse<{ id: string; name: string }>>(
       '/api/super-admin/riders',
       payload
+    );
+    return res.data.data;
+  },
+
+  getBusinessMobiles: async (businessId: string): Promise<MobileList> => {
+    const res = await apiClient.get<ApiResponse<MobileList>>(
+      `/api/super-admin/businesses/${businessId}/mobiles`
+    );
+    return res.data.data;
+  },
+
+  /**
+   * Adding can succeed AND warn, so the message is carried back with the
+   * list rather than being thrown away on success.
+   */
+  addBusinessMobile: async (
+    businessId: string,
+    payload: { mobile_number: string; label?: string }
+  ): Promise<MobileList> => {
+    const res = await apiClient.post<ApiResponse<MobileList>>(
+      `/api/super-admin/businesses/${businessId}/mobiles`,
+      payload
+    );
+    return { ...res.data.data, warning: res.data.data.warning ?? res.data.message };
+  },
+
+  removeBusinessMobile: async (businessId: string, mobileId: string): Promise<MobileList> => {
+    const res = await apiClient.delete<ApiResponse<MobileList>>(
+      `/api/super-admin/businesses/${businessId}/mobiles/${mobileId}`
+    );
+    return res.data.data;
+  },
+
+  setPrimaryMobile: async (businessId: string, mobile_number: string): Promise<MobileList> => {
+    const res = await apiClient.patch<ApiResponse<MobileList>>(
+      `/api/super-admin/businesses/${businessId}/mobiles/primary`,
+      { mobile_number }
+    );
+    return res.data.data;
+  },
+
+  setMobileAllowance: async (businessId: string, max_mobiles: number): Promise<MobileList> => {
+    const res = await apiClient.put<ApiResponse<MobileList>>(
+      `/api/super-admin/businesses/${businessId}/mobiles/allowance`,
+      { max_mobiles }
     );
     return res.data.data;
   },
