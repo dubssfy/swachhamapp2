@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
 
 import authApi from '../services/authApi';
+import type { SignInResult } from '../services/authApi';
 import { extractErrorMessage } from '../services/api';
 import { User, LoginPayload, RegisterPayload, BusinessRegisterPayload } from '../types';
 
@@ -23,6 +24,11 @@ interface AuthState {
   verifyEntryOtp: (mobile: string, otp: string) => Promise<void>;
   resendEntryOtp: (mobile: string) => Promise<void>;
   
+  /** Unified sign-in. One entry point; the server decides the role. */
+  signInSendOtp: (mobile: string) => Promise<void>;
+  signInVerifyOtp: (mobile: string, otp: string) => Promise<SignInResult>;
+  signInPassword: (username: string, password: string, preAuthToken: string) => Promise<void>;
+
   /** Super admin step 1: OTP out, then verify to learn if step 2 applies. */
   superAdminSendOtp: (mobile: string) => Promise<void>;
   superAdminVerifyOtp: (
@@ -227,6 +233,69 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch (error: any) {
       const message = error?.response?.data?.message || error?.message || 'Login failed';
       throw new Error(message);
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  signInSendOtp: async (mobile: string) => {
+    if (get().isLoading) return;
+    try {
+      set({ isLoading: true });
+      await authApi.signinSendOtp(mobile);
+    } catch (error: any) {
+      throw new Error(extractErrorMessage(error, 'Failed to send OTP'));
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  signInVerifyOtp: async (mobile: string, otp: string) => {
+    try {
+      set({ isLoading: true });
+      const response = await authApi.signinVerifyOtp(mobile, otp);
+      const result = response.data;
+
+      // A customer is already signed in at this point -- the OTP was the
+      // credential -- so the session is stored here and the navigator
+      // switches stacks on its own. Anything else is handed back for the
+      // caller to route onward; no session is created for those.
+      if (result.mode === 'CUSTOMER_SESSION' && result.accessToken && result.user) {
+        await SecureStore.setItemAsync(TOKEN_KEY, result.accessToken);
+        await SecureStore.setItemAsync(USER_KEY, JSON.stringify(result.user));
+        set({
+          token: result.accessToken,
+          user: result.user,
+          userType: userTypeFor(result.user.role),
+          isAuthenticated: true,
+        });
+      }
+      return result;
+    } catch (error: any) {
+      throw new Error(extractErrorMessage(error, 'OTP verification failed'));
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  signInPassword: async (username: string, password: string, preAuthToken: string) => {
+    try {
+      set({ isLoading: true });
+      const response = await authApi.signinPassword(username, password, preAuthToken);
+      const result = response.data;
+      if (!result.accessToken || !result.user) {
+        throw new Error('Sign-in failed');
+      }
+      await SecureStore.setItemAsync(TOKEN_KEY, result.accessToken);
+      await SecureStore.setItemAsync(USER_KEY, JSON.stringify(result.user));
+      set({
+        token: result.accessToken,
+        user: result.user,
+        userType: userTypeFor(result.user.role),
+        isAuthenticated: true,
+      });
+    } catch (error: any) {
+      throw new Error(extractErrorMessage(error, 'Sign-in failed'));
     } finally {
       set({ isLoading: false });
     }

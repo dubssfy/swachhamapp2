@@ -1,4 +1,22 @@
 import apiClient from './api';
+
+/**
+ * What the server reports after a mobile number is proven.
+ *
+ * CUSTOMER_SESSION  already signed in -- go to Home.
+ * PASSWORD_REQUIRED staff or business -- ask for username + password.
+ * AMBIGUOUS         the number matches several accounts; refused.
+ */
+export interface SignInResult {
+  mode: 'CUSTOMER_SESSION' | 'PASSWORD_REQUIRED' | 'AMBIGUOUS';
+  user?: any;
+  accessToken?: string;
+  refreshToken?: string;
+  role?: string;
+  name?: string | null;
+  preAuthToken?: string;
+  message?: string;
+}
 import { ApiResponse, User, LoginPayload, RegisterPayload, BusinessRegisterPayload } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 
@@ -232,6 +250,42 @@ export const authApi = {
       { username, password, preAuthToken }
     );
     return (response.data as any).data ?? response.data;
+  },
+
+  /**
+   * Unified sign-in, step 1. One entry point for every kind of account.
+   */
+  signinSendOtp: async (mobile: string): Promise<ApiResponse<null>> => {
+    const response = await apiClient.post<ApiResponse<null>>('/api/auth/signin/send-otp', {
+      mobile: normalizeMobile(mobile),
+    });
+    return response.data;
+  },
+
+  /**
+   * Step 2. The SERVER decides what this number is: a customer is signed
+   * in here and there is nothing more to do; staff and business accounts
+   * come back needing a password.
+   */
+  signinVerifyOtp: async (mobile: string, otp: string): Promise<ApiResponse<SignInResult>> => {
+    const response = await apiClient.post<ApiResponse<SignInResult>>(
+      '/api/auth/signin/verify-otp',
+      { mobile: normalizeMobile(mobile), otp: otp.replace(/[^0-9]/g, '') }
+    );
+    return response.data;
+  },
+
+  /** Step 3, only for the roles that need it. */
+  signinPassword: async (
+    username: string,
+    password: string,
+    preAuthToken: string
+  ): Promise<ApiResponse<SignInResult>> => {
+    const response = await apiClient.post<ApiResponse<SignInResult>>(
+      '/api/auth/signin/password',
+      { username, password, preAuthToken }
+    );
+    return response.data;
   },
 };
 

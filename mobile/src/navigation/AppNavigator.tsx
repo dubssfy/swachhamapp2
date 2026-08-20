@@ -146,6 +146,8 @@ import SorterScanScreen
 // The one bottom bar for both tab sets: Customer and Business.
 import LiquidGlassTabBar from '../components/LiquidGlassTabBar';
 
+import SignInPasswordScreen from '../screens/auth/SignInPasswordScreen';
+
 // =========================================================
 // SUPER ADMIN SCREENS
 // =========================================================
@@ -518,6 +520,21 @@ export default function AppNavigator() {
             name="MobileVerificationScreen"
             component={
               MobileVerificationScreen
+            }
+          />
+
+        )}
+
+
+        {/* Password step, for the roles the server says need one.
+            Customers never reach it. */}
+
+        {!isAuthenticated && (
+
+          <Stack.Screen
+            name="SignInPasswordScreen"
+            component={
+              SignInPasswordScreen
             }
           />
 
