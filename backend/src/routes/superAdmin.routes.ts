@@ -12,6 +12,13 @@ import {
   listBusinessCompleteness,
   updateBusinessDetail,
 } from '../services/superAdmin.service';
+import {
+  listMobiles,
+  addMobile,
+  removeMobile,
+  setPrimary,
+  setAllowance,
+} from '../services/businessMobiles.service';
 import { sendSuccess } from '../utils/response';
 import { authenticate, authorize, AuthenticatedRequest } from '../middleware/auth';
 
@@ -142,6 +149,80 @@ router.put('/businesses/:id', async (req: Request, res: Response, next: NextFunc
     next(error);
   }
 });
+
+
+/* ---- Mobile numbers on a business (one to many) ---- */
+
+// GET /api/super-admin/businesses/:id/mobiles
+router.get('/businesses/:id/mobiles', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    sendSuccess(res, await listMobiles(req.params.id), 'Mobile numbers fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/super-admin/businesses/:id/mobiles   { mobile_number, label?, is_primary? }
+router.post('/businesses/:id/mobiles', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const result = await addMobile(req.params.id, req.body, authReq.user!.id);
+    // The warning rides along with a success: the number WAS added, and
+    // the caller still needs to know it is now ambiguous.
+    sendSuccess(res, result, result.warning || 'Mobile number added', 201);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// DELETE /api/super-admin/businesses/:id/mobiles/:mobileId
+router.delete(
+  '/businesses/:id/mobiles/:mobileId',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      sendSuccess(
+        res,
+        await removeMobile(req.params.id, req.params.mobileId),
+        'Mobile number removed'
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// PATCH /api/super-admin/businesses/:id/mobiles/primary   { mobile_number }
+router.patch(
+  '/businesses/:id/mobiles/primary',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      sendSuccess(
+        res,
+        await setPrimary(req.params.id, req.body?.mobile_number),
+        'Primary mobile number updated'
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// PUT /api/super-admin/businesses/:id/mobiles/allowance   { max_mobiles }
+// How many numbers this business may hold. Super admin only.
+router.put(
+  '/businesses/:id/mobiles/allowance',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      sendSuccess(
+        res,
+        await setAllowance(req.params.id, req.body?.max_mobiles),
+        'Mobile number limit updated'
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 
 /* ---- Direct entry creation ---- */

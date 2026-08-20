@@ -67,10 +67,14 @@ function verifyRefreshToken(token: string): DecodedToken {
  * full session. With its own secret, presenting it as a Bearer token
  * fails signature verification like any other garbage string.
  *
- * Short-lived by design: it only has to survive typing a password.
+ * Short-lived by design, but long enough for a human: the window has to
+ * survive leaving the app to look a password up, not just typing it. Five
+ * minutes turned out to be a machine's idea of that, so it is fifteen.
+ * The token still only ever unlocks a password attempt against one
+ * specific account.
  */
 const PRE_AUTH_SECRET = config.JWT_SECRET + '_preauth';
-const PRE_AUTH_EXPIRES_IN = '5m';
+const PRE_AUTH_EXPIRES_IN = '15m';
 
 export interface PreAuthPayload {
   /** The mobile number that actually passed OTP. */

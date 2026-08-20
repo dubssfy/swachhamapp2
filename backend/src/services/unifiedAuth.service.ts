@@ -54,12 +54,17 @@ async function findAccounts(mobile: string): Promise<ResolvedAccount[]> {
       `SELECT id, role, name, email FROM users WHERE mobile_number = ?`,
       [mobile]
     ),
+    // A business answers on every number in business_mobiles, not just
+    // the one stored on its account row, so both are searched. DISTINCT
+    // because a number can legitimately be in both places for the same
+    // account, and that is one account, not two.
     query<{ id: string; name: string | null; email: string; business_name: string | null }>(
-      `SELECT bu.id, bu.name, bu.email, b.name AS business_name
+      `SELECT DISTINCT bu.id, bu.name, bu.email, b.name AS business_name
          FROM business_users bu
          JOIN businesses b ON b.id = bu.business_id
-        WHERE bu.mobile_number = ?`,
-      [mobile]
+         LEFT JOIN business_mobiles bm ON bm.business_id = b.id
+        WHERE bu.mobile_number = ? OR bm.mobile_number = ?`,
+      [mobile, mobile]
     ),
   ]);
 

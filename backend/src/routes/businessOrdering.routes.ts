@@ -24,7 +24,13 @@ import {
   repeatOrder,
   cancelOrder,
 } from '../services/businessOrder.service';
-import { getProfile, updateProfile } from '../services/businessProfile.service';
+import { getProfile, updateProfile, getOwnedBusinessId } from '../services/businessProfile.service';
+import {
+  listMobiles,
+  addMobile,
+  removeMobile,
+  setPrimary,
+} from '../services/businessMobiles.service';
 import { sendSuccess } from '../utils/response';
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
@@ -87,6 +93,58 @@ router.put('/profile', async (req: Request, res: Response, next: NextFunction) =
     next(error);
   }
 });
+
+// ---- The business's own mobile numbers ----
+//
+// A business manages its own list, but only within the allowance the
+// super admin set; raising that limit is not something it can do to
+// itself.
+
+router.get('/profile/mobiles', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const businessId = await getOwnedBusinessId(authReq.user!.id);
+    sendSuccess(res, await listMobiles(businessId), 'Mobile numbers fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/profile/mobiles', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const businessId = await getOwnedBusinessId(authReq.user!.id);
+    const result = await addMobile(businessId, req.body, authReq.user!.id);
+    sendSuccess(res, result, result.warning || 'Mobile number added', 201);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/profile/mobiles/:mobileId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const businessId = await getOwnedBusinessId(authReq.user!.id);
+    sendSuccess(res, await removeMobile(businessId, req.params.mobileId), 'Mobile number removed');
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/profile/mobiles/primary', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const businessId = await getOwnedBusinessId(authReq.user!.id);
+    sendSuccess(
+      res,
+      await setPrimary(businessId, req.body?.mobile_number),
+      'Primary mobile number updated'
+    );
+  } catch (error) {
+    next(error);
+  }
+});
+
 
 // ---- Laundry service structure ----
 
