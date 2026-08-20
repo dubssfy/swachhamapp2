@@ -7,7 +7,7 @@ import { User, LoginPayload, RegisterPayload, BusinessRegisterPayload } from '..
 
 interface AuthState {
   user: User | null;
-  userType: 'customer' | 'business' | 'sorter' | null;
+  userType: 'customer' | 'business' | 'sorter' | 'super_admin' | null;
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
@@ -23,6 +23,15 @@ interface AuthState {
   verifyEntryOtp: (mobile: string, otp: string) => Promise<void>;
   resendEntryOtp: (mobile: string) => Promise<void>;
   
+  /** Super admin step 1: OTP out, then verify to learn if step 2 applies. */
+  superAdminSendOtp: (mobile: string) => Promise<void>;
+  superAdminVerifyOtp: (
+    mobile: string,
+    otp: string
+  ) => Promise<{ isSuperAdmin: boolean; preAuthToken: string | null; name: string | null }>;
+  /** Super admin step 2. Only reachable with the token from step 1. */
+  superAdminLogin: (username: string, password: string, preAuthToken: string) => Promise<void>;
+
   verifyMobileOtp: (mobile: string, otp: string) => Promise<void>;
   resendOtp: (mobile: string) => Promise<void>;
   
@@ -33,17 +42,18 @@ interface AuthState {
   restoreSession: () => Promise<void>;
   logout: () => Promise<void>;
   updateUser: (user: Partial<User>) => void;
-  setUserType: (type: 'customer' | 'business' | 'sorter' | null) => void;
+  setUserType: (type: 'customer' | 'business' | 'sorter' | 'super_admin' | null) => void;
 }
 
 const TOKEN_KEY = 'swachham_access_token';
 const USER_KEY = 'swachham_user';
 
 /** Maps the role on the account to the stack the app should show. */
-function userTypeFor(role?: string | null): 'customer' | 'business' | 'sorter' {
+function userTypeFor(role?: string | null): 'customer' | 'business' | 'sorter' | 'super_admin' {
   const value = String(role || '').toLowerCase();
   if (value === 'business') return 'business';
   if (value === 'sorter') return 'sorter';
+  if (value === 'super_admin') return 'super_admin';
   return 'customer';
 }
 
@@ -217,6 +227,53 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch (error: any) {
       const message = error?.response?.data?.message || error?.message || 'Login failed';
       throw new Error(message);
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  superAdminSendOtp: async (mobile: string) => {
+    if (get().isLoading) return;
+    try {
+      set({ isLoading: true });
+      await authApi.superAdminSendOtp(mobile);
+    } catch (error: any) {
+      throw new Error(extractErrorMessage(error, 'Failed to send OTP'));
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  superAdminVerifyOtp: async (mobile: string, otp: string) => {
+    try {
+      set({ isLoading: true });
+      const response = await authApi.superAdminVerifyOtp(mobile, otp);
+      // No session is created here on purpose: clearing the OTP only earns
+      // the right to attempt step 2, never an authenticated session.
+      return response.data;
+    } catch (error: any) {
+      throw new Error(extractErrorMessage(error, 'OTP verification failed'));
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  superAdminLogin: async (username: string, password: string, preAuthToken: string) => {
+    try {
+      set({ isLoading: true });
+      const response = await authApi.superAdminLogin(username, password, preAuthToken);
+
+      await SecureStore.setItemAsync(TOKEN_KEY, response.accessToken);
+      await SecureStore.setItemAsync(USER_KEY, JSON.stringify(response.user));
+
+      set({
+        token: response.accessToken,
+        user: response.user,
+        userType: 'super_admin',
+        isAuthenticated: true,
+      });
+    } catch (error: any) {
+      throw new Error(extractErrorMessage(error, 'Login failed'));
     } finally {
       set({ isLoading: false });
     }

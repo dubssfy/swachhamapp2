@@ -216,6 +216,17 @@ export default function LoginScreen({ navigation, route }: any) {
             >
               <Text style={styles.staffLinkText}>Staff login (Sorter)</Text>
             </TouchableOpacity>
+
+            {/* Super admin sign-in is its own two-step flow (mobile OTP,
+                then credentials), so it gets its own entry rather than
+                overloading the form above. */}
+            <TouchableOpacity
+              style={styles.staffLink}
+              onPress={() => navigation.navigate('SuperAdminLogin')}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.staffLinkText}>Super Admin login</Text>
+            </TouchableOpacity>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

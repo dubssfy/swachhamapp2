@@ -146,6 +146,18 @@ import SorterScanScreen
 // The one bottom bar for both tab sets: Customer and Business.
 import LiquidGlassTabBar from '../components/LiquidGlassTabBar';
 
+// =========================================================
+// SUPER ADMIN SCREENS
+// =========================================================
+
+import SuperAdminLoginScreen from '../screens/superadmin/SuperAdminLoginScreen';
+import SuperAdminDashboardScreen from '../screens/superadmin/SuperAdminDashboardScreen';
+import SuperAdminApprovalsScreen from '../screens/superadmin/SuperAdminApprovalsScreen';
+import SuperAdminBusinessListScreen from '../screens/superadmin/SuperAdminBusinessListScreen';
+import SuperAdminBusinessDetailsScreen from '../screens/superadmin/SuperAdminBusinessDetailsScreen';
+import SuperAdminCreateBusinessScreen from '../screens/superadmin/SuperAdminCreateBusinessScreen';
+import SuperAdminCreateRiderScreen from '../screens/superadmin/SuperAdminCreateRiderScreen';
+
 
 // =========================================================
 // NAVIGATORS
@@ -392,6 +404,30 @@ function BusinessTabs() {
 // one queue, and a bottom bar would only take room from it.
 // =========================================================
 
+// =========================================================
+// SUPER ADMIN STACK
+//
+// One stack, not tabs: the dashboard is the landing page and
+// everything else is opened from it and closed again.
+// =========================================================
+
+function SuperAdminStack() {
+  return (
+    <Stack.Navigator
+      initialRouteName="SuperAdminDashboard"
+      screenOptions={{ headerShown: false }}
+    >
+      <Stack.Screen name="SuperAdminDashboard" component={SuperAdminDashboardScreen} />
+      <Stack.Screen name="SuperAdminApprovals" component={SuperAdminApprovalsScreen} />
+      <Stack.Screen name="SuperAdminBusinessList" component={SuperAdminBusinessListScreen} />
+      <Stack.Screen name="SuperAdminBusinessDetails" component={SuperAdminBusinessDetailsScreen} />
+      <Stack.Screen name="SuperAdminCreateBusiness" component={SuperAdminCreateBusinessScreen} />
+      <Stack.Screen name="SuperAdminCreateRider" component={SuperAdminCreateRiderScreen} />
+    </Stack.Navigator>
+  );
+}
+
+
 function SorterStack() {
   return (
     <Stack.Navigator
@@ -609,6 +645,25 @@ export default function AppNavigator() {
             }
           />
 
+        )}
+
+
+        {/* =================================================
+            SUPER ADMIN
+        ================================================= */}
+
+        {!isAuthenticated && (
+          <Stack.Screen
+            name="SuperAdminLogin"
+            component={SuperAdminLoginScreen}
+          />
+        )}
+
+        {isAuthenticated && role === 'super_admin' && (
+          <Stack.Screen
+            name="SuperAdmin"
+            component={SuperAdminStack}
+          />
         )}
 
 

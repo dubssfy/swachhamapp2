@@ -190,6 +190,49 @@ export const authApi = {
     const response = await apiClient.post<ApiResponse<MessageResponse>>(API_ENDPOINTS.AUTH_LOGOUT);
     return response.data;
   },
+
+  /**
+   * Super admin sign-in, step 1: send the mobile OTP.
+   * The OTP goes out whatever the number is, so this call cannot be used
+   * to discover which numbers belong to super admins.
+   */
+  superAdminSendOtp: async (mobile: string): Promise<ApiResponse<null>> => {
+    const response = await apiClient.post<ApiResponse<null>>(
+      '/api/auth/super-admin/send-otp',
+      { mobile: normalizeMobile(mobile) }
+    );
+    return response.data;
+  },
+
+  /**
+   * Step 1b: verify it. Only a super admin gets a preAuthToken back;
+   * everyone else gets isSuperAdmin false and is sent to normal sign-in.
+   */
+  superAdminVerifyOtp: async (
+    mobile: string,
+    otp: string
+  ): Promise<ApiResponse<{ isSuperAdmin: boolean; preAuthToken: string | null; name: string | null }>> => {
+    const response = await apiClient.post<
+      ApiResponse<{ isSuperAdmin: boolean; preAuthToken: string | null; name: string | null }>
+    >('/api/auth/super-admin/verify-otp', {
+      mobile: normalizeMobile(mobile),
+      otp: otp.replace(/\D/g, ''),
+    });
+    return response.data;
+  },
+
+  /** Step 2: username + password, carrying the proof of step 1. */
+  superAdminLogin: async (
+    username: string,
+    password: string,
+    preAuthToken: string
+  ): Promise<AuthResponse> => {
+    const response = await apiClient.post<{ data: AuthResponse }>(
+      '/api/auth/super-admin/login',
+      { username, password, preAuthToken }
+    );
+    return (response.data as any).data ?? response.data;
+  },
 };
 
 export default authApi;
