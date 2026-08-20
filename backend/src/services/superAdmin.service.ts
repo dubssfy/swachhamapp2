@@ -2,6 +2,11 @@ import bcrypt from 'bcrypt';
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
+import { getCompleteness, Completeness } from './businessCompleteness';
+import {
+  buildBusinessProfileUpdate,
+  UpdateBusinessProfileInput,
+} from './businessProfile.service';
 
 const SALT_ROUNDS = 10;
 
@@ -473,3 +478,140 @@ export {
   createBusiness,
   createRider,
 };
+
+/* ===================================================================
+ * COMPANY / ESTABLISHMENT DETAILS  (super admin view of any business)
+ * =================================================================== */
+
+/**
+ * Onboarding is done by the super admin, and details get missed while
+ * it happens. These three functions are what the Company /
+ * Establishment Details screen uses to find those gaps and close them.
+ */
+
+export interface BusinessDetail {
+  business_id: string;
+  business_name: string;
+  customer_type: string | null;
+  other_type_specify: string | null;
+  establishment_address: string | null;
+  gst_number: string | null;
+  pan_number: string | null;
+  website: string | null;
+  contact_person_name: string | null;
+  designation: string | null;
+  mobile_number: string | null;
+  whatsapp_number: string | null;
+  email_id: string | null;
+  alternate_contact_person: string | null;
+  alternate_mobile_no: string | null;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Same shape the business sees for itself, for any business id. */
+async function getBusinessDetail(
+  businessId: string
+): Promise<BusinessDetail & Completeness> {
+  const result = await query<BusinessDetail>(
+    `SELECT b.id AS business_id,
+            COALESCE(NULLIF(TRIM(b.establishment_name), ''), b.name) AS business_name,
+            b.business_type AS customer_type, b.other_type_specify,
+            COALESCE(b.establishment_address, b.address) AS establishment_address,
+            b.gst_number, b.pan_number, b.website,
+            b.contact_person_name, b.designation,
+            COALESCE(b.mobile_number, MIN(bu.mobile_number)) AS mobile_number,
+            b.whatsapp_number,
+            COALESCE(b.email_id, b.email, MIN(bu.email)) AS email_id,
+            b.alternate_contact_person, b.alternate_mobile_no,
+            b.status, b.created_at, b.updated_at
+       FROM businesses b
+       LEFT JOIN business_users bu ON bu.business_id = b.id
+      WHERE b.id = ?
+      GROUP BY b.id`,
+    [businessId]
+  );
+  const detail = result.rows[0];
+  if (!detail) {
+    throw new AppError('Business not found', 404);
+  }
+  return { ...detail, ...(await getCompleteness(businessId)) };
+}
+
+export interface BusinessCompletenessRow {
+  business_id: string;
+  business_name: string;
+  status: string;
+  is_complete: boolean;
+  missing_fields: Completeness['missing_fields'];
+}
+
+/**
+ * Every business with its completeness, so the super admin can see at a
+ * glance who cannot order and why. `onlyIncomplete` narrows it to the
+ * ones actually needing attention.
+ */
+async function listBusinessCompleteness(
+  onlyIncomplete = false
+): Promise<BusinessCompletenessRow[]> {
+  const idsResult = await query<{ id: string; name: string; status: string }>(
+    `SELECT id, COALESCE(NULLIF(TRIM(establishment_name), ''), name) AS name, status
+       FROM businesses ORDER BY created_at DESC LIMIT 500`
+  );
+
+  const rows: BusinessCompletenessRow[] = [];
+  for (const business of idsResult.rows) {
+    const completeness = await getCompleteness(String(business.id));
+    if (onlyIncomplete && completeness.is_complete) continue;
+    rows.push({
+      business_id: String(business.id),
+      business_name: business.name,
+      status: business.status,
+      ...completeness,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Fills in a business's establishment details on its behalf.
+ *
+ * Validation is deliberately the SAME code the business's own profile
+ * update runs, so a record the super admin saves can never be shaped
+ * differently from one the business saves itself.
+ *
+ * Unlike the self-service path the establishment name IS editable here
+ * — a name typed wrong during onboarding is exactly the kind of thing
+ * this screen exists to correct.
+ */
+async function updateBusinessDetail(
+  businessId: string,
+  input: UpdateBusinessProfileInput & { establishmentName?: string }
+): Promise<BusinessDetail & Completeness> {
+  const exists = await query(`SELECT id FROM businesses WHERE id = ?`, [businessId]);
+  if (exists.rows.length === 0) {
+    throw new AppError('Business not found', 404);
+  }
+
+  const { fields, values } = buildBusinessProfileUpdate(input, { allowNameChange: true });
+
+  if (fields.length > 0) {
+    fields.push('updated_at = NOW()');
+    await query(`UPDATE businesses SET ${fields.join(', ')} WHERE id = ?`, [...values, businessId]);
+  }
+
+  // The authenticated account row carries the mobile number that the
+  // order summary and PDF read, so it has to move with the profile.
+  if (input.mobileNumber !== undefined) {
+    await query(
+      `UPDATE business_users SET mobile_number = ?, updated_at = NOW() WHERE business_id = ?`,
+      [String(input.mobileNumber).trim(), businessId]
+    );
+  }
+
+  logger.info(`[SuperAdmin] Establishment details updated for business ${businessId}`);
+  return getBusinessDetail(businessId);
+}
+
+export { getBusinessDetail, listBusinessCompleteness, updateBusinessDetail };

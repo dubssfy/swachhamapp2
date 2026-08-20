@@ -8,6 +8,9 @@ import {
   decideRider,
   createBusiness,
   createRider,
+  getBusinessDetail,
+  listBusinessCompleteness,
+  updateBusinessDetail,
 } from '../services/superAdmin.service';
 import { sendSuccess } from '../utils/response';
 import { authenticate, authorize, AuthenticatedRequest } from '../middleware/auth';
@@ -104,6 +107,42 @@ router.patch('/approvals/riders/:id', async (req: Request, res: Response, next: 
     next(error);
   }
 });
+
+/* ---- Company / Establishment Details ---- */
+
+// GET /api/super-admin/businesses?incomplete=true
+// Every business with its completeness, so gaps are visible at a glance.
+router.get('/businesses', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const onlyIncomplete = String(req.query.incomplete || '').toLowerCase() === 'true';
+    const rows = await listBusinessCompleteness(onlyIncomplete);
+    sendSuccess(res, rows, 'Businesses fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/super-admin/businesses/:id
+router.get('/businesses/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const detail = await getBusinessDetail(req.params.id);
+    sendSuccess(res, detail, 'Establishment details fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+// PUT /api/super-admin/businesses/:id
+// Fills in whatever was missed during onboarding.
+router.put('/businesses/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const detail = await updateBusinessDetail(req.params.id, req.body);
+    sendSuccess(res, detail, 'Establishment details updated successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
 
 /* ---- Direct entry creation ---- */
 

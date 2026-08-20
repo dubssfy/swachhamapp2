@@ -26,7 +26,6 @@ import {
   sendPasswordResetOtp,
   verifyPasswordResetOtp,
   resetPassword,
-  businessRegister,
   sendEntryOtp,
   verifyEntryOtp,
   resendEntryOtp,
@@ -771,37 +770,27 @@ router.post(
 // BUSINESS REGISTRATION
 // ======================================================
 
-router.post(
-  '/business/register',
-  authLimiter,
-  businessRegisterValidation,
-  handleValidation,
+/*
+ * Business self-registration is CLOSED.
+ *
+ * Every business is onboarded by a super admin, who creates the account
+ * through POST /api/super-admin/businesses. Leaving this endpoint open
+ * would let an account into the system that never passed through
+ * onboarding, and so could be missing the establishment details that
+ * ordering now depends on.
+ *
+ * It stays mounted, and answers, so an older build of the app gets a
+ * clear explanation instead of a confusing 404.
+ */
+router.post('/business/register', authLimiter, (_req: Request, res: Response) => {
+  sendError(
+    res,
+    'Business accounts are created by Swachham during onboarding. Please contact us to register your establishment.',
+    403
+  );
+});
 
-  async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ) => {
 
-    try {
-
-      const result =
-        await businessRegister(
-          req.body
-        );
-
-      sendSuccess(
-        res,
-        result,
-        'Business registration successful.',
-        201
-      );
-
-    } catch (error) {
-      next(error);
-    }
-  }
-);
 
 
 // ======================================================
