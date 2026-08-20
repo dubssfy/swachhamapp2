@@ -26,11 +26,45 @@ import {
 } from '../services/businessOrder.service';
 import { getProfile, updateProfile } from '../services/businessProfile.service';
 import { sendSuccess } from '../utils/response';
+import { query } from '../config/database';
+import { AppError } from '../utils/appError';
 import { authenticate, authorize, AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
 router.use(authorize('BUSINESS'));
+
+/**
+ * Holding a BUSINESS token is not the same as being an approved
+ * business. Registration still hands back a session so the app can
+ * show a "waiting for approval" state, which means the token alone
+ * cannot be the gate — the live status has to be read per request.
+ *
+ * Checked here rather than in each handler so a new endpoint added
+ * later is covered by default instead of by remembering.
+ */
+router.use(async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const result = await query<{ status: string }>(
+      `SELECT b.status FROM business_users bu
+         JOIN businesses b ON b.id = bu.business_id
+        WHERE bu.id = ?`,
+      [authReq.user!.id]
+    );
+    const status = result.rows[0]?.status;
+
+    if (status === 'PENDING') {
+      throw new AppError('Your business registration is awaiting approval.', 403);
+    }
+    if (status !== 'ACTIVE') {
+      throw new AppError('This business account is not active.', 403);
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ---- Business profile ----
 

@@ -15,6 +15,9 @@ import {
   customerLogin,
   businessLogin,
   adminLogin,
+  superAdminSendOtp,
+  superAdminVerifyOtp,
+  superAdminLogin,
   getMe,
   updateProfile,
   changePassword,
@@ -51,6 +54,7 @@ import {
   businessRegisterValidation,
   entryOtpSendValidation,
   entryOtpVerifyValidation,
+  superAdminLoginValidation,
 } from '../validators/auth.validators';
 
 import {
@@ -521,6 +525,83 @@ router.post(
         'Admin login successful.'
       );
 
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+// ======================================================
+// SUPER ADMIN SIGN-IN — STEP 1: SEND MOBILE OTP
+// ======================================================
+
+router.post(
+  '/super-admin/send-otp',
+  authLimiter,
+  entryOtpSendValidation,
+  handleValidation,
+
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await superAdminSendOtp(req.body.mobile);
+
+      sendSuccess(res, null, 'OTP sent to the registered mobile number.');
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+// ======================================================
+// SUPER ADMIN SIGN-IN — STEP 1b: VERIFY MOBILE OTP
+//
+// Responds with whether this number belongs to a super
+// admin, and if so a short-lived token that step 2 needs.
+// ======================================================
+
+router.post(
+  '/super-admin/verify-otp',
+  authLimiter,
+  entryOtpVerifyValidation,
+  handleValidation,
+
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await superAdminVerifyOtp(req.body.mobile, req.body.otp);
+
+      sendSuccess(
+        res,
+        result,
+        result.isSuperAdmin
+          ? 'Mobile verified. Please sign in with your username and password.'
+          : 'Mobile verified.'
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+// ======================================================
+// SUPER ADMIN SIGN-IN — STEP 2: USERNAME + PASSWORD
+// ======================================================
+
+router.post(
+  '/super-admin/login',
+  authLimiter,
+  superAdminLoginValidation,
+  handleValidation,
+
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { username, password, preAuthToken } = req.body;
+
+      const result = await superAdminLogin(username, password, preAuthToken);
+
+      sendSuccess(res, result, 'Super admin login successful.');
     } catch (error) {
       next(error);
     }
