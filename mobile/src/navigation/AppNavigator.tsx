@@ -147,6 +147,7 @@ import SorterScanScreen
 import LiquidGlassTabBar from '../components/LiquidGlassTabBar';
 
 import SignInPasswordScreen from '../screens/auth/SignInPasswordScreen';
+import ServiceCategoryScreen from '../screens/home/ServiceCategoryScreen';
 
 // =========================================================
 // SUPER ADMIN SCREENS
@@ -308,6 +309,11 @@ function CustomerStack() {
       <Stack.Screen
         name="BusinessDetails"
         component={BusinessDetailsScreen}
+      />
+
+      <Stack.Screen
+        name="ServiceCategory"
+        component={ServiceCategoryScreen}
       />
 
     </Stack.Navigator>
