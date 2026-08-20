@@ -644,6 +644,19 @@ export async function sendEntryOtp(mobile: string): Promise<void> {
   await sendOtpInternal(normalizeMobile(mobile), 'LOGIN_VERIFICATION');
 }
 
+/**
+ * Verifies an entry OTP and hands back the NORMALISED number.
+ *
+ * The unified sign-in needs the same normalisation the OTP was stored
+ * under, otherwise the account lookup that follows could miss a number
+ * that was typed as +91XXXXXXXXXX.
+ */
+export async function verifyEntryOtpOnly(mobile: string, otp: string): Promise<string> {
+  const normalized = normalizeMobile(mobile);
+  await verifyOtpInternal(normalized, otp, 'LOGIN_VERIFICATION');
+  return normalized;
+}
+
 export async function verifyEntryOtp(mobile: string, otp: string): Promise<void> {
   await verifyOtpInternal(normalizeMobile(mobile), otp, 'LOGIN_VERIFICATION');
 }

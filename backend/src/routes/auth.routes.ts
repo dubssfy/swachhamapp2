@@ -38,6 +38,16 @@ import {
 } from '../middleware/auth';
 
 import {
+  resolveAfterOtp,
+  completeWithPassword,
+} from '../services/unifiedAuth.service';
+
+import {
+  sendEntryOtp as sendUnifiedOtp,
+  verifyEntryOtpOnly,
+} from '../services/auth.service';
+
+import {
   handleValidation,
 } from '../middleware/validate';
 
@@ -601,6 +611,89 @@ router.post(
       const result = await superAdminLogin(username, password, preAuthToken);
 
       sendSuccess(res, result, 'Super admin login successful.');
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+// ======================================================
+// UNIFIED SIGN-IN — STEP 1: MOBILE OTP
+//
+// One entry point for everybody. The OTP goes out for any
+// valid number, so this cannot be used to find out which
+// numbers are staff.
+// ======================================================
+
+router.post(
+  '/signin/send-otp',
+  authLimiter,
+  entryOtpSendValidation,
+  handleValidation,
+
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await sendUnifiedOtp(req.body.mobile);
+      sendSuccess(res, null, 'OTP sent.');
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+// ======================================================
+// UNIFIED SIGN-IN — STEP 2: VERIFY, THEN THE SERVER DECIDES
+//
+// A customer (or an unrecognised number, which becomes one)
+// is signed in here and goes straight to Home. Staff and
+// business accounts get a short-lived token and are sent on
+// to the password step. The client never says which it is.
+// ======================================================
+
+router.post(
+  '/signin/verify-otp',
+  authLimiter,
+  entryOtpVerifyValidation,
+  handleValidation,
+
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const mobile = await verifyEntryOtpOnly(req.body.mobile, req.body.otp);
+      const result = await resolveAfterOtp(mobile);
+
+      sendSuccess(
+        res,
+        result,
+        result.mode === 'CUSTOMER_SESSION'
+          ? 'Signed in.'
+          : result.mode === 'PASSWORD_REQUIRED'
+            ? 'Mobile verified. Please enter your username and password.'
+            : (result.message as string)
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+// ======================================================
+// UNIFIED SIGN-IN — STEP 3: PASSWORD (STAFF AND BUSINESS)
+// ======================================================
+
+router.post(
+  '/signin/password',
+  authLimiter,
+  superAdminLoginValidation,
+  handleValidation,
+
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { username, password, preAuthToken } = req.body;
+      const result = await completeWithPassword(username, password, preAuthToken);
+      sendSuccess(res, result, 'Signed in.');
     } catch (error) {
       next(error);
     }
