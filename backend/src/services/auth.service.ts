@@ -42,13 +42,21 @@ function normalizeMobile(mobile: string): string {
   return normalized;
 }
 
+/**
+ * Device identifiers are only ever compared, never read back, so the table
+ * stores a hash rather than the raw value.
+ */
+function hashDeviceId(deviceId: string): string {
+  return crypto.createHash('sha256').update(deviceId.trim()).digest('hex');
+}
+
 function generateNumericOtp(length = 6): string {
   const min = Math.pow(10, length - 1);
   const max = Math.pow(10, length) - 1;
   return crypto.randomInt(min, max + 1).toString();
 }
 
-async function sendOtpInternal(mobile: string, purpose: 'REGISTRATION' | 'PASSWORD_RESET' | 'LOGIN_VERIFICATION'): Promise<void> {
+async function sendOtpInternal(mobile: string, purpose: 'REGISTRATION' | 'PASSWORD_RESET' | 'LOGIN_VERIFICATION', deviceId?: string): Promise<void> {
   const normalizedMobile = normalizeMobile(mobile);
   
   const recentOtpResult = await query<{ created_at: Date }>(
@@ -73,18 +81,18 @@ async function sendOtpInternal(mobile: string, purpose: 'REGISTRATION' | 'PASSWO
   );
 
   await query(
-    `INSERT INTO otp_verifications (mobile_number, otp_hash, expires_at, purpose) VALUES (?, ?, ?, ?)`,
-    [normalizedMobile, otpHash, expiresAt, purpose]
+    `INSERT INTO otp_verifications (mobile_number, otp_hash, expires_at, purpose, device_id_hash) VALUES (?, ?, ?, ?, ?)`,
+    [normalizedMobile, otpHash, expiresAt, purpose, deviceId ? hashDeviceId(deviceId) : null]
   );
 
   await smsService.sendOtpSms(normalizedMobile, otp);
 }
 
-async function verifyOtpInternal(mobile: string, otp: string, purpose: 'REGISTRATION' | 'PASSWORD_RESET' | 'LOGIN_VERIFICATION'): Promise<void> {
+async function verifyOtpInternal(mobile: string, otp: string, purpose: 'REGISTRATION' | 'PASSWORD_RESET' | 'LOGIN_VERIFICATION', deviceId?: string): Promise<void> {
   const normalizedMobile = normalizeMobile(mobile);
 
-  const otpResult = await query<{ id: string; otp_hash: string; expires_at: Date; attempts: number }>(
-    `SELECT id, otp_hash, expires_at, attempts FROM otp_verifications 
+  const otpResult = await query<{ id: string; otp_hash: string; expires_at: Date; attempts: number; device_id_hash: string | null }>(
+    `SELECT id, otp_hash, expires_at, attempts, device_id_hash FROM otp_verifications 
      WHERE mobile_number = ? AND purpose = ? AND is_verified = false 
      ORDER BY created_at DESC LIMIT 1`,
     [normalizedMobile, purpose]
@@ -104,6 +112,21 @@ async function verifyOtpInternal(mobile: string, otp: string, purpose: 'REGISTRA
 
   if (new Date() > otpRecord.expires_at) {
     throw new AppError('OTP has expired. Please request a new OTP.', 400);
+  }
+
+  // Device binding. Checked before the code itself is compared, so a request
+  // from the wrong handset never learns whether the code it holds is correct.
+  //
+  // Rows written before this column existed carry a NULL hash and are left
+  // alone; only OTPs issued to a known device are enforced.
+  if (otpRecord.device_id_hash) {
+    if (!deviceId || hashDeviceId(deviceId) !== otpRecord.device_id_hash) {
+      logger.warn(`[OTP] device mismatch on verify for ${normalizedMobile} (${purpose})`);
+      throw new AppError(
+        'This OTP was sent to a different device. Please request a new OTP on this device.',
+        403
+      );
+    }
   }
 
   const isValid = await bcrypt.compare(otp, otpRecord.otp_hash);
@@ -456,16 +479,16 @@ export async function changePassword(
   }
 }
 
-export async function sendEntryOtp(mobile: string): Promise<void> {
-  await sendOtpInternal(normalizeMobile(mobile), 'LOGIN_VERIFICATION');
+export async function sendEntryOtp(mobile: string, deviceId?: string): Promise<void> {
+  await sendOtpInternal(normalizeMobile(mobile), 'LOGIN_VERIFICATION', deviceId);
 }
 
-export async function verifyEntryOtp(mobile: string, otp: string): Promise<void> {
-  await verifyOtpInternal(normalizeMobile(mobile), otp, 'LOGIN_VERIFICATION');
+export async function verifyEntryOtp(mobile: string, otp: string, deviceId?: string): Promise<void> {
+  await verifyOtpInternal(normalizeMobile(mobile), otp, 'LOGIN_VERIFICATION', deviceId);
 }
 
-export async function resendEntryOtp(mobile: string): Promise<void> {
-  await sendOtpInternal(normalizeMobile(mobile), 'LOGIN_VERIFICATION');
+export async function resendEntryOtp(mobile: string, deviceId?: string): Promise<void> {
+  await sendOtpInternal(normalizeMobile(mobile), 'LOGIN_VERIFICATION', deviceId);
 }
 
 export async function businessRegister(data: {

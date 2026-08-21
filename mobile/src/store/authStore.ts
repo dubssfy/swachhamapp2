@@ -31,6 +31,8 @@ interface AuthState {
   resetPassword: (mobile: string, otp: string, newPassword: string) => Promise<void>;
 
   restoreSession: () => Promise<void>;
+  /** Drops the stored session locally, without calling the backend. */
+  clearStoredSession: () => Promise<void>;
   logout: () => Promise<void>;
   updateUser: (user: Partial<User>) => void;
   setUserType: (type: 'customer' | 'business' | 'sorter' | null) => void;
@@ -347,6 +349,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } finally {
       set({ isLoading: false });
     }
+  },
+
+  /**
+   * Wipes the saved session from the device without touching the backend.
+   *
+   * Both keys must go: the API client's request interceptor reads the token
+   * straight out of SecureStore, so leaving it behind would keep attaching a
+   * stale Authorization header to requests the UI believes are signed out.
+   */
+  clearStoredSession: async () => {
+    try {
+      await SecureStore.deleteItemAsync(TOKEN_KEY);
+      await SecureStore.deleteItemAsync(USER_KEY);
+    } catch (error) {
+      console.log('⚠️ Could not clear stored session.');
+    }
+    set({ token: null, user: null, userType: null, isAuthenticated: false, isLoading: false });
   },
 
   logout: async () => {

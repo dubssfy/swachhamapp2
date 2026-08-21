@@ -8,14 +8,17 @@ import AppNavigator from './src/navigation/AppNavigator';
 /**
  * Splash experience.
  *
- * The splash itself is the native one Expo already draws from app.json — the
- * swachham-logo asset, centred and `contain`-fitted, so it keeps its aspect
- * ratio, stays whole and scales to any screen. Auto-hide is blocked here, at
- * module scope, so the call lands before the first frame; the logo then stays
- * up while the welcome audio plays and comes down the moment it finishes.
+ * The branding is drawn in JS by src/screens/auth/SplashScreen, the first
+ * route in AppNavigator. That is deliberate: a native splash image is baked
+ * into a native binary at prebuild, so Expo Go — which ships as Expo's own
+ * prebuilt app — can never display it. A JS splash renders identically in
+ * Expo Go and in a real build.
  *
- * Nothing about navigation, auth or any screen is involved: the app's normal
- * first screen is already mounted behind the splash.
+ * Auto-hide is still blocked here at module scope, so the call lands before
+ * the first frame and there is no white flash. The native splash is then
+ * dropped as soon as this component mounts, which is what uncovers the
+ * branded screen; the welcome audio plays over it rather than holding a blank
+ * splash up until the clip ends.
  */
 SplashScreen.preventAutoHideAsync().catch(() => {
   // Auto-hide may already have happened; there is nothing to recover from.
@@ -46,6 +49,11 @@ export default function App() {
       return;
     }
     welcomeStarted = true;
+
+    // Uncover the branded JS splash straight away. Holding the native splash
+    // until the audio finished would keep a generic screen up for the whole
+    // clip, and SplashScreen would have handed over before it was ever seen.
+    SplashScreen.hideAsync().catch(() => {});
 
     let player: AudioPlayer | null = null;
     let subscription: { remove: () => void } | null = null;

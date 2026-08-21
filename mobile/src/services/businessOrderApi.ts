@@ -69,9 +69,37 @@ export interface BusinessCart {
   total_weight_kg: number;
 }
 
+/** A pickup slot offered by the server; never hardcoded in the app. */
+export interface BusinessTimeSlot {
+  id: string;
+  label: string;
+}
+
+/**
+ * What the user picked on the Time Slot page, sent with the order.
+ *
+ * One day, two independent slots. The field names are the ones the order
+ * endpoint already reads — nothing parallel was invented for delivery.
+ */
+export interface BusinessPickupSchedule {
+  /** YYYY-MM-DD, from the device's own calendar. */
+  pickupDate: string;
+  /** Pickup slot id, e.g. "11-13". */
+  pickupSlot: string;
+  /** Delivery slot id, chosen independently of the pickup. */
+  deliverySlot: string;
+  /** Optional note for the driver on both legs. */
+  pickupNotes?: string;
+  /** Optional note about the laundry itself. */
+  serviceNotes?: string;
+}
+
 export interface BusinessOrderResult {
   id: string;
   order_number: string;
+  /** The pickup and delivery booked with this order. */
+  pickup: { date: string; slot_label: string; slot_start: string; slot_end: string };
+  delivery: { date: string; slot_label: string; slot_start: string; slot_end: string };
   laundry_type: string;
   order_type: string;
   service_type: string;
@@ -380,8 +408,35 @@ export const businessOrderApi = {
     return response.data;
   },
 
-  confirmOrder: async (): Promise<ApiResponse<BusinessOrderResult>> => {
-    const response = await apiClient.post<ApiResponse<BusinessOrderResult>>('/api/businesses/orders');
+  /** The pickup slots on offer, defined by the server. */
+  getTimeSlots: async (): Promise<ApiResponse<BusinessTimeSlot[]>> => {
+    const response = await apiClient.get<ApiResponse<BusinessTimeSlot[]>>(
+      '/api/businesses/time-slots'
+    );
+    return response.data;
+  },
+
+  /**
+   * Places the order. The body carries only the chosen pickup date and slot —
+   * the items come from the server-side cart, and the bearer token says who
+   * is ordering.
+   *
+   * No coordinates and no location header: the service area was settled on
+   * the Allow Permission page when the app opened.
+   */
+  confirmOrder: async (
+    schedule: BusinessPickupSchedule
+  ): Promise<ApiResponse<BusinessOrderResult>> => {
+    const response = await apiClient.post<ApiResponse<BusinessOrderResult>>(
+      '/api/businesses/orders',
+      {
+        pickupDate: schedule.pickupDate,
+        pickupSlot: schedule.pickupSlot,
+        deliverySlot: schedule.deliverySlot,
+        pickupNotes: schedule.pickupNotes,
+        serviceNotes: schedule.serviceNotes,
+      }
+    );
     return response.data;
   },
 };

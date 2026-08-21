@@ -9,6 +9,7 @@ import {
   StatusBar,
   Alert,
   Linking,
+  ActivityIndicator,
 } from 'react-native';
 
 import { Ionicons } from '@expo/vector-icons';
@@ -30,6 +31,11 @@ import {
   BORDER_RADIUS,
 } from '../../constants/theme';
 
+import {
+  useLocationGateStore,
+  OUTSIDE_DISTRICT_MESSAGE,
+} from '../../store/locationGateStore';
+
 
 export default function PermissionScreen() {
 
@@ -47,6 +53,56 @@ export default function PermissionScreen() {
       camera: false,
       photos: false,
     });
+
+
+  /*
+   * =====================================================
+   * SERVICE AREA — THE APP'S ONLY LOCATION CHECK
+   * =====================================================
+   *
+   * Permission, one GPS fix, and the server's verdict on
+   * whether it falls inside Ratnagiri district, all on this
+   * page. Passing it is what opens the app.
+   *
+   * Nothing later repeats it: not login, not the business
+   * catalogue, not the cart, and not Place Order.
+   */
+
+  const areaStatus =
+    useLocationGateStore(state => state.status);
+
+  const areaMessage =
+    useLocationGateStore(state => state.message);
+
+  const isCheckingArea =
+    useLocationGateStore(state => state.isChecking);
+
+  const verifyArea =
+    useLocationGateStore(state => state.verify);
+
+
+  const locationVerified =
+    areaStatus === 'verified';
+
+
+  const runLocationCheck =
+    async (force = false) => {
+
+      const result =
+        await verifyArea({ force });
+
+      setPermissions(prev => ({
+        ...prev,
+
+        // A verdict of any kind means permission was granted;
+        // a denial is reported as its own status.
+        location:
+          result.status !== 'permission-denied' &&
+          result.status !== 'idle',
+      }));
+
+      return result;
+    };
 
 
   // =====================================================
@@ -75,40 +131,6 @@ export default function PermissionScreen() {
 
         console.error(
           'Notification permission error:',
-          error
-        );
-
-        return false;
-      }
-    };
-
-
-  // =====================================================
-  // LOCATION - REQUIRED
-  // =====================================================
-
-  const requestLocation =
-    async () => {
-
-      try {
-
-        const { status } =
-          await Location.requestForegroundPermissionsAsync();
-
-        const granted =
-          status === 'granted';
-
-        setPermissions(prev => ({
-          ...prev,
-          location: granted,
-        }));
-
-        return granted;
-
-      } catch (error) {
-
-        console.error(
-          'Location permission error:',
           error
         );
 
@@ -203,7 +225,7 @@ export default function PermissionScreen() {
             setLoading(true);
 
             /*
-             * Camera is REQUIRED. Location is OPTIONAL.
+             * Camera and Location are both REQUIRED.
              *
              * Every time this screen receives focus,
              * we check their current OS permission status.
@@ -230,6 +252,17 @@ export default function PermissionScreen() {
                 camera:
                   cameraStatus.status === 'granted',
               }));
+
+
+              // Permission already granted from an earlier run:
+              // take the fix straight away so the user sees the
+              // verdict without having to tap anything.
+              if (
+                locationStatus.status === 'granted' &&
+                !useLocationGateStore.getState().isVerified()
+              ) {
+                runLocationCheck();
+              }
             }
 
           } catch (error) {
@@ -272,16 +305,48 @@ export default function PermissionScreen() {
 
 
         /*
-         * Location is OPTIONAL for entering the app.
+         * =================================================
+         * LOCATION — REQUIRED, AND CHECKED ONLY HERE
+         * =================================================
          *
-         * We still ask for it here so the permission is
-         * usually already granted by the time a feature
-         * needs it, but denying it must NOT block entry.
-         * Store Locator requests location itself when the
-         * user actually opens that feature.
+         * The user cannot enter the app until the fix has
+         * been taken and the server has confirmed it is
+         * inside the service district. The message below
+         * says which of those failed; the banner on screen
+         * carries the same wording with a retry.
          */
 
-        await requestLocation();
+        const area =
+          await runLocationCheck();
+
+
+        if (area.status !== 'verified') {
+
+          Alert.alert(
+            area.status === 'outside'
+              ? 'Service Not Available'
+              : 'Location Required',
+
+            area.message || OUTSIDE_DISTRICT_MESSAGE,
+
+            area.status === 'permission-denied'
+              ? [
+                  {
+                    text: 'Cancel',
+                    style: 'cancel',
+                  },
+                  {
+                    text: 'Open Settings',
+                    onPress: () => {
+                      Linking.openSettings();
+                    },
+                  },
+                ]
+              : [{ text: 'OK' }]
+          );
+
+          return;
+        }
 
 
         const cameraGranted =
@@ -415,11 +480,11 @@ export default function PermissionScreen() {
       if (type === 'location') {
 
         /*
-         * Optional: declining location does not stop the user
-         * from continuing. Store Locator asks again when it
-         * is actually opened.
+         * Required: this is where the district check happens.
+         * `force` because tapping the row is an explicit ask
+         * to check again.
          */
-        await requestLocation();
+        await runLocationCheck(true);
 
         return;
       }
@@ -468,9 +533,10 @@ export default function PermissionScreen() {
   // REQUIRED PERMISSIONS STATUS
   // =====================================================
 
-  // Location is optional — it never blocks entry into the app.
+  // Both are required to enter the app: the camera permission, and a
+  // location the server confirmed is inside the service district.
   const requiredPermissionsGranted =
-    permissions.camera;
+    permissions.camera && locationVerified;
 
 
   // =====================================================
@@ -553,11 +619,11 @@ export default function PermissionScreen() {
           <PermissionCard
             icon="location-outline"
             title="Location"
-            description="Used for accurate pickup and delivery, and to find your nearest store."
+            description="We need your location to verify service availability in your area."
             granted={
-              permissions.location
+              locationVerified
             }
-            required={false}
+            required={true}
             onPress={() =>
               handlePermissionPress(
                 'location'
@@ -605,6 +671,101 @@ export default function PermissionScreen() {
 
 
         {/* =================================================
+            SERVICE AREA VERDICT
+
+            The result of the one location check the app
+            performs. Verified means the user may continue.
+        ================================================= */}
+
+        {isCheckingArea ? (
+
+          <View style={styles.areaChecking}>
+
+            <ActivityIndicator
+              size="small"
+              color={COLORS.Primary}
+            />
+
+            <Text style={styles.areaCheckingText}>
+              Checking your location...
+            </Text>
+
+          </View>
+
+        ) : locationVerified ? (
+
+          <View style={styles.areaVerified}>
+
+            <Ionicons
+              name="checkmark-circle"
+              size={20}
+              color={COLORS.Success}
+            />
+
+            <Text style={styles.areaVerifiedText}>
+              Location verified
+            </Text>
+
+          </View>
+
+        ) : areaStatus !== 'idle' ? (
+
+          <View style={styles.areaBlocked}>
+
+            <View style={styles.areaBlockedRow}>
+
+              <Ionicons
+                name={
+                  areaStatus === 'outside'
+                    ? 'location-outline'
+                    : 'alert-circle-outline'
+                }
+                size={20}
+                color={COLORS.Error}
+              />
+
+              <Text style={styles.areaBlockedText}>
+                {areaMessage || OUTSIDE_DISTRICT_MESSAGE}
+              </Text>
+
+            </View>
+
+            <TouchableOpacity
+              style={styles.areaRetry}
+              onPress={() =>
+                areaStatus === 'permission-denied'
+                  ? Linking.openSettings()
+                  : runLocationCheck(true)
+              }
+              activeOpacity={0.85}
+            >
+
+              <Ionicons
+                name={
+                  areaStatus === 'permission-denied'
+                    ? 'settings-outline'
+                    : 'refresh'
+                }
+                size={18}
+                color="#fff"
+              />
+
+              <Text style={styles.areaRetryText}>
+                {
+                  areaStatus === 'permission-denied'
+                    ? 'ENABLE LOCATION'
+                    : 'RETRY'
+                }
+              </Text>
+
+            </TouchableOpacity>
+
+          </View>
+
+        ) : null}
+
+
+        {/* =================================================
             REQUIRED PERMISSION MESSAGE
         ================================================= */}
 
@@ -626,8 +787,11 @@ export default function PermissionScreen() {
             <Text
               style={styles.warningText}
             >
-              Camera permission is required
-              to continue.
+              {
+                locationVerified
+                  ? 'Camera permission is required to continue.'
+                  : 'Location and Camera permissions are required to continue.'
+              }
             </Text>
 
           </View>
@@ -650,10 +814,11 @@ export default function PermissionScreen() {
         <TouchableOpacity
           style={[
             styles.continueButton,
-            loading && styles.buttonDisabled,
+            (loading || isCheckingArea) &&
+              styles.buttonDisabled,
           ]}
           onPress={handleContinue}
-          disabled={loading}
+          disabled={loading || isCheckingArea}
           activeOpacity={0.8}
         >
 
@@ -661,7 +826,7 @@ export default function PermissionScreen() {
             style={styles.continueText}
           >
             {
-              loading
+              loading || isCheckingArea
                 ? 'Checking Permissions...'
                 : 'Continue'
             }
@@ -956,6 +1121,122 @@ const styles =
       color:
         COLORS.TextSecondary,
       lineHeight: 18,
+    },
+
+
+    // ===================================================
+    // SERVICE AREA VERDICT
+    // ===================================================
+
+    areaChecking: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: SPACING.sm,
+      backgroundColor:
+        COLORS.Surface,
+      borderWidth: 1,
+      borderColor:
+        COLORS.Border,
+      borderRadius:
+        BORDER_RADIUS.md,
+      paddingHorizontal:
+        SPACING.md,
+      paddingVertical:
+        SPACING.sm,
+      marginBottom:
+        SPACING.md,
+    },
+
+
+    areaCheckingText: {
+      fontSize:
+        TYPOGRAPHY.sizes.sm,
+      color:
+        COLORS.TextSecondary,
+    },
+
+
+    areaVerified: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: SPACING.sm,
+      backgroundColor:
+        '#E9F7EF',
+      borderWidth: 1,
+      borderColor:
+        COLORS.Success,
+      borderRadius:
+        BORDER_RADIUS.md,
+      paddingHorizontal:
+        SPACING.md,
+      paddingVertical:
+        SPACING.sm,
+      marginBottom:
+        SPACING.md,
+    },
+
+
+    areaVerifiedText: {
+      fontSize:
+        TYPOGRAPHY.sizes.sm,
+      fontWeight: '700',
+      color:
+        COLORS.PrimaryDark,
+    },
+
+
+    areaBlocked: {
+      backgroundColor:
+        '#FDECEC',
+      borderWidth: 1,
+      borderColor:
+        COLORS.Error,
+      borderRadius:
+        BORDER_RADIUS.md,
+      padding: SPACING.md,
+      gap: SPACING.sm,
+      marginBottom:
+        SPACING.md,
+    },
+
+
+    areaBlockedRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: SPACING.sm,
+    },
+
+
+    areaBlockedText: {
+      flex: 1,
+      fontSize:
+        TYPOGRAPHY.sizes.sm,
+      fontWeight: '600',
+      color:
+        COLORS.Error,
+      lineHeight: 18,
+    },
+
+
+    areaRetry: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: SPACING.xs,
+      minHeight: 44,
+      borderRadius:
+        BORDER_RADIUS.sm,
+      backgroundColor:
+        COLORS.Error,
+    },
+
+
+    areaRetryText: {
+      fontSize:
+        TYPOGRAPHY.sizes.sm,
+      fontWeight: 'bold',
+      color: '#fff',
+      letterSpacing: 0.5,
     },
 
 

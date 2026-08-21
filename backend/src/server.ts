@@ -21,6 +21,9 @@ import businessRoutes from './routes/business.routes';
 import businessOrderingRoutes from './routes/businessOrdering.routes';
 import businessPublicRoutes from './routes/businessPublic.routes';
 import sorterRoutes from './routes/sorter.routes';
+import locationRoutes from './routes/location.routes';
+import chatRoutes from './routes/chat.routes';
+import { UPLOAD_ROOT, UPLOAD_URL_PREFIX } from './utils/fileStorage';
 import adminRoutes from './routes/admin.routes';
 
 const app = express();
@@ -32,7 +35,30 @@ socketService.initialize(server);
 // Middleware
 app.use(helmet());
 app.use(cors({ origin: config.CLIENT_URL || '*' }));
-app.use(express.json());
+/**
+ * JSON body parsing.
+ *
+ * Every route keeps the safe default limit (100kb). The one exception is the
+ * defect-photo upload, which carries a base64 image and mounts its own parser
+ * with a larger limit in sorter.routes.ts.
+ *
+ * That route has to be skipped HERE rather than simply layered, because this
+ * parser runs first and would reject an oversized body with 413 long before
+ * the route-level parser ever saw it.
+ */
+const jsonParser = express.json();
+const DEFECT_PHOTO_PATH = /^\/api\/sorter\/orders\/[^/]+\/defect$/;
+
+app.use((req, res, next) => {
+  if (req.method === 'POST' && DEFECT_PHOTO_PATH.test(req.path)) {
+    return next();
+  }
+  return jsonParser(req, res, next);
+});
+
+// Uploaded images (defect photos). Served read-only from disk so the database
+// never holds image bytes; the tables store only these URLs.
+app.use(UPLOAD_URL_PREFIX, express.static(UPLOAD_ROOT, { fallthrough: true, maxAge: '1d' }));
 app.use(morgan(config.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(rateLimiter);
 
@@ -55,6 +81,8 @@ app.use('/api/businesses/public', businessPublicRoutes);
 app.use('/api/businesses', businessOrderingRoutes);
 app.use('/api/businesses', businessRoutes);
 app.use('/api/sorter', sorterRoutes);
+app.use('/api/location', locationRoutes);
+app.use('/api/chat', chatRoutes);
 app.use('/api/admin', adminRoutes);
 
 // Error Handling Middleware

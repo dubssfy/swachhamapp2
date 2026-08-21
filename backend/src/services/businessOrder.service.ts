@@ -4,6 +4,7 @@ import { logger } from '../utils/logger';
 import { config } from '../config/env';
 import { getCart, BusinessCart } from './businessCart.service';
 import { generateGarmentsForOrder } from './garment.service';
+import { OrderSchedule } from './pickupSlot.service';
 
 const LAUNDRY_TYPE_CODE: Record<string, string> = { hotel: 'H', guest: 'G' };
 
@@ -72,6 +73,10 @@ export interface BusinessOrderResult {
   total: number;
   /** SUM(item weight x quantity) for the whole order, in kg. */
   total_weight_kg: number;
+  /** The pickup booked with the order, from the `pickups` row. */
+  pickup: { date: string; slot_label: string; slot_start: string; slot_end: string };
+  /** The delivery booked with it, from the `deliveries` row. */
+  delivery: { date: string; slot_label: string; slot_start: string; slot_end: string };
   items: Array<{
     item_id: string;
     item_name: string;
@@ -83,7 +88,18 @@ export interface BusinessOrderResult {
   }>;
 }
 
-async function createOrder(businessUserId: string): Promise<BusinessOrderResult> {
+/**
+ * Creates the order and books its pickup and delivery.
+ *
+ * `schedule` has already been validated by resolveSchedule, so by the time it
+ * reaches here the day and both slots are known-good; both rows are written
+ * inside the same transaction as the order, so an order can never exist
+ * without the slots the customer chose.
+ */
+async function createOrder(
+  businessUserId: string,
+  schedule: OrderSchedule
+): Promise<BusinessOrderResult> {
   const cartResult = await query<{
     id: string;
     laundry_type: string | null;
@@ -173,10 +189,12 @@ async function createOrder(businessUserId: string): Promise<BusinessOrderResult>
 
     const orderNumber = await generateBusinessOrderNumber(connection, cart.laundry_type);
 
+    // `special_notes` is the column the orders table already has for notes
+    // about the laundry itself — no new field was added for it.
     const [orderInsert]: any = await connection.execute(
-      `INSERT INTO orders (order_number, business_user_id, laundry_type, order_type, service_type, service_id, status, subtotal, total_weight_kg, total)
-       VALUES (?, ?, ?, ?, ?, ?, 'ORDER_PLACED', ?, ?, ?)`,
-      [orderNumber, businessUserId, cart.laundry_type, cart.order_type, orderServiceType, orderServiceId, subtotal, totalWeightKg, subtotal]
+      `INSERT INTO orders (order_number, business_user_id, laundry_type, order_type, service_type, service_id, status, subtotal, total_weight_kg, total, special_notes)
+       VALUES (?, ?, ?, ?, ?, ?, 'ORDER_PLACED', ?, ?, ?, ?)`,
+      [orderNumber, businessUserId, cart.laundry_type, cart.order_type, orderServiceType, orderServiceId, subtotal, totalWeightKg, subtotal, schedule.serviceNotes || null]
     );
     const orderId = orderInsert.insertId;
 
@@ -203,6 +221,22 @@ async function createOrder(businessUserId: string): Promise<BusinessOrderResult>
       [orderId]
     );
 
+    // The chosen slots, into the tables the schema already has for them, each
+    // with the pickup-and-drop note in its own `notes` column — the same
+    // instruction reaches whoever handles that leg.
+    // Same transaction as the order: if either fails, no order is created.
+    const pickupNotes = schedule.pickupNotes || null;
+    await connection.execute(
+      `INSERT INTO pickups (order_id, scheduled_date, time_slot_start, time_slot_end, status, notes)
+       VALUES (?, ?, ?, ?, 'SCHEDULED', ?)`,
+      [orderId, schedule.date, schedule.pickup.start, schedule.pickup.end, pickupNotes]
+    );
+    await connection.execute(
+      `INSERT INTO deliveries (order_id, scheduled_date, time_slot_start, time_slot_end, status, notes)
+       VALUES (?, ?, ?, ?, 'SCHEDULED', ?)`,
+      [orderId, schedule.date, schedule.delivery.start, schedule.delivery.end, pickupNotes]
+    );
+
     await connection.execute(`DELETE FROM cart_items WHERE cart_id = ?`, [cart.id]);
     await connection.execute(
       `UPDATE carts SET laundry_type = NULL, order_type = NULL, service_type = NULL, service_id = NULL, updated_at = NOW() WHERE id = ?`,
@@ -223,6 +257,18 @@ async function createOrder(businessUserId: string): Promise<BusinessOrderResult>
       subtotal,
       total: subtotal,
       total_weight_kg: totalWeightKg,
+      pickup: {
+        date: schedule.date,
+        slot_label: schedule.pickup.label,
+        slot_start: schedule.pickup.start,
+        slot_end: schedule.pickup.end,
+      },
+      delivery: {
+        date: schedule.date,
+        slot_label: schedule.delivery.label,
+        slot_start: schedule.delivery.start,
+        slot_end: schedule.delivery.end,
+      },
       items: cartItems.map((item) => ({
         item_id: item.service_id,
         item_name: item.name,

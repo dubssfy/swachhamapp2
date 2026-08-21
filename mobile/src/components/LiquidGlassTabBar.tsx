@@ -5,9 +5,9 @@ import {
   Pressable,
   StyleSheet,
   Animated,
+  Image,
   useWindowDimensions,
 } from 'react-native';
-import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
@@ -15,9 +15,22 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 const ACTIVE_COLOR = '#2E7D32';
 const INACTIVE_COLOR = '#777';
 
-const BAR_HEIGHT = 84;
-const SIDE_MARGIN = 16;
-const BOTTOM_GAP = 10;
+const BAR_HEIGHT = 94;
+// Corner rounding on the two top corners only — the panel is edge-to-edge and
+// flush with the bottom of the screen, so the bottom corners are square.
+
+// Centre brand mark. The card is a fixed square and the image inside uses
+// resizeMode="contain", so the logo keeps its aspect ratio on every screen.
+// Both tab sets have four tabs, so the exact centre falls in the gap between
+// tab 2 and tab 3 and the badge never lands on an icon. It lives inside the
+// existing bar height, so the bar is not made any taller.
+const BADGE_SIZE = 48;
+const BADGE_IMAGE_SIZE = 34;
+// How far the badge lifts above the bar's top edge. The host reserves exactly
+// this much transparent headroom above the bar, so the badge is never clipped
+// and the bar itself stays BAR_HEIGHT tall.
+const BADGE_RAISE = 28;
+const BAR_RADIUS = 28;
 
 /**
  * Icons and labels are keyed by route name. Both tab sets are listed, so the
@@ -136,11 +149,14 @@ function TabItem({
 }
 
 /**
- * Frosted-glass bottom bar.
+ * Solid white bottom bar.
  *
- * The glass panel floats with rounded corners and side margins, but its host
- * View is a normal (non-absolute) box that reserves the bar's height. That is
- * what stops the last row of a list disappearing underneath it.
+ * The panel runs the full width of the screen and sits flush against the
+ * bottom, with only its top corners rounded, and it extends behind the system
+ * navigation inset so no strip of background shows beneath it.
+ *
+ * Its host View is a normal (non-absolute) box that reserves the bar's height.
+ * That is what stops the last row of a list disappearing underneath it.
  */
 export default function LiquidGlassTabBar({
   state,
@@ -150,12 +166,15 @@ export default function LiquidGlassTabBar({
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
 
-  const barWidth = width - SIDE_MARGIN * 2;
+  // Edge to edge: the panel is as wide as the screen.
+  const barWidth = width;
   const tabCount = Math.max(state.routes.length, 1);
   // One slot per tab — the slot width, not a quarter of it.
   const tabWidth = barWidth / tabCount;
 
-  const bottomInset = Math.max(insets.bottom, BOTTOM_GAP);
+  // The white extends behind the gesture bar / nav bar rather than floating
+  // above it, so the padding is the real inset with no artificial gap.
+  const bottomInset = insets.bottom;
 
   const indicatorX = useRef(new Animated.Value(state.index * tabWidth)).current;
   const bubbleWidth = useMemo(() => Math.max(tabWidth - 10, 40), [tabWidth]);
@@ -171,10 +190,18 @@ export default function LiquidGlassTabBar({
   }, [state.index, tabWidth, bubbleWidth, indicatorX]);
 
   return (
-    <View style={[styles.host, { height: BAR_HEIGHT + bottomInset, paddingBottom: bottomInset }]}>
-      <View style={[styles.glassContainer, { width: barWidth }]}>
-        <BlurView intensity={75} tint="light" style={StyleSheet.absoluteFill} />
-        <View style={styles.glassOverlay} />
+    <View
+      style={[
+        styles.host,
+        { height: BAR_HEIGHT + bottomInset + BADGE_RAISE, paddingBottom: bottomInset },
+      ]}
+    >
+      <View
+        style={[
+          styles.bar,
+          { width: barWidth, height: BAR_HEIGHT + bottomInset, paddingBottom: bottomInset },
+        ]}
+      >
 
         {/* The bubble that slides under the active tab. */}
         <Animated.View
@@ -227,6 +254,22 @@ export default function LiquidGlassTabBar({
           })}
         </View>
       </View>
+
+      {/* Swachham brand mark, centred and lifted so it rides the bar's top
+          edge. It sits outside the glass container because that container
+          clips its children; here in the host it can overhang. Decorative and
+          non-interactive, so taps still reach the tabs underneath — the
+          assistant is opened from the floating launcher on Select Items. */}
+      <View pointerEvents="none" style={styles.brandBadgeWrap}>
+        <View style={styles.brandBadge}>
+          <Image
+            source={require('../../assets/swachham-logo1.png')}
+            style={styles.brandBadgeImage}
+            resizeMode="contain"
+            accessibilityLabel="Swachham"
+          />
+        </View>
+      </View>
     </View>
   );
 }
@@ -241,22 +284,18 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
 
-  glassContainer: {
-    height: BAR_HEIGHT,
-    borderRadius: 30,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.65)',
+  // Edge-to-edge white panel, rounded at the top two corners only and flush
+  // with the bottom of the screen. The shadow is cast upwards, so the bar
+  // lifts off the content above it.
+  bar: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: BAR_RADIUS,
+    borderTopRightRadius: BAR_RADIUS,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 18,
-    elevation: 12,
-  },
-
-  glassOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255,255,255,0.28)',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.10,
+    shadowRadius: 14,
+    elevation: 16,
   },
 
   tabs: { flex: 1, flexDirection: 'row', zIndex: 3 },
@@ -264,19 +303,15 @@ const styles = StyleSheet.create({
   tab: { height: BAR_HEIGHT, alignItems: 'center', justifyContent: 'center' },
   tabInner: { alignItems: 'center', justifyContent: 'center' },
 
+  // Same slide animation as before, retinted: white-on-white would have been
+  // invisible against the solid panel.
   activeBubble: {
     position: 'absolute',
     left: 0,
     top: 9,
     height: 66,
     borderRadius: 26,
-    backgroundColor: 'rgba(255,255,255,0.35)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.65)',
-    shadowColor: '#fff',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.7,
-    shadowRadius: 8,
+    backgroundColor: 'rgba(46,125,50,0.08)',
     zIndex: 1,
   },
 
@@ -287,7 +322,7 @@ const styles = StyleSheet.create({
     right: 10,
     height: 12,
     borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.30)',
+    backgroundColor: 'transparent',
   },
 
   iconGlass: {
@@ -299,10 +334,38 @@ const styles = StyleSheet.create({
   },
 
   activeIconGlass: {
-    backgroundColor: 'rgba(255,255,255,0.42)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.55)',
+    backgroundColor: 'transparent',
   },
 
   label: { fontSize: 12, marginTop: 3 },
+
+  // Full-width strip so the badge is centred on any screen width. Pinned to
+  // the top of the host, which is BADGE_RAISE above the bar's top edge.
+  brandBadgeWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 4,
+  },
+
+  brandBadge: {
+    width: BADGE_SIZE,
+    height: BADGE_SIZE,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.06)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.14,
+    shadowRadius: 7,
+    elevation: 20,
+  },
+
+  // Square box + contain: the logo is never stretched or cropped.
+  brandBadgeImage: { width: BADGE_IMAGE_SIZE, height: BADGE_IMAGE_SIZE },
 });

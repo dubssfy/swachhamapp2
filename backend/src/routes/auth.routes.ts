@@ -695,7 +695,8 @@ router.post(
     try {
 
       await sendEntryOtp(
-        req.body.mobile
+        req.body.mobile,
+        req.body.deviceId
       );
 
       sendSuccess(
@@ -731,7 +732,8 @@ router.post(
 
       await verifyEntryOtp(
         req.body.mobile,
-        req.body.otp
+        req.body.otp,
+        req.body.deviceId
       );
 
       sendSuccess(
@@ -766,7 +768,8 @@ router.post(
     try {
 
       await resendEntryOtp(
-        req.body.mobile
+        req.body.mobile,
+        req.body.deviceId
       );
 
       sendSuccess(

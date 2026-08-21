@@ -2,11 +2,13 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { createOrder, getOrders, getOrderById, cancelOrder, getOrderTracking } from '../services/order.service';
 import { sendSuccess } from '../utils/response';
 import { authenticate, AuthenticatedRequest } from '../middleware/auth';
+import { requireServiceArea } from '../middleware/serviceArea';
 
 const router = Router();
 router.use(authenticate);
 
-router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+// Same gate as the business flow: coordinates decide, not a claimed district.
+router.post('/', requireServiceArea, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authReq = req as AuthenticatedRequest;
     const order = await createOrder(authReq.user!.id, req.body);

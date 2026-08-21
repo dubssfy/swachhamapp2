@@ -17,6 +17,35 @@ import businessOrderApi, { BusinessOrderSummary } from '../../services/businessO
 import { extractErrorMessage } from '../../services/api';
 import { formatWeightKg } from '../../utils/businessOrderPdf';
 
+/**
+ * The three views of the order list.
+ *
+ * Filtered here rather than by another request: the list the API already
+ * returns carries each order's status, so switching views costs nothing and
+ * works offline of a refresh.
+ *
+ * `statuses` lists the pipeline statuses this project already uses. All Orders
+ * has none, which means everything — including cancelled orders, which belong
+ * to neither of the other two.
+ */
+type OrderFilter = 'all' | 'in_progress' | 'delivered';
+
+const ORDER_FILTERS: Array<{ key: OrderFilter; label: string; statuses: string[] }> = [
+  { key: 'all', label: 'All Orders', statuses: [] },
+  {
+    key: 'in_progress',
+    label: 'In Progress',
+    statuses: [
+      'ORDER_PLACED',
+      'RECEIVED_AT_FACILITY',
+      'IN_PROCESS',
+      'READY_FOR_DELIVERY',
+      'OUT_FOR_DELIVERY',
+    ],
+  },
+  { key: 'delivered', label: 'Delivered', statuses: ['DELIVERED', 'COMPLETED'] },
+];
+
 const LAUNDRY_LABEL: Record<string, string> = { hotel: 'Hotel Laundry', guest: 'Guest Laundry' };
 const ORDER_LABEL: Record<string, string> = { standard: 'Standard Order', quick: 'Quick Order' };
 const SERVICE_LABEL: Record<string, string> = { wash_iron: 'Wash & Iron', dry_clean: 'Dry Clean' };
@@ -35,6 +64,7 @@ function formatDate(value: string): string {
 
 export default function BusinessOrdersScreen({ navigation }: any) {
   const [orders, setOrders] = useState<BusinessOrderSummary[]>([]);
+  const [filter, setFilter] = useState<OrderFilter>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -57,6 +87,42 @@ export default function BusinessOrdersScreen({ navigation }: any) {
     useCallback(() => {
       load();
     }, [load])
+  );
+
+  const activeFilter = ORDER_FILTERS.find((option) => option.key === filter) || ORDER_FILTERS[0];
+  const visibleOrders = activeFilter.statuses.length
+    ? orders.filter((order) => activeFilter.statuses.includes(order.status))
+    : orders;
+
+  /** Counts sit on the chips, so an empty view is never a surprise. */
+  const countFor = (option: (typeof ORDER_FILTERS)[number]) =>
+    option.statuses.length
+      ? orders.filter((order) => option.statuses.includes(order.status)).length
+      : orders.length;
+
+  const filterRow = (
+    <View style={styles.filterRow}>
+      {ORDER_FILTERS.map((option) => {
+        const isActive = option.key === filter;
+        return (
+          <TouchableOpacity
+            key={option.key}
+            style={[styles.filterChip, isActive && styles.filterChipActive]}
+            onPress={() => setFilter(option.key)}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityState={{ selected: isActive }}
+          >
+            <Text style={[styles.filterText, isActive && styles.filterTextActive]} numberOfLines={1}>
+              {option.label}
+            </Text>
+            <Text style={[styles.filterCount, isActive && styles.filterTextActive]}>
+              {countFor(option)}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
   );
 
   const renderOrder = ({ item }: { item: BusinessOrderSummary }) => (
@@ -134,15 +200,27 @@ export default function BusinessOrdersScreen({ navigation }: any) {
           <Text style={styles.emptyText}>You have no orders yet.</Text>
         </View>
       ) : (
-        <FlatList
-          data={orders}
-          keyExtractor={(item) => item.id}
-          renderItem={renderOrder}
-          contentContainerStyle={styles.listContent}
-          refreshControl={
-            <RefreshControl refreshing={isRefreshing} onRefresh={() => load(true)} tintColor={COLORS.Primary} />
-          }
-        />
+        <>
+          {filterRow}
+
+          <FlatList
+            data={visibleOrders}
+            keyExtractor={(item) => item.id}
+            renderItem={renderOrder}
+            contentContainerStyle={styles.listContent}
+            ListEmptyComponent={
+              <View style={styles.emptyBlock}>
+                <Ionicons name="file-tray-outline" size={44} color={COLORS.TextSecondary} />
+                <Text style={styles.emptyText}>
+                  No {activeFilter.label.toLowerCase()} to show.
+                </Text>
+              </View>
+            }
+            refreshControl={
+              <RefreshControl refreshing={isRefreshing} onRefresh={() => load(true)} tintColor={COLORS.Primary} />
+            }
+          />
+        </>
       )}
     </SafeAreaView>
   );
@@ -159,6 +237,43 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.md,
   },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: SPACING.sm, padding: SPACING.xl },
+  emptyBlock: { alignItems: 'center', gap: SPACING.sm, paddingVertical: SPACING.xxl },
+
+  // ---- Filters ----
+  filterRow: {
+    flexDirection: 'row',
+    gap: SPACING.xs,
+    paddingHorizontal: SPACING.md,
+    paddingTop: SPACING.sm,
+    paddingBottom: SPACING.xs,
+  },
+  filterChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 44,
+    paddingHorizontal: SPACING.sm,
+    borderRadius: BORDER_RADIUS.full,
+    borderWidth: 1.5,
+    borderColor: COLORS.Border,
+    backgroundColor: COLORS.Surface,
+  },
+  filterChipActive: { backgroundColor: COLORS.Primary, borderColor: COLORS.PrimaryDark },
+  filterText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '600',
+    color: COLORS.TextPrimary,
+  },
+  filterCount: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xs,
+    fontWeight: '800',
+    color: COLORS.TextSecondary,
+  },
+  filterTextActive: { color: COLORS.Surface },
   emptyText: { fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.base, color: COLORS.TextSecondary },
   errorText: {
     fontFamily: TYPOGRAPHY.fontFamily,

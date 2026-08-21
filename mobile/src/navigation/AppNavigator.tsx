@@ -25,6 +25,9 @@ import {
 // AUTH / ONBOARDING SCREENS
 // =========================================================
 
+import SplashScreen
+  from '../screens/auth/SplashScreen';
+
 import PermissionScreen
   from '../screens/auth/PermissionScreen';
 
@@ -102,6 +105,9 @@ import BusinessItemsScreen
 import BusinessCartScreen
   from '../screens/business/BusinessCartScreen';
 
+import BusinessTimeSlotScreen
+  from '../screens/business/BusinessTimeSlotScreen';
+
 
 import BusinessProfileScreen
   from '../screens/business/BusinessProfileScreen';
@@ -136,15 +142,25 @@ import SorterLoginScreen
 import SorterDashboardScreen
   from '../screens/sorter/SorterDashboardScreen';
 
+import SorterRequestsScreen
+  from '../screens/sorter/SorterRequestsScreen';
+
 import SorterOrderDetailsScreen
   from '../screens/sorter/SorterOrderDetailsScreen';
 
 import SorterScanScreen
   from '../screens/sorter/SorterScanScreen';
 
+import SorterDefectCaptureScreen
+  from '../screens/sorter/SorterDefectCaptureScreen';
+
 
 // The one bottom bar for both tab sets: Customer and Business.
 import LiquidGlassTabBar from '../components/LiquidGlassTabBar';
+
+// The Swachham assistant, opened from the launcher on Select Items.
+import SwachhamChatbot from '../components/chat/SwachhamChatbot';
+import { useChatStore } from '../store/chatStore';
 
 
 // =========================================================
@@ -343,6 +359,9 @@ function BusinessCartStack() {
       screenOptions={{ headerShown: false }}
     >
       <Stack.Screen name="BusinessCartScreen" component={BusinessCartScreen} />
+      {/* Cart -> Continue -> here. Pushed onto the Cart's own stack, so the
+          cart screen stays mounted and nothing selected is lost. */}
+      <Stack.Screen name="BusinessTimeSlotScreen" component={BusinessTimeSlotScreen} />
     </Stack.Navigator>
   );
 }
@@ -370,17 +389,30 @@ function BusinessProfileStack() {
 // =========================================================
 
 function BusinessTabs() {
+  /*
+   * The assistant is a modal owned by the tab navigator, not a screen in a
+   * stack, and it is opened from a store rather than by navigating. Opening
+   * or closing it therefore never remounts Select Items, so the items and
+   * quantities already chosen are still there afterwards.
+   */
+  const isChatOpen = useChatStore((state) => state.isOpen);
+  const closeChat = useChatStore((state) => state.close);
+
   return (
-    <Tab.Navigator
-      initialRouteName="BusinessHome"
-      screenOptions={{ headerShown: false }}
-      tabBar={(props) => <LiquidGlassTabBar {...props} />}
-    >
-      <Tab.Screen name="BusinessHome" component={BusinessHomeStack} />
-      <Tab.Screen name="BusinessOrders" component={BusinessOrdersStack} />
-      <Tab.Screen name="BusinessCart" component={BusinessCartStack} />
-      <Tab.Screen name="BusinessProfile" component={BusinessProfileStack} />
-    </Tab.Navigator>
+    <>
+      <Tab.Navigator
+        initialRouteName="BusinessHome"
+        screenOptions={{ headerShown: false }}
+        tabBar={(props) => <LiquidGlassTabBar {...props} />}
+      >
+        <Tab.Screen name="BusinessHome" component={BusinessHomeStack} />
+        <Tab.Screen name="BusinessOrders" component={BusinessOrdersStack} />
+        <Tab.Screen name="BusinessCart" component={BusinessCartStack} />
+        <Tab.Screen name="BusinessProfile" component={BusinessProfileStack} />
+      </Tab.Navigator>
+
+      <SwachhamChatbot visible={isChatOpen} onClose={closeChat} section="business" />
+    </>
   );
 }
 
@@ -388,8 +420,9 @@ function BusinessTabs() {
 // =========================================================
 // SORTER STACK
 //
-// Dashboard + order detail. No tabs: the shop floor works
-// one queue, and a bottom bar would only take room from it.
+// Home -> requests page -> order detail. No tabs: the shop
+// floor works one queue, and a bottom bar would only take
+// room from it.
 // =========================================================
 
 function SorterStack() {
@@ -399,8 +432,11 @@ function SorterStack() {
       screenOptions={{ headerShown: false }}
     >
       <Stack.Screen name="SorterDashboardScreen" component={SorterDashboardScreen} />
+      {/* Both home buttons land here: mode 'today' or 'previous'. */}
+      <Stack.Screen name="SorterRequestsScreen" component={SorterRequestsScreen} />
       <Stack.Screen name="SorterOrderDetailsScreen" component={SorterOrderDetailsScreen} />
       <Stack.Screen name="SorterScanScreen" component={SorterScanScreen} />
+      <Stack.Screen name="SorterDefectCaptureScreen" component={SorterDefectCaptureScreen} />
     </Stack.Navigator>
   );
 }
@@ -438,12 +474,34 @@ export default function AppNavigator() {
     <NavigationContainer>
 
       <Stack.Navigator
-        initialRouteName="PermissionScreen"
+        initialRouteName="SplashScreen"
         screenOptions={{
           headerShown: false,
           gestureEnabled: false,
         }}
       >
+
+        {/* =================================================
+            STEP 0
+            BRANDED SPLASH
+
+            Drawn in JS, so the Swachham logo appears in Expo
+            Go as well as in a native build. It hands over to
+            PermissionScreen, never straight to login, so the
+            permission gate below is still never bypassed.
+        ================================================= */}
+
+        {!isAuthenticated && (
+
+          <Stack.Screen
+            name="SplashScreen"
+            component={
+              SplashScreen
+            }
+          />
+
+        )}
+
 
         {/* =================================================
             STEP 1

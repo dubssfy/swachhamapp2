@@ -5,8 +5,8 @@ import {
   StyleSheet,
   TouchableOpacity,
   FlatList,
+  ScrollView,
   ActivityIndicator,
-  Alert,
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -57,14 +57,12 @@ export default function BusinessCartScreen({ navigation }: any) {
     updateItem,
     setItemService,
     removeItem,
-    confirmOrder,
   } = useBusinessOrderStore();
   const [error, setError] = useState('');
-  const [isConfirming, setIsConfirming] = useState(false);
   const [initialLoad, setInitialLoad] = useState(true);
 
   const items = cart?.items || [];
-  /** Blocks confirmation until every line carries its own service. */
+  /** Blocks Continue until every line carries its own service. */
   const hasItemWithoutService = items.some((item) => !item.service_type);
 
   const refresh = useCallback(() => {
@@ -79,6 +77,10 @@ export default function BusinessCartScreen({ navigation }: any) {
     refresh();
     return unsubscribe;
   }, [navigation, refresh]);
+
+  // No location code on this screen, and none on the Time Slot page either:
+  // the service area was settled on the Allow Permission page when the app
+  // opened, and ordering neither asks for a fix nor re-tests the district.
 
   const handleUpdateQuantity = async (itemId: string, quantity: number) => {
     if (quantity < 1) return;
@@ -129,11 +131,15 @@ export default function BusinessCartScreen({ navigation }: any) {
     }
   };
 
-  const handleConfirmOrder = async () => {
-    if (isConfirming) return;
-
-    // The four validations, surfaced one at a time so the user is told
-    // exactly what is missing. The store and the backend re-check all four.
+  /**
+   * Cart -> Time Slot.
+   *
+   * The cart validates what belongs to the cart and nothing more; the day and
+   * the two slots are chosen on the next page, which is also where the order
+   * is finally placed. Navigating there leaves this screen mounted, so the
+   * items and quantities are exactly as they were on the way back.
+   */
+  const handleContinue = () => {
     if (items.length === 0) {
       setError(CART_EMPTY_MESSAGE);
       return;
@@ -151,21 +157,8 @@ export default function BusinessCartScreen({ navigation }: any) {
       return;
     }
 
-    try {
-      setIsConfirming(true);
-      setError('');
-      const order = await confirmOrder();
-      Alert.alert('Order Placed', `Your order ${order.order_number} has been placed successfully.`, [
-        {
-          text: 'OK',
-          onPress: () => navigation.navigate('BusinessOrders'),
-        },
-      ]);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to place order');
-    } finally {
-      setIsConfirming(false);
-    }
+    setError('');
+    navigation.navigate('BusinessTimeSlotScreen');
   };
 
   // Order Type: compulsory, exactly one.
@@ -411,30 +404,33 @@ export default function BusinessCartScreen({ navigation }: any) {
             <>
               {/* Weight, not price — the Business flow never surfaces amounts. */}
               <View style={styles.weightRow}>
-                <Text style={styles.weightLabel}>Total Weight</Text>
-                <Text style={styles.weightValue}>{formatWeightKg(cart?.total_weight_kg)}</Text>
+                <Text style={styles.weightLabel}>Items</Text>
+                <Text style={styles.weightValue}>{items.length}</Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Total Weight</Text>
+                <Text style={styles.summaryValue}>{formatWeightKg(cart?.total_weight_kg)}</Text>
               </View>
 
+              {/* Continue, not Confirm: the order is placed on the Time
+                  Slot page once the day and both slots are chosen. */}
               <TouchableOpacity
                 style={[
                   styles.confirmButton,
-                  (isConfirming || !orderType || !laundryType || hasItemWithoutService) &&
+                  (!orderType || !laundryType || hasItemWithoutService) &&
                     styles.confirmButtonDisabled,
                 ]}
-                onPress={handleConfirmOrder}
-                disabled={isConfirming}
+                onPress={handleContinue}
                 activeOpacity={0.8}
               >
-                {isConfirming ? (
-                  <ActivityIndicator size="small" color={COLORS.Surface} />
-                ) : (
-                  <Text style={styles.confirmButtonText}>Confirm Order</Text>
-                )}
+                <Text style={styles.confirmButtonText}>Continue</Text>
+                <Ionicons name="arrow-forward" size={20} color={COLORS.Surface} />
               </TouchableOpacity>
             </>
           ) : null}
         </>
       )}
+
     </SafeAreaView>
   );
 }
@@ -474,6 +470,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     marginBottom: SPACING.sm,
   },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: SPACING.md,
+    marginBottom: SPACING.xs,
+  },
+  summaryLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+  },
+  summaryValue: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '700',
+    color: COLORS.TextPrimary,
+  },
+  summaryValueMissing: { color: COLORS.Error },
+
   weightRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -18,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import BusinessHeader from '../../components/business/BusinessHeader';
+import SwachhamChatLauncher from '../../components/chat/SwachhamChatLauncher';
 import CategoryGridCard from '../../components/business/CategoryGridCard';
 import businessOrderApi, { BusinessCategory, BusinessItem } from '../../services/businessOrderApi';
 import { getCategoryImage } from '../../constants/categoryImages';
@@ -378,6 +379,9 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
           </TouchableOpacity>
         </Pressable>
       </Modal>
+
+      {/* Swachham assistant, bottom-right and clear of the bottom bar. */}
+      <SwachhamChatLauncher />
     </SafeAreaView>
   );
 }

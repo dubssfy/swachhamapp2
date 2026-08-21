@@ -52,13 +52,23 @@ export interface ScanStatus {
 }
 
 /**
- * A barcode reads CL-YYYYMMDD-000001.
+ * Reserves `count` barcodes in one step. Each reads CL-YYYYMMDD-000001.
  *
  * The daily counter uses the same atomic upsert as the Business order number,
- * so two orders generated at the same instant cannot take the same number, and
- * the UNIQUE key on the column is the backstop.
+ * except it advances by the whole block at once: LAST_INSERT_ID reports the
+ * highest number taken, so this call owns (last - count, last] and no other
+ * session can be inside that range. Two orders generated at the same instant
+ * still cannot collide, and the UNIQUE key on the column is the backstop.
+ *
+ * Reserving a block rather than calling this once per piece is what keeps
+ * order creation off the network: a 60-piece order used to make 180 round
+ * trips just to number its garments, on top of one INSERT each. Against a
+ * remote database that alone took ~15 seconds, which is longer than the app
+ * waits before giving up.
  */
-async function nextBarcode(connection: any): Promise<string> {
+async function reserveBarcodes(connection: any, count: number): Promise<string[]> {
+  if (count <= 0) return [];
+
   const tz = config.BUSINESS_TZ_OFFSET;
 
   const [dateRows]: any = await connection.execute(
@@ -70,14 +80,24 @@ async function nextBarcode(connection: any): Promise<string> {
 
   await connection.execute(
     `INSERT INTO garment_barcode_daily_sequence (sequence_date, last_number)
-     VALUES (?, LAST_INSERT_ID(1))
-     ON DUPLICATE KEY UPDATE last_number = LAST_INSERT_ID(last_number + 1)`,
-    [ymd]
+     VALUES (?, LAST_INSERT_ID(?))
+     ON DUPLICATE KEY UPDATE last_number = LAST_INSERT_ID(last_number + ?)`,
+    [ymd, count, count]
   );
   const [seqRows]: any = await connection.execute(`SELECT LAST_INSERT_ID() AS seq`);
 
-  return `CL-${yyyymmdd}-${String(seqRows[0].seq).padStart(6, '0')}`;
+  const last = Number(seqRows[0].seq);
+  const first = last - count + 1;
+
+  const barcodes: string[] = [];
+  for (let number = first; number <= last; number += 1) {
+    barcodes.push(`CL-${yyyymmdd}-${String(number).padStart(6, '0')}`);
+  }
+  return barcodes;
 }
+
+/** Rows per INSERT, so a very large order cannot exceed max_allowed_packet. */
+const GARMENT_INSERT_CHUNK = 200;
 
 /**
  * Creates one garment row per physical piece of an order.
@@ -129,28 +149,40 @@ async function generateGarmentsForOrder(
       [orderId]
     );
 
-    let created = 0;
-    for (const line of lines) {
-      const quantity = Math.max(0, Number(line.quantity) || 0);
-      for (let piece = 1; piece <= quantity; piece += 1) {
-        const barcode = await nextBarcode(connection);
-        await connection.execute(
-          `INSERT INTO order_garments
-             (order_id, order_item_id, service_id, barcode, item_name, service_name, weight_kg, piece_no)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            orderId,
-            line.id,
-            line.service_id,
-            barcode,
-            line.service_name,
-            line.resolved_service || null,
-            line.weight_kg,
-            piece,
-          ]
-        );
-        created += 1;
+    // Every piece of the order, numbered from one reserved block.
+    const pieceCounts = lines.map((line: any) => Math.max(0, Number(line.quantity) || 0));
+    const totalPieces = pieceCounts.reduce((sum: number, n: number) => sum + n, 0);
+    const barcodes = await reserveBarcodes(connection, totalPieces);
+
+    const rows: any[][] = [];
+    lines.forEach((line: any, index: number) => {
+      for (let piece = 1; piece <= pieceCounts[index]; piece += 1) {
+        rows.push([
+          orderId,
+          line.id,
+          line.service_id,
+          barcodes[rows.length],
+          line.service_name,
+          line.resolved_service || null,
+          line.weight_kg,
+          piece,
+        ]);
       }
+    });
+
+    // Bulk INSERT: `query` expands a nested array into VALUES (...),(...),
+    // still escaped by the driver. One statement per chunk rather than one
+    // per garment.
+    let created = 0;
+    for (let start = 0; start < rows.length; start += GARMENT_INSERT_CHUNK) {
+      const chunk = rows.slice(start, start + GARMENT_INSERT_CHUNK);
+      await connection.query(
+        `INSERT INTO order_garments
+           (order_id, order_item_id, service_id, barcode, item_name, service_name, weight_kg, piece_no)
+         VALUES ?`,
+        [chunk]
+      );
+      created += chunk.length;
     }
 
     if (ownsConnection) await connection.commit();

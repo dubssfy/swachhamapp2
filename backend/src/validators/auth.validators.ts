@@ -258,6 +258,14 @@ const entryOtpSendValidation = [
     .withMessage('Mobile number is required')
     .matches(/^[6-9]\d{9}$/)
     .withMessage('Mobile must be a valid 10-digit Indian mobile number'),
+  body('deviceId')
+    .trim()
+    .notEmpty()
+    .withMessage('Device ID is required')
+    .isLength({ min: 16, max: 128 })
+    .withMessage('Device ID must be between 16 and 128 characters')
+    .matches(/^[A-Za-z0-9._-]+$/)
+    .withMessage('Device ID contains invalid characters'),
 ];
 
 const entryOtpVerifyValidation = [
@@ -267,6 +275,14 @@ const entryOtpVerifyValidation = [
     .withMessage('Mobile number is required')
     .matches(/^[6-9]\d{9}$/)
     .withMessage('Mobile must be a valid 10-digit Indian mobile number'),
+  body('deviceId')
+    .trim()
+    .notEmpty()
+    .withMessage('Device ID is required')
+    .isLength({ min: 16, max: 128 })
+    .withMessage('Device ID must be between 16 and 128 characters')
+    .matches(/^[A-Za-z0-9._-]+$/)
+    .withMessage('Device ID contains invalid characters'),
   body('otp')
     .trim()
     .notEmpty()

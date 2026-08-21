@@ -21,6 +21,17 @@ interface AppConfig {
   OTP_API_KEY: string;
   OTP_SENDER_ID: string;
   BUSINESS_TZ_OFFSET: string;
+
+  // --- Meta WhatsApp Cloud API ---
+  // Server-side only. None of these may ever reach the mobile app.
+  WHATSAPP_PHONE_NUMBER_ID: string;
+  WHATSAPP_ACCESS_TOKEN: string;
+  WHATSAPP_API_VERSION: string;
+  WHATSAPP_DEFECT_TEMPLATE: string;
+  WHATSAPP_TEMPLATE_LANG: string;
+  WHATSAPP_DEFAULT_COUNTRY_CODE: string;
+  /** Fallback for the Sorter copy when the sorter account has no mobile. */
+  WHATSAPP_SORTER_NUMBER: string;
 }
 
 function requireEnv(key: string): string {
@@ -56,6 +67,20 @@ const config: AppConfig = {
   // Business calendar day used for daily order-number sequences. The DB
   // server runs in UTC, so this offset decides when the day rolls over.
   BUSINESS_TZ_OFFSET: optionalEnv('BUSINESS_TZ_OFFSET', '+05:30'),
+
+  // Optional so the app still boots without WhatsApp configured; the defect
+  // service reports a clear "not configured" failure instead of crashing.
+  WHATSAPP_PHONE_NUMBER_ID: optionalEnv('WHATSAPP_PHONE_NUMBER_ID', ''),
+  WHATSAPP_ACCESS_TOKEN: optionalEnv('WHATSAPP_ACCESS_TOKEN', ''),
+  WHATSAPP_API_VERSION: optionalEnv('WHATSAPP_API_VERSION', 'v21.0'),
+  // Template name, not a template id — the name plus language is what the
+  // Cloud API resolves, and it stays configurable.
+  WHATSAPP_DEFECT_TEMPLATE: optionalEnv('WHATSAPP_DEFECT_TEMPLATE', 'defective_piece_notification'),
+  WHATSAPP_TEMPLATE_LANG: optionalEnv('WHATSAPP_TEMPLATE_LANG', 'en'),
+  // Indian numbers are stored as 10 digits; Meta needs them in E.164.
+  WHATSAPP_DEFAULT_COUNTRY_CODE: optionalEnv('WHATSAPP_DEFAULT_COUNTRY_CODE', '91'),
+  // Optional: used only when the reporting sorter has no number on file.
+  WHATSAPP_SORTER_NUMBER: optionalEnv('WHATSAPP_SORTER_NUMBER', ''),
 };
 
 export { config };

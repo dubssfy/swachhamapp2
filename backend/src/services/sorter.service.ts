@@ -1,7 +1,8 @@
 import { getClient, query } from '../config/database';
+import { config } from '../config/env';
 import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
-import { assertStageComplete } from './garment.service';
+import { listDefectsForOrder, DefectRecord } from './defect.service';
 
 /**
  * Sorter module — the shop-floor view of the order pipeline.
@@ -47,14 +48,12 @@ const ALLOWED_TRANSITIONS: Record<SorterStage, SorterStage[]> = {
 };
 
 /**
- * Transitions that may only happen once every garment has been scanned for
- * the matching stage. Enforced on every request, because a disabled button in
- * the app is not what protects this.
+ * Barcode scanning is an OPTIONAL tool, not a gate.
+ *
+ * Scanning still records which pieces were seen — the scan endpoints and the
+ * counts they return are unchanged — but no transition is blocked because a
+ * garment was not scanned. The shop floor can always move an order forward.
  */
-const SCAN_GATE: Partial<Record<SorterStage, 'ACCEPTANCE' | 'DELIVERY'>> = {
-  accepted: 'ACCEPTANCE',
-  out_for_delivery: 'DELIVERY',
-};
 
 export interface SorterOrderSummary {
   id: string;
@@ -72,6 +71,9 @@ export interface SorterOrderSummary {
   created_at: Date;
   accepted_at: Date | null;
   ready_at: Date | null;
+  /** Defect reporting, summarised for the queue card. */
+  defect_count: number;
+  latest_defect_whatsapp_status: 'PENDING' | 'SENT' | 'FAILED' | null;
 }
 
 export interface SorterOrderDetail extends SorterOrderSummary {
@@ -86,6 +88,7 @@ export interface SorterOrderDetail extends SorterOrderSummary {
     total_weight_kg: number;
   }>;
   confirmation_pdf_url: string | null;
+  defects: DefectRecord[];
 }
 
 /**
@@ -110,7 +113,14 @@ const ORDER_SELECT = `
     LEFT JOIN businesses b ON b.id = bu.business_id
     LEFT JOIN users u ON u.id = o.user_id`;
 
-function toSummary(row: any, counts: { item_count: number; total_quantity: number }) {
+function toSummary(
+  row: any,
+  counts: { item_count: number; total_quantity: number },
+  defects: { count: number; latestWhatsAppStatus: DefectRecord['whatsapp_status'] | null } = {
+    count: 0,
+    latestWhatsAppStatus: null,
+  }
+) {
   return {
     id: String(row.id),
     order_number: row.order_number,
@@ -127,29 +137,82 @@ function toSummary(row: any, counts: { item_count: number; total_quantity: numbe
     created_at: row.created_at,
     accepted_at: row.accepted_at,
     ready_at: row.ready_at,
+    defect_count: defects.count,
+    latest_defect_whatsapp_status: defects.latestWhatsAppStatus,
   };
 }
 
+/** YYYY-MM-DD, the only shape the date filter accepts. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
 /**
- * The Sorter queue: everything sitting in one of the three workflow states,
- * oldest first, because the shop floor works front to back.
+ * The business-day calendar date, as the shop floor reckons it.
+ *
+ * Derived from BUSINESS_TZ_OFFSET rather than the database server's clock:
+ * the DB runs in UTC, so an order placed at 02:00 IST would fall on the
+ * previous UTC day and land under the wrong heading near midnight.
  */
-async function listOrders(stage?: string): Promise<{
+async function currentBusinessDate(): Promise<string> {
+  const result = await query<{ d: string }>(
+    `SELECT DATE_FORMAT(DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?)), '%Y-%m-%d') AS d`,
+    [config.BUSINESS_TZ_OFFSET]
+  );
+  return String(result.rows[0].d);
+}
+
+/**
+ * The Sorter queue: everything sitting in one of the workflow states, newest
+ * first so the most recent job is at the top of the shop floor's list.
+ *
+ * `date` narrows the result to one calendar day, compared in the business
+ * timezone. `today` resolves that date on the server instead of trusting the
+ * handset's clock or locale.
+ *
+ * Either way the filtering happens in SQL, so one day's rows are fetched
+ * rather than the whole history.
+ *
+ * `limit` caps how much comes back; the default is generous enough for a
+ * single day but stops an unbounded read.
+ */
+async function listOrders(
+  stage?: string,
+  options: { date?: string; today?: boolean; limit?: number } = {}
+): Promise<{
   orders: SorterOrderSummary[];
   counts: { confirmed: number; accepted: number; ready: number; active: number };
+  business_date: string | null;
 }> {
   if (stage !== undefined && !(stage in SORTER_STATUS)) {
     throw new AppError('Unknown stage filter', 400);
+  }
+  if (options.date !== undefined && !DATE_ONLY.test(options.date)) {
+    throw new AppError('date must be in YYYY-MM-DD format', 400);
   }
 
   const statuses = stage ? [SORTER_STATUS[stage as SorterStage]] : QUEUE_STATUSES;
   const placeholders = statuses.map(() => '?').join(', ');
 
+  // "Today" is resolved here, from the configured business timezone, so the
+  // handset's clock and locale never decide which day the shop floor sees.
+  const targetDate = options.today ? await currentBusinessDate() : options.date;
+
+  const params: any[] = [...statuses];
+  let dateClause = '';
+  if (targetDate) {
+    // Compared in the business timezone, so an order placed just after
+    // midnight IST is not filed under the previous UTC day.
+    dateClause = ` AND DATE(CONVERT_TZ(o.created_at, '+00:00', ?)) = ?`;
+    params.push(config.BUSINESS_TZ_OFFSET, targetDate);
+  }
+
+  const limit = Math.min(Math.max(options.limit ?? 200, 1), 500);
+
   const result = await query<any>(
     `${ORDER_SELECT}
-      WHERE o.status IN (${placeholders})
-      ORDER BY o.created_at ASC`,
-    statuses
+      WHERE o.status IN (${placeholders})${dateClause}
+      ORDER BY o.created_at DESC
+      LIMIT ${limit}`,
+    params
   );
 
   const orders: SorterOrderSummary[] = [];
@@ -159,11 +222,27 @@ async function listOrders(stage?: string): Promise<{
          FROM order_items WHERE order_id = ?`,
       [row.id]
     );
+    // Defect summary for the card: how many, and where the newest one's
+    // WhatsApp notification got to.
+    const defect = await query<any>(
+      `SELECT COUNT(*) AS n,
+              (SELECT whatsapp_status FROM order_defects
+                WHERE order_id = ? ORDER BY id DESC LIMIT 1) AS latest_status
+         FROM order_defects WHERE order_id = ?`,
+      [row.id, row.id]
+    );
     orders.push(
-      toSummary(row, {
-        item_count: Number(totals.rows[0]?.item_count || 0),
-        total_quantity: Number(totals.rows[0]?.total_quantity || 0),
-      })
+      toSummary(
+        row,
+        {
+          item_count: Number(totals.rows[0]?.item_count || 0),
+          total_quantity: Number(totals.rows[0]?.total_quantity || 0),
+        },
+        {
+          count: Number(defect.rows[0]?.n || 0),
+          latestWhatsAppStatus: defect.rows[0]?.latest_status || null,
+        }
+      )
     );
   }
 
@@ -183,7 +262,7 @@ async function listOrders(stage?: string): Promise<{
   };
   counts.active = counts.confirmed + counts.accepted + counts.ready;
 
-  return { orders, counts };
+  return { orders, counts, business_date: targetDate ?? null };
 }
 
 async function getOrderById(orderId: string): Promise<SorterOrderDetail> {
@@ -228,13 +307,23 @@ async function getOrderById(orderId: string): Promise<SorterOrderDetail> {
     total_weight_kg: Number(item.total_weight_kg || 0),
   }));
 
+  const defects = await listDefectsForOrder(orderId);
+
   return {
-    ...toSummary(row, {
-      item_count: items.length,
-      total_quantity: items.reduce((sum, item) => sum + item.quantity, 0),
-    }),
+    ...toSummary(
+      row,
+      {
+        item_count: items.length,
+        total_quantity: items.reduce((sum, item) => sum + item.quantity, 0),
+      },
+      {
+        count: defects.length,
+        latestWhatsAppStatus: defects[0]?.whatsapp_status ?? null,
+      }
+    ),
     items,
     confirmation_pdf_url: row.confirmation_pdf_url || null,
+    defects,
   };
 }
 
@@ -290,13 +379,6 @@ async function updateStatus(
             : 'This order has left the Sorter workflow.'),
         409
       );
-    }
-
-    // Garment verification gate: throws unless the scan count for the stage
-    // equals the expected garment count.
-    const gate = SCAN_GATE[target];
-    if (gate) {
-      await assertStageComplete(orderId, gate);
     }
 
     // Only accepted and ready have audit columns; out_for_delivery is carried

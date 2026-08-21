@@ -1,5 +1,9 @@
 import { create } from 'zustand';
-import businessOrderApi, { BusinessCart, BusinessOrderResult } from '../services/businessOrderApi';
+import businessOrderApi, {
+  BusinessCart,
+  BusinessOrderResult,
+  BusinessPickupSchedule,
+} from '../services/businessOrderApi';
 import { extractErrorMessage } from '../services/api';
 
 export type LaundryType = 'hotel' | 'guest';
@@ -45,11 +49,18 @@ export const LAUNDRY_TYPE_REQUIRED_MESSAGE = 'Please select Hotel Laundry or Gue
 
 export const CART_EMPTY_MESSAGE = 'Add at least one item to your cart before placing your order.';
 
+/** The three things the Time Slot page must have before an order is sent. */
+export const DAY_REQUIRED_MESSAGE = 'Please select a day.';
+export const PICKUP_TIME_REQUIRED_MESSAGE = 'Please select a pickup time.';
+export const DELIVERY_TIME_REQUIRED_MESSAGE = 'Please select a delivery time.';
+
 interface BusinessOrderState {
   laundryType: LaundryType | null;
   orderType: OrderType | null;
   cart: BusinessCart | null;
   isLoading: boolean;
+  /** True from the moment Place Order is pressed until the request settles. */
+  isPlacingOrder: boolean;
 
   /** Persists the order type chosen in the Cart. */
   saveOrderType: (value: OrderType) => Promise<void>;
@@ -65,7 +76,12 @@ interface BusinessOrderState {
   removeItem: (itemId: string) => Promise<void>;
   /** Copies a past order's items into the cart and shows them immediately. */
   repeatIntoCart: (orderId: string) => Promise<number>;
-  confirmOrder: () => Promise<BusinessOrderResult>;
+  /**
+   * Places the order for the chosen pickup slot. No location of any kind is
+   * involved — that was settled on the Allow Permission page before the app
+   * was entered.
+   */
+  confirmOrder: (schedule: BusinessPickupSchedule) => Promise<BusinessOrderResult>;
   resetFlow: () => void;
 }
 
@@ -83,6 +99,7 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
   orderType: null,
   cart: null,
   isLoading: false,
+  isPlacingOrder: false,
 
   saveOrderType: async (value: OrderType) => {
     try {
@@ -192,7 +209,11 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
     }
   },
 
-  confirmOrder: async () => {
+  confirmOrder: async (schedule: BusinessPickupSchedule) => {
+    // One request per order. `isPlacingOrder` is set before anything can
+    // await, so a second tap that slips past the button's disabled state is
+    // still rejected here rather than creating a duplicate order.
+    if (get().isPlacingOrder) throw new Error('Your order is already being placed...');
     if (get().isLoading) throw new Error('Please wait...');
 
     // The four Cart validations, in the order the user meets them. The
@@ -205,16 +226,21 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
     }
     if (!orderType) throw new Error(ORDER_TYPE_REQUIRED_MESSAGE);
     if (!laundryType) throw new Error(LAUNDRY_TYPE_REQUIRED_MESSAGE);
+    // The server refuses an unscheduled order too; this stops the request
+    // being sent at all.
+    if (!schedule?.pickupDate) throw new Error(DAY_REQUIRED_MESSAGE);
+    if (!schedule?.pickupSlot) throw new Error(PICKUP_TIME_REQUIRED_MESSAGE);
+    if (!schedule?.deliverySlot) throw new Error(DELIVERY_TIME_REQUIRED_MESSAGE);
 
     try {
-      set({ isLoading: true });
-      const response = await businessOrderApi.confirmOrder();
+      set({ isPlacingOrder: true });
+      const response = await businessOrderApi.confirmOrder(schedule);
       set({ cart: null, laundryType: null, orderType: null });
       return response.data;
     } catch (error: any) {
       throw new Error(extractErrorMessage(error, 'Failed to place order'));
     } finally {
-      set({ isLoading: false });
+      set({ isPlacingOrder: false });
     }
   },
 

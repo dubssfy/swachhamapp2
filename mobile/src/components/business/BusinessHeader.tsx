@@ -15,10 +15,10 @@ interface Props {
  * Shared Business header, used by every Business screen so branding and
  * spacing stay identical across the section.
  *
- * Top-left is the brand lockup: the Swachham logo followed by the wordmark.
- * The screen title sits on the row below it, so a long title can never crowd
- * or wrap into the branding. Any action (cart, etc.) sits at the right of the
- * brand row.
+ * Top-left is the Swachham logo on its own — the mark already carries the
+ * wordmark, so a separate text label beside it would only repeat it. The
+ * screen title sits on the row below, so a long title can never crowd the
+ * branding. Any action (cart, etc.) sits at the right of the brand row.
  *
  * The logo has a fixed box with resizeMode="contain", so its aspect ratio is
  * preserved on every screen size.
@@ -34,8 +34,6 @@ export default function BusinessHeader({ title, subtitle, onBack, action }: Prop
           resizeMode="contain"
           accessibilityLabel="Swachham"
         />
-        <Text style={styles.brandText}>Swachham</Text>
-
         <View style={styles.brandSpacer} />
         {action}
       </View>
@@ -71,14 +69,7 @@ const styles = StyleSheet.create({
   },
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
   // Fixed box + contain keeps the aspect ratio on every screen size.
-  logo: { width: 34, height: 34, borderRadius: BORDER_RADIUS.sm },
-  brandText: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.lg,
-    fontWeight: '700',
-    color: COLORS.PrimaryDark,
-    letterSpacing: 0.3,
-  },
+  logo: { width: 52, height: 52, borderRadius: BORDER_RADIUS.sm },
   brandSpacer: { flex: 1 },
   titleRow: {
     flexDirection: 'row',

@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,7 +19,9 @@ import sorterApi, {
   SorterStage,
   ScanStatus,
   ScanStageName,
+  DefectRecord,
 } from '../../services/sorterApi';
+import { API_BASE_URL } from '../../constants/api';
 import { extractErrorMessage } from '../../services/api';
 import { BusinessOrderDetail } from '../../services/businessOrderApi';
 import {
@@ -32,7 +35,8 @@ import { STAGE_META } from './SorterDashboardScreen';
 
 /**
  * The one step available from each stage, the label it carries, and which
- * scan session must be complete first. A step with no `scan` needs none.
+ * scan session it offers. Scanning is optional — a step is never blocked by
+ * it; the `scan` field only decides which scan screen the button opens.
  */
 const NEXT_ACTION: Record<
   SorterStage,
@@ -55,6 +59,7 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
   const { orderId } = route.params || {};
   const [order, setOrder] = useState<SorterOrderDetail | null>(null);
   const [scan, setScan] = useState<ScanStatus | null>(null);
+  const [retryingDefectId, setRetryingDefectId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isBuildingPdf, setIsBuildingPdf] = useState(false);
@@ -155,6 +160,43 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
     }
   };
 
+  /**
+   * Re-sends a defect notification that Meta rejected.
+   *
+   * A defect already marked SENT is refused by the server, so a stray tap
+   * cannot message the customer twice; that 409 is surfaced as a normal
+   * error rather than being retried behind the Sorter's back.
+   */
+  const retryDefectWhatsApp = async (defect: DefectRecord) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    try {
+      setRetryingDefectId(defect.id);
+      setError('');
+      const response = await sorterApi.retryDefectWhatsApp(String(orderId), defect.id);
+      const customerOk = response.data.whatsapp_status === 'SENT';
+      const sorterOk = response.data.sorter_whatsapp_status === 'SENT';
+      if (customerOk && sorterOk) {
+        Alert.alert('WhatsApp sent', 'The customer and you have both been notified.');
+      } else {
+        // Say which copy is still outstanding rather than a blanket failure.
+        Alert.alert(
+          'WhatsApp not fully delivered',
+          [
+            customerOk ? 'Customer: sent' : `Customer: ${response.data.whatsapp_error || 'failed'}`,
+            sorterOk ? 'Sorter: sent' : `Sorter: ${response.data.sorter_whatsapp_error || 'failed'}`,
+          ].join('\n')
+        );
+      }
+      await load();
+    } catch (err: any) {
+      setError(extractErrorMessage(err, 'WhatsApp retry failed'));
+    } finally {
+      setRetryingDefectId(null);
+      busyRef.current = false;
+    }
+  };
+
   if (isLoading) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -189,8 +231,12 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
   const scanScanned = scanStage === 'delivery' ? scan?.delivery_scanned ?? 0 : scan?.acceptance_scanned ?? 0;
   const scanMatched = scanStage === 'delivery' ? scan?.delivery_matched ?? false : scan?.acceptance_matched ?? false;
   const scanRemaining = Math.max((scan?.expected_count ?? 0) - scanScanned, 0);
-  /** A step that needs scanning stays locked until the counts agree. */
-  const actionBlocked = Boolean(scanStage) && !scanMatched;
+  /**
+   * Scanning is an optional aid, never a gate: the action button is enabled
+   * whatever the scan counts say. The server no longer blocks the transition
+   * either, so this is not a UI-only relaxation.
+   */
+  const actionBlocked = false;
   const { date, time } = formatDateTime(order.created_at);
 
   return (
@@ -272,8 +318,8 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
 
             {scanStage && !scanMatched ? (
               <Text style={styles.mismatchText}>
-                Quantity does not match — {scanRemaining} garment
-                {scanRemaining === 1 ? '' : 's'} remaining.
+                {scanRemaining} garment{scanRemaining === 1 ? '' : 's'} not yet scanned.
+                Scanning is optional — you can continue without it.
               </Text>
             ) : null}
 
@@ -287,12 +333,127 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
               >
                 <Ionicons name="barcode-outline" size={22} color={COLORS.Surface} />
                 <Text style={styles.scanButtonText}>
-                  {scanStage === 'acceptance' ? 'SCAN GARMENTS' : 'DELIVERY VERIFICATION'}
+                  {scanStage === 'acceptance'
+                    ? 'SCAN BARCODE (OPTIONAL)'
+                    : 'DELIVERY VERIFICATION (OPTIONAL)'}
                 </Text>
               </TouchableOpacity>
             ) : null}
           </View>
         ) : null}
+
+        {/* ---- Defective piece ---- */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>DEFECTIVE PIECE</Text>
+
+          {order.defects && order.defects.length > 0 ? (
+            order.defects.map((defect) => {
+              const reported = formatDateTime(defect.reported_at);
+              const sent = defect.whatsapp_status === 'SENT';
+              const sorterSent = defect.sorter_whatsapp_status === 'SENT';
+              // Retry stays available until BOTH copies are accepted.
+              const bothSent = sent && sorterSent;
+              return (
+                <View key={defect.id} style={styles.defectItem}>
+                  <View style={styles.defectHeaderRow}>
+                    <Ionicons name="warning" size={18} color={COLORS.Error} />
+                    <Text style={styles.defectHeaderText}>Defect Reported</Text>
+                  </View>
+
+                  <Image
+                    // Stored as a server-relative URL, so it is resolved
+                    // against the same base the API client uses.
+                    source={{ uri: `${API_BASE_URL}${defect.photo_url}` }}
+                    style={styles.defectPhoto}
+                    resizeMode="cover"
+                  />
+
+                  <Text style={styles.defectMeta}>
+                    {reported.date} {reported.time}
+                  </Text>
+
+                  {/* Customer copy and Sorter copy are reported separately:
+                      one failing says nothing about the other. */}
+                  <View style={styles.defectStatusRow}>
+                    <Ionicons
+                      name={sent ? 'checkmark-circle' : 'alert-circle'}
+                      size={18}
+                      color={sent ? COLORS.Success : COLORS.Error}
+                    />
+                    <Text style={[styles.defectStatusText, { color: sent ? COLORS.Success : COLORS.Error }]}>
+                      {sent ? 'Customer WhatsApp: Sent' : 'Customer WhatsApp: Failed to send'}
+                    </Text>
+                  </View>
+
+                  {!sent && defect.whatsapp_error ? (
+                    <Text style={styles.defectError}>{defect.whatsapp_error}</Text>
+                  ) : null}
+
+                  <View style={styles.defectStatusRow}>
+                    <Ionicons
+                      name={sorterSent ? 'checkmark-circle' : 'alert-circle'}
+                      size={18}
+                      color={sorterSent ? COLORS.Success : COLORS.Error}
+                    />
+                    <Text
+                      style={[
+                        styles.defectStatusText,
+                        { color: sorterSent ? COLORS.Success : COLORS.Error },
+                      ]}
+                    >
+                      {sorterSent
+                        ? 'Sorter WhatsApp: Sent'
+                        : defect.sorter_whatsapp_status
+                        ? 'Sorter WhatsApp: Failed to send'
+                        : 'Sorter WhatsApp: Not attempted'}
+                    </Text>
+                  </View>
+
+                  {!sorterSent && defect.sorter_whatsapp_error ? (
+                    <Text style={styles.defectError}>{defect.sorter_whatsapp_error}</Text>
+                  ) : null}
+
+                  {!bothSent ? (
+                    <TouchableOpacity
+                      style={[
+                        styles.retryButtonSmall,
+                        retryingDefectId === defect.id && styles.buttonDisabled,
+                      ]}
+                      onPress={() => retryDefectWhatsApp(defect)}
+                      disabled={retryingDefectId === defect.id}
+                      activeOpacity={0.85}
+                    >
+                      {retryingDefectId === defect.id ? (
+                        <ActivityIndicator size="small" color={COLORS.Surface} />
+                      ) : (
+                        <>
+                          <Ionicons name="refresh" size={18} color={COLORS.Surface} />
+                          <Text style={styles.retryButtonSmallText}>RETRY WHATSAPP</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              );
+            })
+          ) : (
+            <Text style={styles.defectEmpty}>No defect reported for this order.</Text>
+          )}
+
+          <TouchableOpacity
+            style={styles.defectButton}
+            onPress={() =>
+              navigation.navigate('SorterDefectCaptureScreen', {
+                orderId,
+                orderNumber: order.order_number,
+              })
+            }
+            activeOpacity={0.85}
+          >
+            <Ionicons name="camera" size={22} color={COLORS.Surface} />
+            <Text style={styles.defectButtonText}>REPORT DEFECTIVE PIECE</Text>
+          </TouchableOpacity>
+        </View>
 
         <TouchableOpacity
           style={[styles.secondaryButton, isBuildingPdf && styles.buttonDisabled]}
@@ -575,6 +736,84 @@ const styles = StyleSheet.create({
     color: COLORS.Primary,
     letterSpacing: 0.5,
   },
+  // ---- Defective piece ----
+  defectItem: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.Border,
+    paddingTop: SPACING.sm,
+    marginTop: SPACING.sm,
+    gap: SPACING.xs,
+  },
+  defectHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs },
+  defectHeaderText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: 'bold',
+    color: COLORS.Error,
+  },
+  defectPhoto: {
+    width: '100%',
+    height: 180,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: COLORS.Background,
+  },
+  defectMeta: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+  },
+  defectStatusRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs },
+  defectStatusText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '700',
+  },
+  defectError: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.Error,
+  },
+  defectEmpty: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+    marginTop: SPACING.xs,
+  },
+  retryButtonSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.xs,
+    minHeight: 46,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: COLORS.Error,
+    marginTop: SPACING.xs,
+  },
+  retryButtonSmallText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: 'bold',
+    color: COLORS.Surface,
+  },
+  // Large: this is a primary shop-floor action.
+  defectButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.sm,
+    minHeight: 58,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: COLORS.Error,
+    marginTop: SPACING.md,
+  },
+  defectButtonText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: 'bold',
+    color: COLORS.Surface,
+    letterSpacing: 0.5,
+  },
+
   buttonDisabled: { opacity: 0.6 },
 
   matchBanner: {

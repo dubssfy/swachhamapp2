@@ -4,6 +4,22 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, TYPOGRAPHY } from '../../constants/theme';
 import { useAuthStore } from '../../store/authStore';
 
+/**
+ * ============================================================
+ * TESTING SWITCH — set back to true before release.
+ * ============================================================
+ *
+ * false: every cold start is signed out, so the app always runs the full
+ *        Permission -> Mobile OTP -> Login flow. Any saved session is wiped
+ *        on launch rather than merely ignored, because the API client reads
+ *        the token straight from SecureStore and would otherwise keep sending
+ *        it on requests the UI thinks are signed out.
+ *
+ * true:  normal behaviour. A saved session is restored and the user goes
+ *        straight into the app, seeing login only after logging out.
+ */
+const RESTORE_SESSION_ON_LAUNCH = false;
+
 export default function SplashScreen({ navigation }: any) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
@@ -12,9 +28,10 @@ export default function SplashScreen({ navigation }: any) {
   // stays square with resizeMode="contain", so it is never stretched or
   // cropped on a small phone or a tablet.
   const { width, height } = useWindowDimensions();
-  const logoSize = Math.min(width * 0.55, height * 0.3, 260);
-
-  const { isAuthenticated, isLoading, restoreSession } = useAuthStore();
+  // Square box derived from the smaller of the two screen dimensions, clamped
+  // so it stays readable on a small phone and never dominates a tablet.
+  const logoSize = Math.max(140, Math.min(width * 0.55, height * 0.3, 260));
+  const { isAuthenticated, isLoading, restoreSession, clearStoredSession } = useAuthStore();
   const sessionRestored = useRef(false);
 
   useEffect(() => {
@@ -34,17 +51,25 @@ export default function SplashScreen({ navigation }: any) {
 
     if (!sessionRestored.current) {
       sessionRestored.current = true;
-      restoreSession();
+      if (RESTORE_SESSION_ON_LAUNCH) {
+        restoreSession();
+      } else {
+        clearStoredSession();
+      }
     }
-  }, [fadeAnim, scaleAnim, restoreSession]);
+  }, [fadeAnim, scaleAnim, restoreSession, clearStoredSession]);
 
   useEffect(() => {
-    // Only navigate to login if session restoration finished and user is not authenticated.
-    // If authenticated, AppNavigator will automatically unmount this stack and show MainTab.
+    // Only move on once session restoration finished and the user is not
+    // authenticated. If authenticated, AppNavigator unmounts this stack and
+    // shows the signed-in app instead.
+    //
+    // Hand over to PermissionScreen, not login: location and camera are still
+    // required before anyone reaches the login form.
     if (sessionRestored.current && !isLoading) {
       const timer = setTimeout(() => {
         if (!isAuthenticated) {
-          navigation.replace('LoginScreen');
+          navigation.replace('PermissionScreen');
         }
       }, 1500);
       return () => clearTimeout(timer);
@@ -68,6 +93,7 @@ export default function SplashScreen({ navigation }: any) {
           source={require('../../../assets/swachham-logo.png')}
           style={[styles.logo, { width: logoSize, height: logoSize }]}
           resizeMode="contain"
+          accessibilityLabel="Swachham"
         />
         <Text style={styles.title}>SWACHHAM</Text>
         <Text style={styles.tagline}>Premium Laundry Care</Text>

@@ -1,4 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { logger } from '../utils/logger';
+import { PICKUP_SLOTS, resolveSchedule } from '../services/pickupSlot.service';
 import {
   getMainCategories,
   getSubCategories,
@@ -31,6 +33,24 @@ import { authenticate, authorize, AuthenticatedRequest } from '../middleware/aut
 const router = Router();
 router.use(authenticate);
 router.use(authorize('BUSINESS'));
+
+// ---- Pickup scheduling ----
+
+/**
+ * The pickup slots the app offers. Served from the same list that validates
+ * an order, so the buttons on screen and the rule on the server cannot drift.
+ */
+router.get('/time-slots', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    sendSuccess(
+      res,
+      PICKUP_SLOTS.map((slot) => ({ id: slot.id, label: slot.label })),
+      'Time slots fetched successfully'
+    );
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ---- Business profile ----
 
@@ -251,12 +271,56 @@ router.patch('/orders/:orderId/cancel', async (req: Request, res: Response, next
   }
 });
 
+/**
+ * Place Order.
+ *
+ * Authenticate, validate, create. The only thing read from the body is the
+ * pickup date and slot; everything else about the order comes from the
+ * server-side cart.
+ *
+ * No location is involved at any point: the district check happens once on
+ * the app's Allow Permission page, before the user ever reaches a business
+ * screen, so nothing here reads coordinates, asks for a fix, or re-tests the
+ * service area.
+ */
 router.post('/orders', async (req: Request, res: Response, next: NextFunction) => {
+  const authReq = req as AuthenticatedRequest;
+  const businessUserId = authReq.user!.id;
   try {
-    const authReq = req as AuthenticatedRequest;
-    const order = await createOrder(authReq.user!.id);
+    logger.info('[BusinessOrder] order request received');
+    logger.info(`[BusinessOrder] authenticated business user: ${businessUserId}`);
+
+    // The day and both slots are required: an unscheduled order is refused
+    // with 400 here, before any row is written.
+    const schedule = await resolveSchedule({
+      pickupDate: req.body?.pickupDate,
+      pickupSlot: req.body?.pickupSlot,
+      deliverySlot: req.body?.deliverySlot,
+      pickupNotes: req.body?.pickupNotes,
+      serviceNotes: req.body?.serviceNotes,
+    });
+    logger.info(
+      `[BusinessOrder] schedule validated: ${schedule.date} pickup ${schedule.pickup.label}, delivery ${schedule.delivery.label}`
+    );
+    logger.info('[BusinessOrder] validating cart and creating order');
+
+    // Cart validation and the insert both live in the service, inside one
+    // transaction; anything invalid throws with its own status code.
+    const order = await createOrder(businessUserId, schedule);
+
+    logger.info(
+      `[BusinessOrder] order created: ${order.order_number} (id ${order.id}) for user ${businessUserId}`
+    );
     sendSuccess(res, order, 'Order placed successfully', 201);
-  } catch (error) {
+  } catch (error: any) {
+    // The reason, never the payload: no tokens, no credentials. The driver's
+    // own code is included when there is one, because that is what tells a
+    // schema or connection failure apart from a validation refusal.
+    const driverCode = error?.code || error?.errno;
+    logger.error(
+      `[BusinessOrder] order failed for user ${businessUserId}. Reason: ${error?.message || 'unknown error'}` +
+        (driverCode ? ` (db: ${driverCode})` : '')
+    );
     next(error);
   }
 });

@@ -1,6 +1,7 @@
 import apiClient from './api';
 import { ApiResponse, User, LoginPayload, RegisterPayload, BusinessRegisterPayload } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
+import { getDeviceId } from '../utils/deviceId';
 
 export interface AuthResponse {
   user: User;
@@ -52,10 +53,12 @@ export const authApi = {
     };
   },
 
+  // The device id binds the OTP to this handset: the backend records it on
+  // send and refuses to verify the code from anywhere else.
   sendEntryOtp: async (mobile: string): Promise<ApiResponse<MessageResponse>> => {
     const response = await apiClient.post<ApiResponse<MessageResponse>>(
       API_ENDPOINTS.AUTH_ENTRY_SEND_OTP,
-      { mobile: normalizeMobile(mobile) }
+      { mobile: normalizeMobile(mobile), deviceId: await getDeviceId() }
     );
     return response.data;
   },
@@ -63,7 +66,7 @@ export const authApi = {
   verifyEntryOtp: async (mobile: string, otp: string): Promise<ApiResponse<MessageResponse>> => {
     const response = await apiClient.post<ApiResponse<MessageResponse>>(
       API_ENDPOINTS.AUTH_ENTRY_VERIFY_OTP,
-      { mobile: normalizeMobile(mobile), otp: otp.replace(/\D/g, '') }
+      { mobile: normalizeMobile(mobile), otp: otp.replace(/\D/g, ''), deviceId: await getDeviceId() }
     );
     return response.data;
   },
@@ -71,7 +74,7 @@ export const authApi = {
   resendEntryOtp: async (mobile: string): Promise<ApiResponse<MessageResponse>> => {
     const response = await apiClient.post<ApiResponse<MessageResponse>>(
       API_ENDPOINTS.AUTH_ENTRY_RESEND_OTP,
-      { mobile: normalizeMobile(mobile) }
+      { mobile: normalizeMobile(mobile), deviceId: await getDeviceId() }
     );
     return response.data;
   },
