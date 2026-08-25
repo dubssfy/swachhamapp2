@@ -12,6 +12,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigationState } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import BusinessHeader from '../../components/business/BusinessHeader';
@@ -54,6 +55,17 @@ const LAUNDRY_TYPE_ICONS: Record<LaundryType, keyof typeof Ionicons.glyphMap> = 
  * requires confirming a dialog that names the cost. Turning it off never asks.
  */
 export default function BusinessCartScreen({ navigation }: any) {
+  /**
+   * Whether THIS screen's own stack has somewhere to pop to.
+   *
+   * `navigation.canGoBack()` is not the test: from a tab's first page it can
+   * still report true because the tab navigator itself sits inside a parent
+   * stack, which would put a Back button on a root page that then left the
+   * Business section. The index of the nearest navigator's own state answers
+   * the question actually being asked — 0 means this is the first page.
+   */
+  const canGoBack = useNavigationState((state) => state.index > 0);
+
   const {
     cart,
     isLoading,
@@ -233,50 +245,118 @@ export default function BusinessCartScreen({ navigation }: any) {
   /**
    * QUICK ORDER — an opt-in upgrade, priced in the open.
    *
-   * Three separate places say it costs more, because this is the one control
-   * on the Business side that changes what the business is billed: the row
-   * itself carries the multiplier, switching it on requires confirming a
-   * dialog, and once it is on a banner states the charge again above Continue.
-   * The requirement is that it be hard to miss, so it is stated on the way in,
-   * at the moment of choosing, and again at the moment of confirming.
+   * THE ONE CONTROL ON THE BUSINESS SIDE THAT CHANGES THE BILL, so it is
+   * deliberately the loudest thing on the Cart. It is built as a card with
+   * its own coloured header rather than a row in a list, because a surcharge
+   * a business did not notice agreeing to is the failure worth designing
+   * against.
+   *
+   * FOUR PLACES SAY IT COSTS MORE: the multiplier badge in the header, the
+   * side-by-side comparison of the two rates, the confirmation dialog on the
+   * way in, and a banner pinned above Continue. The requirement is that it be
+   * hard to miss, so it is stated on approach, at the moment of choosing, and
+   * again at the moment of confirming.
+   *
+   * STANDARD IS SHOWN BUT NOT SELECTABLE. It is the default every order
+   * already has, so it appears as the left half of the comparison — there to
+   * be compared against, not to be picked. That is what makes "2x" mean
+   * something: a price is only legible next to the price it is double of.
+   *
+   * The palette is the app's own — Primary green for the standard side,
+   * Warning amber for the upgrade — so it reads as part of Swachham rather
+   * than as a warning bolted onto it.
    */
   const quickOrderSection = (
-    <View style={[styles.serviceCard, isQuickOrder && styles.quickCardOn]}>
-      <View style={styles.quickHeaderRow}>
-        <View style={[styles.serviceIcon, isQuickOrder && styles.serviceIconSelected]}>
+    <View style={[styles.quickCard, isQuickOrder && styles.quickCardOn]}>
+      {/* Header: what it is, what it multiplies by, and the switch. */}
+      <View style={[styles.quickHeader, isQuickOrder && styles.quickHeaderOn]}>
+        <View style={[styles.quickBolt, isQuickOrder && styles.quickBoltOn]}>
           <Ionicons
             name="flash"
             size={20}
-            color={isQuickOrder ? COLORS.Surface : COLORS.Primary}
+            color={isQuickOrder ? COLORS.Warning : COLORS.Surface}
           />
         </View>
+
         <View style={styles.flex}>
-          <Text style={styles.serviceTitle}>Quick Order</Text>
-          <Text style={styles.serviceHint}>Priority turnaround</Text>
+          <Text style={[styles.quickTitle, isQuickOrder && styles.quickTitleOn]}>
+            Quick Order
+          </Text>
+          <Text style={[styles.quickSubtitle, isQuickOrder && styles.quickSubtitleOn]}>
+            Priority turnaround
+          </Text>
         </View>
+
+        <View style={[styles.quickBadge, isQuickOrder && styles.quickBadgeOn]}>
+          <Text style={[styles.quickBadgeText, isQuickOrder && styles.quickBadgeTextOn]}>
+            {quickMultiplier}x
+          </Text>
+          <Text style={[styles.quickBadgeCaption, isQuickOrder && styles.quickBadgeTextOn]}>
+            PRICE
+          </Text>
+        </View>
+
         <Switch
           value={isQuickOrder}
           onValueChange={handleToggleQuickOrder}
           disabled={isLoading}
-          trackColor={{ false: COLORS.Border, true: COLORS.Warning }}
+          trackColor={{ false: '#C7CDD4', true: COLORS.Warning }}
           thumbColor={COLORS.Surface}
-          accessibilityLabel={`Quick Order, charged at ${quickMultiplier} times the standard rate`}
+          ios_backgroundColor="#C7CDD4"
+          accessibilityLabel={
+            `Quick Order, charged at ${quickMultiplier} times the standard rate`
+          }
         />
       </View>
 
-      {/* The price consequence, stated whether the switch is on or off — off
-          so the user knows what they would be agreeing to, on so they cannot
-          forget they already did. */}
+      {/* The two rates, beside each other. Whichever applies is the filled
+          one, so the order's cost basis is readable at a glance. */}
+      <View style={styles.quickCompare}>
+        <View style={[styles.quickOption, !isQuickOrder && styles.quickOptionActive]}>
+          <View style={styles.quickOptionHead}>
+            <Ionicons
+              name={!isQuickOrder ? 'checkmark-circle' : 'ellipse-outline'}
+              size={16}
+              color={!isQuickOrder ? COLORS.Primary : COLORS.TextSecondary}
+            />
+            <Text style={[styles.quickOptionName, !isQuickOrder && styles.quickOptionNameActive]}>
+              Standard
+            </Text>
+          </View>
+          <Text style={[styles.quickOptionRate, !isQuickOrder && styles.quickOptionRateActive]}>
+            Your normal rate
+          </Text>
+        </View>
+
+        <View style={[styles.quickOption, isQuickOrder && styles.quickOptionActiveQuick]}>
+          <View style={styles.quickOptionHead}>
+            <Ionicons
+              name={isQuickOrder ? 'checkmark-circle' : 'ellipse-outline'}
+              size={16}
+              color={isQuickOrder ? COLORS.Warning : COLORS.TextSecondary}
+            />
+            <Text style={[styles.quickOptionName, isQuickOrder && styles.quickOptionNameQuick]}>
+              Quick
+            </Text>
+          </View>
+          <Text style={[styles.quickOptionRate, isQuickOrder && styles.quickOptionRateQuick]}>
+            {quickMultiplier}x your normal rate
+          </Text>
+        </View>
+      </View>
+
+      {/* The consequence in a sentence — shown either way, so the cost is
+          known before the switch is touched as well as after. */}
       <View style={[styles.quickNotice, isQuickOrder && styles.quickNoticeOn]}>
         <Ionicons
           name={isQuickOrder ? 'alert-circle' : 'information-circle-outline'}
-          size={18}
+          size={17}
           color={isQuickOrder ? COLORS.Error : COLORS.TextSecondary}
         />
         <Text style={[styles.quickNoticeText, isQuickOrder && styles.quickNoticeTextOn]}>
           {isQuickOrder
-            ? `This order is charged at ${quickMultiplier}x your standard rate.`
-            : `Costs ${quickMultiplier}x the standard rate. Leave off for a standard order.`}
+            ? `Additional charge applies — every item is billed at ${quickMultiplier}x its usual price.`
+            : `Turning this on charges every item at ${quickMultiplier}x its usual price.`}
         </Text>
       </View>
     </View>
@@ -335,16 +415,13 @@ export default function BusinessCartScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Back is always offered. The Cart is a tab root, so there is usually
-          nothing on its own stack to pop — in that case it returns to Select
-          Items, which is where the user came from. Navigating away never
-          touches the cart: it lives on the server and in the store, so every
-          item and quantity is still there on return. */}
+      {/* NO BACK BUTTON AT THE ROOT — the Cart is the first page of its tab.
+          Navigating away never touches the cart either way: it lives on the
+          server and in the store, so every item and quantity is still there on
+          return. */}
       <BusinessHeader
         title="My Cart"
-        onBack={() =>
-          navigation.canGoBack() ? navigation.goBack() : navigation.navigate('BusinessHome')
-        }
+        onBack={canGoBack ? () => navigation.goBack() : undefined}
       />
 
       {initialLoad ? (
@@ -590,16 +667,127 @@ const styles = StyleSheet.create({
 
   flex: { flex: 1 },
 
-  // ---- Quick Order ----
-  // The switch row, then the price notice under it. The card itself changes
-  // colour when Quick is on, so the state is legible from across the screen
-  // and not only from the switch's own position.
-  quickCardOn: { borderColor: COLORS.Warning, borderWidth: 2, backgroundColor: '#FFFDF5' },
-  quickHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
+  /* ================= Quick Order =================
+   *
+   * A card with a coloured header, a two-column rate comparison and a notice
+   * line. It changes appearance as a whole when switched on — not just the
+   * switch — so the order's cost basis is legible from across the screen.
+   */
+  quickCard: {
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
+    borderColor: COLORS.Border,
+    marginHorizontal: SPACING.md,
+    marginBottom: SPACING.md,
+    overflow: 'hidden',
+    ...SHADOWS.light,
+  },
+  quickCardOn: { borderColor: COLORS.Warning, borderWidth: 2, ...SHADOWS.medium },
+
+  quickHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm + 2,
+    backgroundColor: COLORS.PrimaryDark,
+  },
+  quickHeaderOn: { backgroundColor: COLORS.Warning },
+
+  quickBolt: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  quickBoltOn: { backgroundColor: COLORS.Surface },
+
+  quickTitle: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '800',
+    color: COLORS.Surface,
+  },
+  quickTitleOn: { color: COLORS.Surface },
+  quickSubtitle: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xs,
+    color: 'rgba(255,255,255,0.85)',
+  },
+  quickSubtitleOn: { color: 'rgba(255,255,255,0.95)' },
+
+  /** The multiplier, as a badge — the number that changes the bill. */
+  quickBadge: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 46,
+    paddingHorizontal: SPACING.xs,
+    paddingVertical: 3,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  quickBadgeOn: { backgroundColor: COLORS.Surface },
+  quickBadgeText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.lg,
+    fontWeight: '900',
+    color: COLORS.Surface,
+    lineHeight: 20,
+  },
+  quickBadgeTextOn: { color: COLORS.Warning },
+  quickBadgeCaption: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    color: 'rgba(255,255,255,0.85)',
+  },
+
+  /* The two rates side by side. Standard is shown to be compared against,
+     not to be picked — it is the default the order already has. */
+  quickCompare: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    paddingTop: SPACING.md,
+  },
+  quickOption: {
+    flex: 1,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1.5,
+    borderColor: COLORS.Border,
+    backgroundColor: COLORS.Background,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.sm,
+    gap: 2,
+  },
+  quickOptionActive: { borderColor: COLORS.Primary, backgroundColor: '#EAF6EF' },
+  quickOptionActiveQuick: { borderColor: COLORS.Warning, backgroundColor: '#FFF6E8' },
+  quickOptionHead: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  quickOptionName: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '800',
+    color: COLORS.TextSecondary,
+  },
+  quickOptionNameActive: { color: COLORS.PrimaryDark },
+  quickOptionNameQuick: { color: '#9A5200' },
+  quickOptionRate: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xs,
+    color: COLORS.TextSecondary,
+  },
+  quickOptionRateActive: { color: COLORS.PrimaryDark, fontWeight: '700' },
+  quickOptionRateQuick: { color: '#9A5200', fontWeight: '800' },
+
   quickNotice: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: SPACING.xs,
+    margin: SPACING.md,
     marginTop: SPACING.sm,
     padding: SPACING.sm,
     borderRadius: BORDER_RADIUS.sm,

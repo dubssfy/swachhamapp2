@@ -8,6 +8,8 @@ import {
   TextInput,
   ActivityIndicator,
   Image,
+  Animated,
+  Easing,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -59,6 +61,107 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { cart, loadCart, addItem } = useBusinessOrderStore();
+
+  /* =================================================================
+   * FLY-TO-CART
+   *
+   * A copy of the item's artwork lifts off the card and arcs into the cart
+   * button, shrinking and fading as it goes; the badge then bumps as the
+   * count updates. The point is that the ITEM is seen to travel — a spinner
+   * says "something is happening", this says "that item went into the order".
+   *
+   * It is decoration over a real result, never a substitute for one: the
+   * flight is started from the card's measured position at the moment of the
+   * tap and runs ALONGSIDE the request, and the count comes from the store
+   * once the server answers. A failed add leaves no item in the cart no
+   * matter what the animation did.
+   *
+   * `useNativeDriver` throughout — only transform and opacity are animated,
+   * so the flight runs on the UI thread and stays smooth while the request
+   * is in flight.
+   * ================================================================= */
+
+  /** Where the cart button is, measured on layout. */
+  const cartButtonRef = useRef<View>(null);
+  const cartTarget = useRef<{ x: number; y: number } | null>(null);
+  /** One ref per rendered card's artwork, so the flight starts from IT. */
+  const artworkRefs = useRef<Map<string, View | null>>(new Map());
+
+  /** The in-flight copy: null when nothing is travelling. */
+  const [flight, setFlight] = useState<{
+    key: number;
+    x: number;
+    y: number;
+    size: number;
+    uri: string | null;
+  } | null>(null);
+  const flightProgress = useRef(new Animated.Value(0)).current;
+  const flightKey = useRef(0);
+
+  /** The badge's bump when the count lands. */
+  const badgeScale = useRef(new Animated.Value(1)).current;
+
+  const measureCartButton = useCallback(() => {
+    cartButtonRef.current?.measureInWindow((x, y, width, height) => {
+      cartTarget.current = { x: x + width / 2, y: y + height / 2 };
+    });
+  }, []);
+
+  /**
+   * Starts the flight for one item. Resolves as soon as it is launched — the
+   * caller must not wait for the animation before sending the request, or the
+   * feedback would be delayed by exactly the thing it exists to cover.
+   */
+  const launchFlight = useCallback(
+    (item: BusinessItem) => {
+      const source = artworkRefs.current.get(item.id);
+      const target = cartTarget.current;
+      // No measurement means no honest path to draw; the button's own
+      // ADDING/ADDED states still give feedback, so this simply does nothing.
+      if (!source || !target) return;
+
+      source.measureInWindow((x, y, width, height) => {
+        if (!width || !height) return;
+        flightKey.current += 1;
+        flightProgress.setValue(0);
+        setFlight({
+          key: flightKey.current,
+          x,
+          y,
+          size: width,
+          uri: item.image_url || null,
+        });
+
+        Animated.timing(flightProgress, {
+          toValue: 1,
+          duration: 650,
+          // Eases out of the card and into the cart rather than running at a
+          // constant speed, which is what makes it read as a throw.
+          easing: Easing.bezier(0.4, 0, 0.3, 1),
+          useNativeDriver: true,
+        }).start(({ finished }) => {
+          if (!finished) return;
+          setFlight(null);
+          // The badge bumps as the arriving item is counted.
+          Animated.sequence([
+            Animated.spring(badgeScale, {
+              toValue: 1.45,
+              useNativeDriver: true,
+              speed: 30,
+              bounciness: 14,
+            }),
+            Animated.spring(badgeScale, { toValue: 1, useNativeDriver: true, speed: 20 }),
+          ]).start();
+        });
+
+        // Remembered so the interpolations below know where to fly TO.
+        flightDestination.current = target;
+      });
+    },
+    [badgeScale, flightProgress]
+  );
+
+  const flightDestination = useRef<{ x: number; y: number } | null>(null);
 
   const cartCount = useMemo(
     () => (cart?.items || []).reduce((sum, item) => sum + item.quantity, 0),
@@ -180,6 +283,10 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
     try {
       setAddingItemId(item.id);
       setError('');
+      // Launched BEFORE the request, not after it: the feedback is for the
+      // tap, and delaying it until the server answers would leave the exact
+      // gap it exists to fill. It runs alongside the call.
+      launchFlight(item);
       // Quantity travels to the order as entered. The catalogue still carries
       // a standard weight per piece and the server still records it — that is
       // what the Sorter loads machines by; it is simply not shown here.
@@ -226,7 +333,16 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
       // beside it — details, then the service buttons, the quantity field and
       // Add to Order, each at full size rather than squeezed into a corner.
       <View style={styles.itemCard}>
-        <View style={styles.itemImage}>
+        {/* The flight starts from this view's measured position, which is
+            why it carries a ref keyed by item id. */}
+        <View
+          style={styles.itemImage}
+          ref={(node) => {
+            if (node) artworkRefs.current.set(item.id, node);
+            else artworkRefs.current.delete(item.id);
+          }}
+          collapsable={false}
+        >
           {artwork ? (
             <Image source={artwork} style={styles.itemImageInner} resizeMode="contain" />
           ) : (
@@ -269,7 +385,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
             <Text style={styles.itemMeta}>Service: {serviceLabel(item.service_types[0])}</Text>
           ) : (
             <>
-          <Text style={styles.sectionLabel}>Laundry Service</Text>
+          <Text style={styles.sectionLabel}>Select Laundry Services</Text>
           <View style={styles.serviceRow}>
             {item.service_types.map((code) => {
               const isSelected = selectedService === code;
@@ -403,12 +519,16 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
           <TouchableOpacity
             style={styles.cartButton}
             onPress={() => navigation.navigate('BusinessCart')}
+            // Measured here and on layout, so the flight lands on the button
+            // wherever the header has settled.
+            ref={cartButtonRef as any}
+            onLayout={measureCartButton}
           >
             <Ionicons name="cart-outline" size={24} color={COLORS.TextPrimary} />
             {cartCount > 0 ? (
-              <View style={styles.badge}>
+              <Animated.View style={[styles.badge, { transform: [{ scale: badgeScale }] }]}>
                 <Text style={styles.badgeText}>{cartCount}</Text>
-              </View>
+              </Animated.View>
             ) : null}
           </TouchableOpacity>
         }
@@ -429,6 +549,79 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
           )
         }
       />
+
+      {/*
+        THE ITEM IN FLIGHT.
+
+        Absolutely positioned over everything and `pointerEvents="none"`, so it
+        travels across the screen without ever intercepting a tap — the list
+        stays scrollable and the buttons stay pressable while it moves.
+
+        One interpolated progress value drives all four properties, which keeps
+        the arc, the shrink and the fade in step with each other by
+        construction rather than by three timings that have to agree.
+      */}
+      {flight ? (
+        <Animated.View
+          key={flight.key}
+          pointerEvents="none"
+          style={[
+            styles.flyingItem,
+            {
+              left: flight.x,
+              top: flight.y,
+              width: flight.size,
+              height: flight.size,
+              opacity: flightProgress.interpolate({
+                // Holds full opacity for most of the journey and fades only as
+                // it arrives, so it does not vanish halfway.
+                inputRange: [0, 0.75, 1],
+                outputRange: [1, 0.9, 0],
+              }),
+              transform: [
+                {
+                  translateX: flightProgress.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [
+                      0,
+                      (flightDestination.current?.x ?? flight.x) - flight.x - flight.size / 2,
+                    ],
+                  }),
+                },
+                {
+                  translateY: flightProgress.interpolate({
+                    // Three points, not two: it rises before it crosses, which
+                    // is the arc that makes it read as thrown rather than
+                    // dragged in a straight line.
+                    inputRange: [0, 0.45, 1],
+                    outputRange: [
+                      0,
+                      ((flightDestination.current?.y ?? flight.y) - flight.y) * 0.25 - 60,
+                      (flightDestination.current?.y ?? flight.y) - flight.y - flight.size / 2,
+                    ],
+                  }),
+                },
+                {
+                  scale: flightProgress.interpolate({
+                    inputRange: [0, 0.3, 1],
+                    outputRange: [1, 0.85, 0.3],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          {flight.uri ? (
+            <Image
+              source={{ uri: flight.uri }}
+              style={styles.itemImageInner}
+              resizeMode="contain"
+            />
+          ) : (
+            <Ionicons name="shirt" size={30} color={COLORS.Primary} />
+          )}
+        </Animated.View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -641,6 +834,22 @@ const styles = StyleSheet.create({
     fontSize: TYPOGRAPHY.sizes.lg,
     fontWeight: '800',
     letterSpacing: 0.5,
+  },
+
+  /** The travelling copy. Above everything, and never a touch target. */
+  flyingItem: {
+    ...SHADOWS.medium,
+    position: 'absolute',
+    zIndex: 999,
+    // Above the list on Android too, where zIndex alone is not enough.
+    elevation: 12,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: COLORS.Surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: COLORS.Primary,
   },
 
   errorText: {

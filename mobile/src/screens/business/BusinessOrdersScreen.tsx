@@ -11,7 +11,7 @@ import {
   NativeScrollEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigationState } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import BusinessHeader from '../../components/business/BusinessHeader';
@@ -64,6 +64,17 @@ function formatDate(value: string): string {
 }
 
 export default function BusinessOrdersScreen({ navigation }: any) {
+  /**
+   * Whether THIS screen's own stack has somewhere to pop to.
+   *
+   * `navigation.canGoBack()` is not the test: from a tab's first page it can
+   * still report true because the tab navigator itself sits inside a parent
+   * stack, which would put a Back button on a root page that then left the
+   * Business section. The index of the nearest navigator's own state answers
+   * the question actually being asked — 0 means this is the first page.
+   */
+  const canGoBack = useNavigationState((state) => state.index > 0);
+
   const [orders, setOrders] = useState<BusinessOrderSummary[]>([]);
   const [filter, setFilter] = useState<OrderFilter>('all');
   const [isLoading, setIsLoading] = useState(true);
@@ -208,14 +219,11 @@ export default function BusinessOrdersScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Your Orders is a tab root, so there is usually nothing on its own
-          stack to pop; in that case Back goes to the Business home rather than
-          doing nothing, which is what a dead Back button feels like. */}
+      {/* NO BACK BUTTON AT THE ROOT — Your Orders is the first page of its
+          tab. See BusinessCategoriesScreen for the reasoning. */}
       <BusinessHeader
         title="Your Orders"
-        onBack={() =>
-          navigation.canGoBack() ? navigation.goBack() : navigation.navigate('BusinessHome')
-        }
+        onBack={canGoBack ? () => navigation.goBack() : undefined}
       />
 
       {isLoading ? (

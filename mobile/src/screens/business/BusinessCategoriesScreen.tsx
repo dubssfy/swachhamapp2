@@ -14,6 +14,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigationState } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import BusinessHeader from '../../components/business/BusinessHeader';
@@ -83,6 +84,17 @@ const MIN_CARD_SIZE = 140;
  * screen can never appear. Service selection lives on the Items page only.
  */
 export default function BusinessCategoriesScreen({ navigation }: any) {
+  /**
+   * Whether THIS screen's own stack has somewhere to pop to.
+   *
+   * `navigation.canGoBack()` is not the test: from a tab's first page it can
+   * still report true because the tab navigator itself sits inside a parent
+   * stack, which would put a Back button on a root page that then left the
+   * Business section. The index of the nearest navigator's own state answers
+   * the question actually being asked — 0 means this is the first page.
+   */
+  const canGoBack = useNavigationState((state) => state.index > 0);
+
   const [categories, setCategories] = useState<BusinessCategory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -192,14 +204,14 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Select Items is a tab root, so Back usually has nothing on its own
-          stack to pop; it falls back to the Business home rather than being
-          absent on the one screen the user browses longest. */}
+      {/* NO BACK BUTTON AT THE ROOT. Select Items is the first page of its
+          tab, so there is nothing to go back TO; a button that only jumped to
+          another tab was navigation that did not match its own label. It
+          appears as soon as the stack has somewhere to pop to, and
+          BusinessHeader renders no placeholder when it is absent. */}
       <BusinessHeader
         title="Select Items"
-        onBack={() =>
-          navigation.canGoBack() ? navigation.goBack() : navigation.navigate('BusinessHome')
-        }
+        onBack={canGoBack ? () => navigation.goBack() : undefined}
         action={
           <TouchableOpacity
             style={styles.cartButton}

@@ -50,6 +50,8 @@ export default function SignInPasswordScreen({ navigation, route }: any) {
 
   const [username, setUsername] = useState(loginEmail || '');
   const [password, setPassword] = useState('');
+  /** Hidden by default. The eye toggles only how it is displayed. */
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
 
   const copy = ROLE_COPY[role] || { title: 'Sign in', hint: 'Your username' };
@@ -128,16 +130,37 @@ export default function SignInPasswordScreen({ navigation, route }: any) {
           />
 
           <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            placeholder="Password"
-            placeholderTextColor={COLORS.TextSecondary}
-            onSubmitEditing={submit}
-            autoFocus={Boolean(loginEmail)}
-          />
+          {/* Hidden by default; the eye reveals it. The field itself is
+              unchanged -- only `secureTextEntry` is toggled -- so what is
+              typed, submitted and validated is exactly what it was. */}
+          <View style={styles.passwordRow}>
+            <TextInput
+              style={styles.passwordInput}
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!showPassword}
+              placeholder="Password"
+              placeholderTextColor={COLORS.TextSecondary}
+              onSubmitEditing={submit}
+              autoFocus={Boolean(loginEmail)}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TouchableOpacity
+              onPress={() => setShowPassword((shown) => !shown)}
+              style={styles.eyeButton}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons
+                name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                size={20}
+                color={COLORS.TextSecondary}
+              />
+            </TouchableOpacity>
+          </View>
 
           <TouchableOpacity
             style={[styles.button, isLoading && styles.buttonDisabled]}
@@ -208,6 +231,19 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: SPACING.md,
     fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.base, color: COLORS.TextPrimary,
   },
+  /* The bordered box moves to the ROW so the eye sits inside the field
+     rather than beside it; the input itself keeps only its text styling. */
+  passwordRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: COLORS.Surface, borderWidth: 1, borderColor: COLORS.Border,
+    borderRadius: BORDER_RADIUS.md, paddingHorizontal: SPACING.md,
+  },
+  passwordInput: {
+    flex: 1, paddingVertical: SPACING.md,
+    fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.base,
+    color: COLORS.TextPrimary,
+  },
+  eyeButton: { paddingLeft: SPACING.sm, paddingVertical: SPACING.sm },
   button: {
     backgroundColor: COLORS.Primary, borderRadius: BORDER_RADIUS.md,
     paddingVertical: SPACING.md, alignItems: 'center', marginTop: SPACING.lg,

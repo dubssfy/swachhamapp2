@@ -220,6 +220,23 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
 
   const { date, time } = formatDateTime(order.created_at);
 
+  /**
+   * What to print against "Service" for the order as a whole.
+   *
+   * Derived from the LINES, not from `order.service_type` alone: the service
+   * is chosen per item, so the only honest order-level answer is "they all
+   * share this one" or "they differ".
+   */
+  const lineServices = Array.from(
+    new Set(order.items.map((item) => item.laundry_service_name).filter(Boolean))
+  );
+  const orderServiceLabel =
+    lineServices.length === 1
+      ? String(lineServices[0])
+      : lineServices.length > 1
+      ? `Mixed — see the ${order.item_count} items above`
+      : SERVICE_LABEL[order.service_type || ''] || order.service_name || '—';
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <BusinessHeader title="Order Details" subtitle={order.order_number} onBack={() => navigation.goBack()} />
@@ -316,10 +333,12 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
           <Row label="Order Time" value={time} />
           <Row label="Laundry Type" value={LAUNDRY_LABEL[order.laundry_type || ''] || '—'} />
           <Row label="Order Type" value={ORDER_LABEL[order.order_type || ''] || '—'} />
-          <Row
-            label="Service"
-            value={SERVICE_LABEL[order.service_type || ''] || order.service_name || '—'}
-          />
+          {/* The ORDER-WIDE service, which exists only when every line shares
+              one. A mixed order says so and points at the item list rather
+              than printing a dash, which reads as missing data — and rather
+              than naming one line's service for all of them, which is the
+              fault this screen used to have. */}
+          <Row label="Service" value={orderServiceLabel} />
           <Row label="Order Status" value={(order.status || '').replace(/_/g, ' ')} />
         </View>
 
