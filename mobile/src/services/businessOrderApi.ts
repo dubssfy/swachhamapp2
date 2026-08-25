@@ -34,6 +34,14 @@ export interface BusinessItem {
   is_active: boolean;
   /** Service codes this item can be given, e.g. ['wash_iron','dry_clean']. */
   service_types: string[];
+  /**
+   * How many times THIS business has ordered the item, all time.
+   *
+   * The server already sorts by it, so the list arrives frequently-ordered
+   * first; the app uses the figure only to decide which cards earn the
+   * "Frequent" badge, never to re-sort.
+   */
+  order_count: number;
 }
 
 export interface BusinessCartItem {
@@ -163,6 +171,15 @@ export interface BusinessOrderSummary {
 export interface LaundryServices {
   category: BusinessCategory | null;
   serviceTypes: LaundryServiceType[];
+  /**
+   * What Quick Order costs, as a multiple of the standard rate.
+   *
+   * Served by the same backend constant that prices the order, so the Cart's
+   * warning and the invoice can never state different numbers. Optional
+   * because an older server does not send it; the app falls back to its own
+   * copy of the constant in that case.
+   */
+  quickOrderMultiplier?: number;
 }
 
 export interface BusinessOrderItem {

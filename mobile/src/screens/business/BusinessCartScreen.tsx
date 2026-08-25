@@ -8,6 +8,8 @@ import {
   ScrollView,
   ActivityIndicator,
   Image,
+  Switch,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,8 +18,8 @@ import BusinessHeader from '../../components/business/BusinessHeader';
 import {
   useBusinessOrderStore,
   SERVICE_OPTIONS,
-  ORDER_TYPE_OPTIONS,
-  ORDER_TYPE_REQUIRED_MESSAGE,
+  DEFAULT_ORDER_TYPE,
+  QUICK_ORDER_MULTIPLIER_FALLBACK,
   LAUNDRY_TYPE_OPTIONS,
   LAUNDRY_TYPE_REQUIRED_MESSAGE,
   CART_ITEM_SERVICE_REQUIRED_MESSAGE,
@@ -25,12 +27,7 @@ import {
   LaundryType,
   OrderType,
 } from '../../store/businessOrderStore';
-import { formatWeightKg } from '../../utils/businessOrderPdf';
-
-const ORDER_TYPE_ICONS: Record<OrderType, keyof typeof Ionicons.glyphMap> = {
-  standard: 'time-outline',
-  quick: 'flash-outline',
-};
+import businessOrderApi from '../../services/businessOrderApi';
 
 const LAUNDRY_TYPE_ICONS: Record<LaundryType, keyof typeof Ionicons.glyphMap> = {
   hotel: 'business-outline',
@@ -40,10 +37,21 @@ const LAUNDRY_TYPE_ICONS: Record<LaundryType, keyof typeof Ionicons.glyphMap> = 
 /**
  * Cart / Order Confirmation.
  *
- * Two selections are made here and nowhere else: Order Type (Standard/Quick)
- * and Laundry Type (Hotel/Guest). Both are compulsory. There is deliberately
- * no order-wide laundry service section — the service belongs to each line,
- * chosen on the Items page, and is only displayed (and switchable) per item.
+ * ONE compulsory selection is made here and nowhere else: Laundry Type
+ * (Hotel/Guest). There is deliberately no order-wide laundry service section —
+ * the service belongs to each line, chosen on the Items page, and is only
+ * displayed (and switchable) per item.
+ *
+ * ORDER TYPE IS NO LONGER ASKED. Every order is a standard order; the Cart
+ * applies that to any cart without one. The only thing the user decides is
+ * whether to upgrade to Quick Order, which is a switch rather than one of two
+ * radio buttons — the difference matters, because Quick is CHARGED AT DOUBLE
+ * the standard rate and an opt-in reads as a choice with a consequence in a
+ * way that picking one of two equal-looking options does not.
+ *
+ * THE SURCHARGE IS STATED BEFORE IT IS ACCEPTED. The multiplier comes from the
+ * server, which is also what prices the order, and turning the switch on
+ * requires confirming a dialog that names the cost. Turning it off never asks.
  */
 export default function BusinessCartScreen({ navigation }: any) {
   const {
@@ -60,6 +68,11 @@ export default function BusinessCartScreen({ navigation }: any) {
   } = useBusinessOrderStore();
   const [error, setError] = useState('');
   const [initialLoad, setInitialLoad] = useState(true);
+  /**
+   * What Quick Order costs, from the server that prices the order. Falls back
+   * to the shared constant only until that call answers.
+   */
+  const [quickMultiplier, setQuickMultiplier] = useState(QUICK_ORDER_MULTIPLIER_FALLBACK);
 
   const items = cart?.items || [];
   /** Blocks Continue until every line carries its own service. */
@@ -77,6 +90,38 @@ export default function BusinessCartScreen({ navigation }: any) {
     refresh();
     return unsubscribe;
   }, [navigation, refresh]);
+
+  // The surcharge is read from the same server that applies it.
+  useEffect(() => {
+    businessOrderApi
+      .getLaundryServices()
+      .then((response) => {
+        const value = response.data.quickOrderMultiplier;
+        if (typeof value === 'number' && value > 1) setQuickMultiplier(value);
+      })
+      .catch(() => {
+        // The fallback already holds the right number; a failed lookup must
+        // not stop the Cart from working.
+      });
+  }, []);
+
+  /**
+   * STANDARD BY DEFAULT.
+   *
+   * A cart with no order type is a standard order, and saying so here is what
+   * lets the screen stop asking. Run once the cart has loaded, and only when
+   * the field is genuinely empty, so it never overwrites a Quick Order the
+   * user chose earlier in the session.
+   */
+  useEffect(() => {
+    if (initialLoad || !cart || orderType) return;
+    saveOrderType(DEFAULT_ORDER_TYPE).catch(() => {
+      // Left for Continue to report: the server validates the order type as
+      // well, so a silent failure here cannot produce an untyped order.
+    });
+  }, [initialLoad, cart, orderType, saveOrderType]);
+
+  const isQuickOrder = orderType === 'quick';
 
   // No location code on this screen, and none on the Time Slot page either:
   // the service area was settled on the Allow Permission page when the app
@@ -111,13 +156,41 @@ export default function BusinessCartScreen({ navigation }: any) {
     }
   };
 
+  /**
+   * Turning Quick Order ON asks first; turning it OFF does not.
+   *
+   * The confirmation is where the cost is stated in words, so the surcharge
+   * cannot be accepted by a stray tap on a switch. Reverting to standard has
+   * no consequence to warn about, so it is immediate.
+   */
+  const handleToggleQuickOrder = (next: boolean) => {
+    if (!next) {
+      applyOrderType(DEFAULT_ORDER_TYPE);
+      return;
+    }
+    Alert.alert(
+      'Quick Order costs more',
+      `Quick Order is charged at ${quickMultiplier}x your standard rate — ` +
+        `every item in this order will be billed at ${quickMultiplier} times its ` +
+        'usual price.\n\nContinue with Quick Order?',
+      [
+        { text: 'Keep Standard', style: 'cancel' },
+        {
+          text: `Yes, use Quick (${quickMultiplier}x)`,
+          style: 'destructive',
+          onPress: () => applyOrderType('quick'),
+        },
+      ]
+    );
+  };
+
   /** Order type is stored on the cart and travels onto the order from there. */
-  const handleSelectOrderType = async (value: OrderType) => {
+  const applyOrderType = async (value: OrderType) => {
     try {
       setError('');
       await saveOrderType(value);
     } catch (err: any) {
-      setError(err?.message || 'Failed to select order type');
+      setError(err?.message || 'Failed to change order type');
     }
   };
 
@@ -148,10 +221,6 @@ export default function BusinessCartScreen({ navigation }: any) {
       setError(CART_ITEM_SERVICE_REQUIRED_MESSAGE);
       return;
     }
-    if (!orderType) {
-      setError(ORDER_TYPE_REQUIRED_MESSAGE);
-      return;
-    }
     if (!laundryType) {
       setError(LAUNDRY_TYPE_REQUIRED_MESSAGE);
       return;
@@ -161,44 +230,55 @@ export default function BusinessCartScreen({ navigation }: any) {
     navigation.navigate('BusinessTimeSlotScreen');
   };
 
-  // Order Type: compulsory, exactly one.
-  const orderTypeSection = (
-    <View style={styles.serviceCard}>
-      <Text style={styles.serviceTitle}>
-        Order Type <Text style={styles.required}>*</Text>
-      </Text>
-      <Text style={styles.serviceHint}>Select one order type for this order</Text>
+  /**
+   * QUICK ORDER — an opt-in upgrade, priced in the open.
+   *
+   * Three separate places say it costs more, because this is the one control
+   * on the Business side that changes what the business is billed: the row
+   * itself carries the multiplier, switching it on requires confirming a
+   * dialog, and once it is on a banner states the charge again above Continue.
+   * The requirement is that it be hard to miss, so it is stated on the way in,
+   * at the moment of choosing, and again at the moment of confirming.
+   */
+  const quickOrderSection = (
+    <View style={[styles.serviceCard, isQuickOrder && styles.quickCardOn]}>
+      <View style={styles.quickHeaderRow}>
+        <View style={[styles.serviceIcon, isQuickOrder && styles.serviceIconSelected]}>
+          <Ionicons
+            name="flash"
+            size={20}
+            color={isQuickOrder ? COLORS.Surface : COLORS.Primary}
+          />
+        </View>
+        <View style={styles.flex}>
+          <Text style={styles.serviceTitle}>Quick Order</Text>
+          <Text style={styles.serviceHint}>Priority turnaround</Text>
+        </View>
+        <Switch
+          value={isQuickOrder}
+          onValueChange={handleToggleQuickOrder}
+          disabled={isLoading}
+          trackColor={{ false: COLORS.Border, true: COLORS.Warning }}
+          thumbColor={COLORS.Surface}
+          accessibilityLabel={`Quick Order, charged at ${quickMultiplier} times the standard rate`}
+        />
+      </View>
 
-      {ORDER_TYPE_OPTIONS.map((option) => {
-        const isSelected = orderType === option.value;
-        return (
-          <TouchableOpacity
-            key={option.value}
-            style={[styles.serviceOption, isSelected && styles.serviceOptionSelected]}
-            onPress={() => handleSelectOrderType(option.value)}
-            disabled={isLoading}
-            activeOpacity={0.8}
-            accessibilityRole="radio"
-            accessibilityState={{ selected: isSelected }}
-          >
-            <View style={[styles.serviceIcon, isSelected && styles.serviceIconSelected]}>
-              <Ionicons
-                name={ORDER_TYPE_ICONS[option.value]}
-                size={20}
-                color={isSelected ? COLORS.Surface : COLORS.Primary}
-              />
-            </View>
-            <Text style={[styles.serviceLabel, isSelected && styles.serviceLabelSelected]}>
-              {option.label}
-            </Text>
-            {isSelected ? (
-              <Ionicons name="checkmark-circle" size={22} color={COLORS.Primary} />
-            ) : (
-              <View style={styles.radioOuter} />
-            )}
-          </TouchableOpacity>
-        );
-      })}
+      {/* The price consequence, stated whether the switch is on or off — off
+          so the user knows what they would be agreeing to, on so they cannot
+          forget they already did. */}
+      <View style={[styles.quickNotice, isQuickOrder && styles.quickNoticeOn]}>
+        <Ionicons
+          name={isQuickOrder ? 'alert-circle' : 'information-circle-outline'}
+          size={18}
+          color={isQuickOrder ? COLORS.Error : COLORS.TextSecondary}
+        />
+        <Text style={[styles.quickNoticeText, isQuickOrder && styles.quickNoticeTextOn]}>
+          {isQuickOrder
+            ? `This order is charged at ${quickMultiplier}x your standard rate.`
+            : `Costs ${quickMultiplier}x the standard rate. Leave off for a standard order.`}
+        </Text>
+      </View>
     </View>
   );
 
@@ -283,7 +363,7 @@ export default function BusinessCartScreen({ navigation }: any) {
                too. */
             ListHeaderComponent={
               <>
-                {orderTypeSection}
+                {quickOrderSection}
                 {laundryTypeSection}
                 {items.length > 0 ? <Text style={styles.itemsHeading}>Cart Items</Text> : null}
               </>
@@ -315,11 +395,10 @@ export default function BusinessCartScreen({ navigation }: any) {
                 </View>
                 <View style={styles.itemInfo}>
                   <Text style={styles.itemName}>{item.item_name}</Text>
-                  {/* Unit weight comes from the catalogue; the line total is
-                      that weight multiplied by the quantity. */}
+                  {/* Category and unit only. The business orders by the
+                      piece, so a weight here is a figure it cannot act on. */}
                   <Text style={styles.itemMeta}>
-                    {item.category_name} · {item.unit} · {formatWeightKg(item.weight_kg)} ×{' '}
-                    {item.quantity} = {formatWeightKg(item.total_weight_kg)}
+                    {item.category_name} · {item.unit}
                   </Text>
 
                   {/* This line's own service — the only place a service is
@@ -336,11 +415,13 @@ export default function BusinessCartScreen({ navigation }: any) {
                         : 'Not selected'}
                     </Text>
                   </Text>
+                  {/* SWITCHABLE ONLY WHERE THERE IS A SWITCH TO MAKE. An item
+                      the catalogue offers one service for shows the service on
+                      the line above and no chips: a single chip that is always
+                      selected is a button that does nothing. */}
                   <View style={styles.itemServiceRow}>
-                    {(item.available_service_types.length > 0
+                    {(item.available_service_types.length > 1
                       ? item.available_service_types
-                      : item.service_type
-                      ? [item.service_type]
                       : []
                     ).map((code) => {
                       const isSelected = item.service_type === code;
@@ -412,23 +493,30 @@ export default function BusinessCartScreen({ navigation }: any) {
           {/* Order summary and Confirm belong to a cart that has items. */}
           {items.length > 0 ? (
             <>
-              {/* Weight, not price — the Business flow never surfaces amounts. */}
-              <View style={styles.weightRow}>
-                <Text style={styles.weightLabel}>Items</Text>
-                <Text style={styles.weightValue}>{items.length}</Text>
-              </View>
+              {/* A count of lines, and nothing about weight — the Business
+                  flow bills by the piece and never surfaced amounts here. */}
               <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Total Weight</Text>
-                <Text style={styles.summaryValue}>{formatWeightKg(cart?.total_weight_kg)}</Text>
+                <Text style={styles.summaryLabel}>Items</Text>
+                <Text style={styles.summaryValue}>{items.length}</Text>
               </View>
+
+              {/* The last word before Continue. A Quick Order cannot be
+                  confirmed without this line being on screen. */}
+              {isQuickOrder ? (
+                <View style={styles.quickBanner}>
+                  <Ionicons name="flash" size={18} color={COLORS.Surface} />
+                  <Text style={styles.quickBannerText}>
+                    QUICK ORDER · billed at {quickMultiplier}x your standard rate
+                  </Text>
+                </View>
+              ) : null}
 
               {/* Continue, not Confirm: the order is placed on the Time
                   Slot page once the day and both slots are chosen. */}
               <TouchableOpacity
                 style={[
                   styles.confirmButton,
-                  (!orderType || !laundryType || hasItemWithoutService) &&
-                    styles.confirmButtonDisabled,
+                  (!laundryType || hasItemWithoutService) && styles.confirmButtonDisabled,
                 ]}
                 onPress={handleContinue}
                 activeOpacity={0.8}
@@ -500,28 +588,52 @@ const styles = StyleSheet.create({
   },
   summaryValueMissing: { color: COLORS.Error },
 
-  weightRow: {
+  flex: { flex: 1 },
+
+  // ---- Quick Order ----
+  // The switch row, then the price notice under it. The card itself changes
+  // colour when Quick is on, so the state is legible from across the screen
+  // and not only from the switch's own position.
+  quickCardOn: { borderColor: COLORS.Warning, borderWidth: 2, backgroundColor: '#FFFDF5' },
+  quickHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
+  quickNotice: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: SPACING.xs,
+    marginTop: SPACING.sm,
+    padding: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: COLORS.Background,
+  },
+  quickNoticeOn: { backgroundColor: '#FDECEC' },
+  quickNoticeText: {
+    flex: 1,
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+  },
+  quickNoticeTextOn: { color: COLORS.Error, fontWeight: '700' },
+
+  /** Restated directly above Continue, where it cannot be scrolled past. */
+  quickBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.xs,
+    backgroundColor: COLORS.Error,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
     marginHorizontal: SPACING.md,
-    marginBottom: SPACING.sm,
-    paddingTop: SPACING.sm,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.Border,
+    marginBottom: SPACING.xs,
   },
-  weightLabel: {
+  quickBannerText: {
     fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.base,
-    fontWeight: 'bold',
-    color: COLORS.TextPrimary,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '800',
+    color: COLORS.Surface,
   },
-  weightValue: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.base,
-    fontWeight: 'bold',
-    color: COLORS.Primary,
-  },
+
   errorText: {
     flex: 1,
     fontFamily: TYPOGRAPHY.fontFamily,

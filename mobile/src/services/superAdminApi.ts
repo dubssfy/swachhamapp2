@@ -688,6 +688,22 @@ const superAdminApi = {
   },
 
   /**
+   * The customer price list as a printable PDF.
+   *
+   * A URL rather than a response body because the file is fetched with
+   * `FileSystem.downloadAsync`, the same way the profile and the invoice are —
+   * it makes its own request, so `authHeader()` supplies the bearer token.
+   *
+   * The server builds the WHOLE list. It is deliberately not the screen's
+   * current filter: this screen shows nothing until a Category and a
+   * Sub-category are chosen, so printing what is on it could only ever produce
+   * one sub-category.
+   */
+  customerPriceListPdfUrl: (includeInactive = false): string =>
+    `${API_BASE_URL}/api/super-admin/prices/customers.pdf` +
+    (includeInactive ? '?include_inactive=true' : ''),
+
+  /**
    * Adds a price. Send `item_id` to price an existing catalogue item, or
    * `item_name` + `category_id` to create the item and price it in one go.
    */
@@ -734,6 +750,26 @@ const superAdminApi = {
     );
     return res.data.data;
   },
+
+  /**
+   * ONE business's rate card, at ONE laundry type, as a printable PDF.
+   *
+   * The laundry type is part of the URL because it is part of what the sheet
+   * is: Hotel and Guest are priced separately, so each has its own sheet
+   * rather than one sheet carrying two rates per item.
+   *
+   * `includeUnset` prints the items this business has no rate for, marked
+   * "Not set". Off by default — a rate card listing items with no rate is not
+   * a rate card — but available when the gaps are what is wanted on paper.
+   */
+  businessPriceListPdfUrl: (
+    businessId: string,
+    laundryType: LaundryTypeValue,
+    includeUnset = false
+  ): string =>
+    `${API_BASE_URL}/api/super-admin/prices/businesses/${businessId}/price-list.pdf` +
+    `?laundry_type=${encodeURIComponent(laundryType)}` +
+    (includeUnset ? '&include_unset=true' : ''),
 
   createBusinessPrice: async (
     businessId: string,

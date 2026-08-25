@@ -31,13 +31,29 @@ export const ITEM_SERVICE_REQUIRED_MESSAGE =
 export const CART_ITEM_SERVICE_REQUIRED_MESSAGE =
   'Every item must have at least one laundry service selected.';
 
-/** The two Business order types, chosen in the Cart. */
-export const ORDER_TYPE_OPTIONS: Array<{ value: OrderType; label: string }> = [
-  { value: 'standard', label: 'Standard Order' },
-  { value: 'quick', label: 'Quick Order' },
-];
+/**
+ * STANDARD IS THE DEFAULT, AND IS NOT A CHOICE.
+ *
+ * Every order is a standard order unless the business asks for Quick, so
+ * there is no "Standard Order" option to select: an order type the user can
+ * never meaningfully decline is not a decision, it is a step in the way. The
+ * Cart applies this to any cart that has no type yet, and the only control on
+ * the screen is the Quick Order switch.
+ *
+ * `OrderType` still carries both values because the column does — what
+ * changed is how one of them is arrived at, not what can be stored.
+ */
+export const DEFAULT_ORDER_TYPE: OrderType = 'standard';
 
-export const ORDER_TYPE_REQUIRED_MESSAGE = 'Please select an order type.';
+/**
+ * What Quick Order costs, as a multiple of the business's standard rate.
+ *
+ * A LAST-RESORT FALLBACK ONLY. The real figure comes from the server, which
+ * is also what prices the order, so the warning and the invoice cannot
+ * disagree; this value is used only if that call has not answered yet, and it
+ * matches `QUICK_ORDER_MULTIPLIER` in backend/src/services/businessOrder.service.ts.
+ */
+export const QUICK_ORDER_MULTIPLIER_FALLBACK = 2;
 
 /** Hotel / Guest, also chosen in the Cart — never before the catalogue. */
 export const LAUNDRY_TYPE_OPTIONS: Array<{ value: LaundryType; label: string; hint: string }> = [
@@ -231,15 +247,18 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
     if (get().isPlacingOrder) throw new Error('Your order is already being placed...');
     if (get().isLoading) throw new Error('Please wait...');
 
-    // The four Cart validations, in the order the user meets them. The
-    // backend enforces the same rules, so a direct API call is rejected too.
-    const { cart, orderType, laundryType } = get();
+    // The Cart validations, in the order the user meets them. The backend
+    // enforces the same rules, so a direct API call is rejected too.
+    const { cart, laundryType } = get();
     const items = cart?.items || [];
     if (items.length === 0) throw new Error(CART_EMPTY_MESSAGE);
     if (items.some((item) => !item.service_type)) {
       throw new Error(CART_ITEM_SERVICE_REQUIRED_MESSAGE);
     }
-    if (!orderType) throw new Error(ORDER_TYPE_REQUIRED_MESSAGE);
+    // No check for the order type: standard is the default and the Cart
+    // applies it, so there is no state in which one is missing. The value is
+    // still sent, and the server still validates it.
+
     if (!laundryType) throw new Error(LAUNDRY_TYPE_REQUIRED_MESSAGE);
     // The server refuses an unscheduled order too; this stops the request
     // being sent at all.

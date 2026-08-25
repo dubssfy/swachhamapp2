@@ -42,6 +42,10 @@ const ORDER: any = {
   business_name: 'Smoke Doc Hotel',
   contact_person_name: 'Priya Placer',
   business_mobile: '9812345678',
+  // The number the order was actually placed on. Without it the document
+  // prints "N/A" and the assertion below can never pass — the field was
+  // missing from this fixture, not from the document.
+  placed_by_mobile: '9812345678',
   business_email: 'priya@example.com',
   business_address: '1 Test Road, Pune',
   item_count: 3,
@@ -153,21 +157,40 @@ async function main() {
   const titleStyle = html.slice(html.indexOf('.doctitle'), html.indexOf('.doctitle') + 200);
   check('the heading is centred', titleStyle.includes('text-align: center'), titleStyle.split('\n')[0]);
 
-  // -- the order placer's mobile --
-  const orderInfo = html.slice(html.indexOf('<h2>Order Information</h2>'), html.indexOf('<h2>Items</h2>'));
-  check('the Order Details section shows a Mobile Number',
+  /* ---- THE ITEMS COME BEFORE THE ORDER INFORMATION ----
+   *
+   * The item list is what the document is read for; the order's metadata is
+   * reference material and follows it. Asserted by position, because the two
+   * sections are otherwise unchanged and a revert would be invisible. */
+  const itemsAt = html.indexOf('<h2>Items</h2>');
+  const orderInfoAt = html.indexOf('<h2>Order Information</h2>');
+  check('the Items section precedes Order Information', itemsAt > -1 && itemsAt < orderInfoAt,
+    `Items at ${itemsAt}, Order Information at ${orderInfoAt}`);
+
+  /* ---- NO BUSINESS INFORMATION SECTION ----
+   *
+   * The business is reading its own order: its name and address repeated back
+   * to it is not information about the order. The establishment name still
+   * heads the document, which is checked further down. */
+  check('the Business Information section is gone', !html.includes('<h2>Business Information</h2>'));
+  check('no Business Name field remains', !html.includes('Business Name:'));
+  check('no Address field remains', !html.includes('Address:'));
+
+  // -- the order placer's mobile, now in the trailing Order Information --
+  const orderInfo = html.slice(orderInfoAt);
+  check('the Order Information section shows a Mobile Number',
     orderInfo.includes('Mobile Number:'));
   check('it is the mobile of whoever PLACED the order',
     orderInfo.includes(ORDER.business_mobile), ORDER.business_mobile);
   check('it names who placed it', orderInfo.includes('Placed By:') &&
     orderInfo.includes(ORDER.contact_person_name));
-  check('the mobile is not repeated in the Business block',
+  check('the mobile appears exactly once',
     (html.match(/Mobile Number:/g) || []).length === 1,
     `${(html.match(/Mobile Number:/g) || []).length} occurrence(s)`);
 
   // -- nothing else was lost --
   for (const kept of ['Order Number:', 'Order Date:', 'Order Time:', 'Order Status:',
-                      'Laundry Type:', 'Order Type:', 'Business Name:', 'Address:']) {
+                      'Laundry Type:', 'Order Type:']) {
     check(`"${kept}" is still on the document`, html.includes(kept));
   }
   check('the item names are still listed',

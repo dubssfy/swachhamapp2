@@ -102,14 +102,47 @@ export function addDays(dateKey: string, days: number): string {
 }
 
 /**
- * The earliest delivery date for a given pickup date: the day AFTER pickup.
+ * The earliest delivery DATE for a given pickup date: the day AFTER pickup.
  *
- * Same-day delivery is not offered, so this is pickup + 1 with no special
- * cases. Falls back to tomorrow when no pickup date has been chosen yet, so a
- * caller never has to handle null itself.
+ * The date is only half the rule. The turnaround is a full 24 HOURS from the
+ * pickup TIME, so on this first eligible day only the slots at or after the
+ * pickup time qualify — see `getAvailableDeliverySlots`, which is what the
+ * screen filters with. This function answers "which days may be offered at
+ * all"; a 6pm pickup still yields tomorrow here, and tomorrow's morning slots
+ * are then dropped by the slot filter.
+ *
+ * Falls back to tomorrow when no pickup date has been chosen yet, so a caller
+ * never has to handle null itself.
  */
 export function getMinimumDeliveryDate(pickupDateKey: string | null): string {
   return addDays(pickupDateKey || todayIST(), 1);
+}
+
+/** A full day in minutes — the minimum pickup-to-delivery turnaround. */
+export const MIN_TURNAROUND_MINUTES = 24 * 60;
+
+/** A date key and a minutes-since-midnight, as one comparable number. */
+function absoluteMinutes(dateKey: string, minutes: number): number {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  return Date.UTC(year, month - 1, day) / 60_000 + minutes;
+}
+
+/**
+ * Minutes between a pickup and a delivery, both as date + slot start.
+ *
+ * Built in UTC so the subtraction is pure arithmetic on two IST wall-clock
+ * values; the device's own timezone cannot move the difference.
+ */
+export function minutesBetweenSlots(
+  pickupDateKey: string,
+  pickupStartMinutes: number,
+  deliveryDateKey: string,
+  deliveryStartMinutes: number
+): number {
+  return (
+    absoluteMinutes(deliveryDateKey, deliveryStartMinutes) -
+    absoluteMinutes(pickupDateKey, pickupStartMinutes)
+  );
 }
 
 /**
@@ -211,16 +244,61 @@ export function validatePickupDateTime(
   return null;
 }
 
+/**
+ * The delivery slots that may be booked on `deliveryDateKey`.
+ *
+ * THE RULE IS 24 HOURS FROM THE PICKUP TIME, not "the next day". A 6pm pickup
+ * on Monday cannot be delivered at 9am on Tuesday — that is fifteen hours — so
+ * the first eligible day is filtered down to the slots at or after the pickup
+ * time, and every later day is offered whole.
+ *
+ * Returns an empty array when the pickup is not yet chosen: there is no
+ * turnaround to measure from, so nothing can be offered.
+ */
+export function getAvailableDeliverySlots<T extends SchedulableSlot>(
+  slots: T[],
+  deliveryDateKey: string | null,
+  pickupDateKey: string | null,
+  pickupSlot: SchedulableSlot | null
+): T[] {
+  if (!deliveryDateKey || !pickupDateKey || !pickupSlot) return [];
+  return slots.filter(
+    (slot) =>
+      minutesBetweenSlots(
+        pickupDateKey,
+        pickupSlot.start_minutes,
+        deliveryDateKey,
+        slot.start_minutes
+      ) >= MIN_TURNAROUND_MINUTES
+  );
+}
+
 /** Why a delivery choice is not acceptable, or null when it is. */
 export function validateDeliveryDateTime(
   pickupDateKey: string | null,
   deliveryDateKey: string | null,
-  deliverySlot: SchedulableSlot | null
+  deliverySlot: SchedulableSlot | null,
+  pickupSlot?: SchedulableSlot | null
 ): string | null {
   if (!deliveryDateKey) return 'Please select a delivery date.';
   if (pickupDateKey && deliveryDateKey <= pickupDateKey) {
     return 'Delivery date must be after pickup date.';
   }
   if (!deliverySlot) return 'Please select a delivery time.';
+  // The turnaround, when the pickup time is known. Optional so existing
+  // callers that only have the date keep their previous behaviour rather than
+  // failing on a missing argument; the server enforces the rule regardless.
+  if (
+    pickupDateKey &&
+    pickupSlot &&
+    minutesBetweenSlots(
+      pickupDateKey,
+      pickupSlot.start_minutes,
+      deliveryDateKey,
+      deliverySlot.start_minutes
+    ) < MIN_TURNAROUND_MINUTES
+  ) {
+    return 'Delivery must be at least 24 hours after the pickup time.';
+  }
   return null;
 }

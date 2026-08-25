@@ -192,8 +192,14 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Select Items is a tab root, so Back usually has nothing on its own
+          stack to pop; it falls back to the Business home rather than being
+          absent on the one screen the user browses longest. */}
       <BusinessHeader
         title="Select Items"
+        onBack={() =>
+          navigation.canGoBack() ? navigation.goBack() : navigation.navigate('BusinessHome')
+        }
         action={
           <TouchableOpacity
             style={styles.cartButton}

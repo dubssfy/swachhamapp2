@@ -17,7 +17,15 @@ import {
   createCatalogueItem,
   createItemWithCustomerPrice,
 } from '../services/priceList.service';
+import {
+  buildCustomerPriceListDocument,
+  buildBusinessPriceListDocument,
+  renderPriceListPdf,
+  PriceListDocument,
+} from '../services/priceListPdf.service';
 import { sendSuccess } from '../utils/response';
+import { AuthenticatedRequest } from '../middleware/auth';
+import { logger } from '../utils/logger';
 
 /**
  * Price List, under the super admin router.
@@ -39,6 +47,19 @@ const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 
 const asBool = (value: unknown): boolean => String(value ?? '').toLowerCase() === 'true';
+
+/**
+ * Writes a finished price-list document out as a PDF download.
+ *
+ * One helper for both lists, so the two downloads cannot drift apart in how
+ * they are named, typed or measured.
+ */
+function sendPriceListPdf(res: Response, document: PriceListDocument, pdf: Buffer): void {
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${document.fileName}"`);
+  res.setHeader('Content-Length', String(pdf.length));
+  res.end(pdf);
+}
 
 /* ===================================================================
  * CATALOGUE  — what can be priced
@@ -137,6 +158,41 @@ router.get('/customers', async (req: Request, res: Response, next: NextFunction)
       includeInactive: !asBool(req.query.active_only),
     });
     sendSuccess(res, rows, 'Customer price list fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/super-admin/prices/customers.pdf?include_inactive=true
+ *
+ * The customer price list as a printable sheet — the WHOLE list, grouped
+ * Category -> Sub-category -> Item in the catalogue's own order.
+ *
+ * Not the screen's current selection: that screen requires a Category and a
+ * Sub-category before it shows anything, so printing what is on it could only
+ * ever produce one sub-category.
+ *
+ * Declared ABOVE '/customers/:id' — Express matches in registration order and
+ * would otherwise read "customers.pdf" as an id. (It does not here, since the
+ * dot is in the same segment as "customers", but the ordering is kept so the
+ * next path added cannot quietly break it.)
+ */
+router.get('/customers.pdf', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const document = await buildCustomerPriceListDocument({
+      // Disabled rows are off a printed list by default: a switched-off price
+      // is not a price anybody pays.
+      includeInactive: asBool(req.query.include_inactive),
+    });
+    const pdf = await renderPriceListPdf(document);
+
+    logger.info(
+      `[PriceList] Customer price list PDF (${document.itemCount} items) downloaded by ` +
+        `super admin ${(req as AuthenticatedRequest).user!.id}`
+    );
+
+    sendPriceListPdf(res, document, pdf);
   } catch (error) {
     next(error);
   }
@@ -251,6 +307,45 @@ router.post('/businesses/:businessId', async (req: Request, res: Response, next:
     next(error);
   }
 });
+
+/**
+ * GET /api/super-admin/prices/businesses/:businessId/price-list.pdf
+ *        ?laundry_type=hotel|guest&include_unset=true
+ *
+ * ONE business's rate card, at ONE laundry type, as a printable sheet.
+ *
+ * ORDER MATTERS. This is declared ABOVE '/businesses/:businessId/:priceId',
+ * because Express matches in registration order and that route would
+ * otherwise take "price-list.pdf" for a price id and answer 404.
+ *
+ * The laundry type is part of what the sheet IS, not a filter on it — Hotel
+ * and Guest are separately priced, so each gets its own sheet rather than one
+ * sheet with two rates per item.
+ */
+router.get(
+  '/businesses/:businessId/price-list.pdf',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const document = await buildBusinessPriceListDocument(req.params.businessId, {
+        laundryType: asString(req.query.laundry_type),
+        // Items with no rate are off a rate card by default; the super admin
+        // can ask for them when the gaps are what they want on paper.
+        includeUnset: asBool(req.query.include_unset),
+      });
+      const pdf = await renderPriceListPdf(document);
+
+      logger.info(
+        `[PriceList] Business price list PDF for ${req.params.businessId} ` +
+          `(${document.itemCount} items) downloaded by super admin ` +
+          `${(req as AuthenticatedRequest).user!.id}`
+      );
+
+      sendPriceListPdf(res, document, pdf);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 // GET /api/super-admin/prices/businesses/:businessId/:priceId
 router.get(

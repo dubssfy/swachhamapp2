@@ -1,5 +1,6 @@
 import { getClient, query } from '../config/database';
 import { AppError } from '../utils/appError';
+import { BUSINESS_DISPLAY_NAME_SQL } from '../utils/businessName';
 import { logger } from '../utils/logger';
 import { config } from '../config/env';
 import { getCart, BusinessCart } from './businessCart.service';
@@ -13,6 +14,15 @@ const LAUNDRY_TYPE_CODE: Record<string, string> = { hotel: 'H', guest: 'G' };
 
 /** Exactly two Business services. Wash + Iron is one combined service. */
 const VALID_SERVICE_TYPES = ['wash_iron', 'dry_clean'];
+
+/**
+ * What a Quick Order costs: DOUBLE the business's standard rate.
+ *
+ * Exported because the app has to state the same figure before the user
+ * confirms — "2x" on the Cart and 2x on the invoice must come from one
+ * number, or the warning stops matching the bill.
+ */
+export const QUICK_ORDER_MULTIPLIER = 2;
 
 /**
  * Business order number: SW + H|G + '#' + DDMMYYYY + 6-digit daily sequence
@@ -229,8 +239,22 @@ async function createOrder(
     cartItems.map((item) => String(item.service_id)),
     cart.laundry_type
   );
+  // QUICK ORDER IS CHARGED AT DOUBLE THE STANDARD RATE.
+  //
+  // Applied to the UNIT price, so the multiplier is snapshotted onto every
+  // order line along with the rate it was derived from — an invoice built
+  // later reads the figure that was actually charged and never has to know
+  // the order was a quick one to arrive at the right total.
+  //
+  // Standard is the default and is untouched: `QUICK_ORDER_MULTIPLIER` only
+  // applies when the cart says quick, so an ordinary order prices exactly as
+  // it did before this rule existed.
+  const rateMultiplier = cart.order_type === 'quick' ? QUICK_ORDER_MULTIPLIER : 1;
   const unitPriceOf = (item: { service_id: string }) =>
-    unitPrices.get(String(item.service_id))!;
+    // Rounded to paise: doubling a price with two decimals is exact, but
+    // rounding here means no other multiplier could ever introduce a
+    // fraction the DECIMAL(10,2) column would silently truncate.
+    Math.round(unitPrices.get(String(item.service_id))! * rateMultiplier * 100) / 100;
 
   const subtotal = cartItems.reduce(
     (sum, item) => sum + unitPriceOf(item) * item.quantity,
@@ -275,9 +299,17 @@ async function createOrder(
         // been found defective yet. Writing it explicitly rather than leaving
         // it NULL means the pieces the order was placed for are recorded on
         // the row from the start, not inferred later.
-        `INSERT INTO order_items (order_id, service_id, category_id, service_name, laundry_type, unit, weight_kg, total_weight_kg, quantity, original_quantity, defective_quantity, unit_price, total_price)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-        [orderId, item.service_id, item.category_id, item.name, cart.laundry_type, item.unit, item.weight_kg, lineWeight(item), item.quantity, item.quantity, unitPrice, totalPrice]
+        //
+        // `laundry_service_id` IS THE CUSTOMER'S OWN CHOICE, and it is
+        // snapshotted here for the same reason the price is. The service is
+        // picked PER ITEM, so a Shirt on Wash & Iron can sit beside Trousers
+        // on Dry Clean; before this column existed the choice was dropped at
+        // this exact line and the Order Detail screen and PDF were left
+        // guessing it back from the order-wide service or the catalogue --
+        // which works only when the item had no choice to begin with.
+        `INSERT INTO order_items (order_id, service_id, category_id, service_name, laundry_service_id, laundry_type, unit, weight_kg, total_weight_kg, quantity, original_quantity, defective_quantity, unit_price, total_price)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [orderId, item.service_id, item.category_id, item.name, item.laundry_service_id, cart.laundry_type, item.unit, item.weight_kg, lineWeight(item), item.quantity, item.quantity, unitPrice, totalPrice]
       );
     }
 
@@ -518,7 +550,7 @@ async function fetchOrderDetail(
   const orderResult = await query<BusinessOrderDetail>(
     `SELECT o.id, o.order_number, o.laundry_type, o.order_type, o.service_type,
             s.name AS service_name, o.status, o.created_at,
-            COALESCE(NULLIF(TRIM(b.establishment_name), ''), b.name) AS business_name,
+            ${BUSINESS_DISPLAY_NAME_SQL} AS business_name,
             bu.name AS contact_person_name,
             /*
              * THE NUMBER THIS ORDER WAS PLACED ON. Read straight, with no
@@ -554,7 +586,10 @@ async function fetchOrderDetail(
   }
 
   const itemsResult = await query<
-    BusinessOrderDetail['items'][number] & { sole_service_name: string | null }
+    BusinessOrderDetail['items'][number] & {
+      line_service_name: string | null;
+      sole_service_name: string | null;
+    }
   >(
     `SELECT oi.id, oi.service_id, oi.service_name, oi.category_id,
             c.name AS category_name, s.image_url,
@@ -571,9 +606,17 @@ async function fetchOrderDetail(
             oi.unit,
             COALESCE(oi.weight_kg, s.weight_kg) AS weight_kg,
             COALESCE(oi.total_weight_kg, ROUND(s.weight_kg * oi.quantity, 3), 0) AS total_weight_kg,
+            -- THE SERVICE THIS LINE WAS ACTUALLY ORDERED FOR.
+            -- Stored on the line since migration 040, so a mixed order --
+            -- Shirt on Wash & Iron, Trousers on Dry Clean -- reports each
+            -- line's own service instead of the order-wide one.
+            ls.name AS line_service_name,
             -- The item's service, when the catalogue leaves no doubt: an item
             -- mapped to exactly one service can only have been ordered for
             -- that service. HAVING COUNT(*) = 1 is what makes it definite.
+            -- A FALLBACK FOR PRE-040 ROWS ONLY; it cannot answer for an item
+            -- that supports both services, which is why the column above
+            -- exists.
             (SELECT MIN(st.name)
                FROM item_service_types m
                JOIN services st ON st.id = m.service_id
@@ -583,15 +626,31 @@ async function fetchOrderDetail(
      FROM order_items oi
      LEFT JOIN service_categories c ON c.id = oi.category_id
      LEFT JOIN services s ON s.id = oi.service_id
+     LEFT JOIN services ls ON ls.id = oi.laundry_service_id AND ls.kind = 'SERVICE_TYPE'
      WHERE oi.order_id = ?
      ORDER BY oi.id ASC`,
     [orderId]
   );
 
-  // Per-line service: the order's own service when it has one (it is only set
-  // when every line shared it), otherwise the item's single supported service.
-  // Anything still unresolved stays null rather than being guessed at.
-  const items = itemsResult.rows.map(({ sole_service_name, ...item }) => ({
+  /*
+   * PER-LINE SERVICE, most specific source first.
+   *
+   *   1. line_service_name   what the customer actually chose for THIS item,
+   *                          stored on the line at order creation. Correct for
+   *                          every order placed since migration 040, including
+   *                          mixed ones.
+   *   2. order.service_name  the order-wide service. Only ever set when every
+   *                          line shared one, so it can only agree with (1).
+   *                          Covers pre-040 uniform orders.
+   *   3. sole_service_name   the item's only supported service. Covers pre-040
+   *                          lines on single-service items.
+   *
+   * THE ORDER MATTERS. The order-wide service used to be consulted FIRST,
+   * which is what made a mixed order print one service against every line.
+   * Anything still unresolved stays null and is displayed as unknown -- a
+   * filed document must not name a service nothing recorded.
+   */
+  const items = itemsResult.rows.map(({ line_service_name, sole_service_name, ...item }) => ({
     ...item,
     quantity: Number(item.quantity),
     original_quantity: Number(item.original_quantity),
@@ -604,7 +663,8 @@ async function fetchOrderDetail(
       0, Number(item.original_quantity) - Number(item.pending_quantity || 0)
     ),
     pending_reason: item.pending_reason || null,
-    laundry_service_name: order.service_name || sole_service_name || null,
+    laundry_service_name:
+      line_service_name || order.service_name || sole_service_name || null,
   }));
 
   return {

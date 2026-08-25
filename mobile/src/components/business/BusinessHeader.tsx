@@ -22,6 +22,13 @@ interface Props {
  *
  * The logo has a fixed box with resizeMode="contain", so its aspect ratio is
  * preserved on every screen size.
+ *
+ * BACK IS A LABELLED PILL, NOT A BARE CHEVRON. It is the one control on the
+ * page whose meaning has to be obvious at a glance, and an unlabelled 36px
+ * circle is neither obvious nor a comfortable target. Icon plus the word
+ * "Back", at a 48px minimum height, and it is defined HERE so every Business
+ * screen gets the same one — a per-screen back button is how they drifted into
+ * different sizes in the first place.
  */
 export default function BusinessHeader({ title, subtitle, onBack, action }: Props) {
   return (
@@ -40,8 +47,17 @@ export default function BusinessHeader({ title, subtitle, onBack, action }: Prop
 
       <View style={styles.titleRow}>
         {onBack ? (
-          <TouchableOpacity style={styles.backButton} onPress={onBack} accessibilityLabel="Go back">
-            <Ionicons name="arrow-back" size={20} color={COLORS.TextPrimary} />
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={onBack}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+            // A generous slop so the tap lands even when the thumb does not.
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="arrow-back" size={22} color={COLORS.PrimaryDark} />
+            <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
         ) : null}
 
@@ -78,13 +94,23 @@ const styles = StyleSheet.create({
     marginTop: SPACING.sm,
   },
   backButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: COLORS.Surface,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 4,
+    minHeight: 48,
+    paddingHorizontal: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: COLORS.Surface,
+    borderWidth: 1.5,
+    borderColor: COLORS.Primary,
     ...SHADOWS.light,
+  },
+  backText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '700',
+    color: COLORS.PrimaryDark,
   },
   titleWrap: { flex: 1, minWidth: 0 },
   title: {

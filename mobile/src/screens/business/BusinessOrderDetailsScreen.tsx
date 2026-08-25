@@ -23,7 +23,6 @@ import {
   generateOrderPdf,
   buildPdfBaseName,
   formatDateTime,
-  formatWeightKg,
   LAUNDRY_LABEL,
   ORDER_LABEL,
   SERVICE_LABEL,
@@ -228,42 +227,15 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
       <ScrollView contentContainerStyle={styles.scroll}>
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-        {/* Brand mark, then Business Information — mirrors the PDF. */}
+        {/* Brand mark, then the items. NO BUSINESS INFORMATION: the business
+            is reading its own order and does not need its own name, address
+            and contact number repeated back to it. What is left is the order.
+
+            THE ITEMS COME FIRST. What was ordered is the reason this screen is
+            opened; the order's metadata is reference material and now sits
+            below it, found when it is wanted rather than scrolled past every
+            time. */}
         <Text style={styles.brand}>SWACHHAM</Text>
-
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Business Information</Text>
-          </View>
-          <Row label="Business Name" value={order.business_name} />
-          {/* The number this order was placed on -- orders.placed_by_mobile,
-              the one that passed OTP for that session. "N/A" for orders from
-              before the field existed rather than a substituted number. */}
-          <Row label="Mobile Number" value={order.placed_by_mobile || 'N/A'} />
-          <Row label="Contact Person" value={order.contact_person_name || '—'} />
-          <Row label="Address" value={order.business_address || '—'} />
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Order Information</Text>
-            <View style={styles.statusPill}>
-              <Text style={styles.statusText}>{(order.status || '').replace(/_/g, ' ')}</Text>
-            </View>
-          </View>
-          <Row label="Order Number" value={order.order_number} />
-          <Row label="Order Date" value={date} />
-          <Row label="Order Time" value={time} />
-          <Row label="Laundry Type" value={LAUNDRY_LABEL[order.laundry_type || ''] || '—'} />
-          <Row label="Order Type" value={ORDER_LABEL[order.order_type || ''] || '—'} />
-          <Row
-            label="Service"
-            value={SERVICE_LABEL[order.service_type || ''] || order.service_name || '—'}
-          />
-          <Row label="Order Status" value={(order.status || '').replace(/_/g, ' ')} />
-          {/* Total order weight = SUM(item weight x quantity). */}
-          <Row label="Total Weight" value={formatWeightKg(order.total_weight_kg)} />
-        </View>
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Items ({order.item_count})</Text>
@@ -318,13 +290,37 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
                   </Text>
                 ) : null}
               </View>
-              <Text style={styles.itemWeight}>{formatWeightKg(item.total_weight_kg)}</Text>
+              {/* The line's quantity, as the count it is billed on. No
+                  weight: the business orders and is billed by the piece. */}
+              <Text style={styles.itemCount}>x{item.quantity}</Text>
             </View>
           ))}
           <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Total Weight</Text>
-            <Text style={styles.summaryValue}>{formatWeightKg(order.total_weight_kg)}</Text>
+            <Text style={styles.summaryLabel}>Total Items</Text>
+            <Text style={styles.summaryValue}>{order.item_count}</Text>
           </View>
+        </View>
+
+        {/* ORDER INFORMATION, BELOW THE ITEMS. Same rows as before minus the
+            total weight, which the business cannot act on and which is not
+            what it is billed by. */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Order Information</Text>
+            <View style={styles.statusPill}>
+              <Text style={styles.statusText}>{(order.status || '').replace(/_/g, ' ')}</Text>
+            </View>
+          </View>
+          <Row label="Order Number" value={order.order_number} />
+          <Row label="Order Date" value={date} />
+          <Row label="Order Time" value={time} />
+          <Row label="Laundry Type" value={LAUNDRY_LABEL[order.laundry_type || ''] || '—'} />
+          <Row label="Order Type" value={ORDER_LABEL[order.order_type || ''] || '—'} />
+          <Row
+            label="Service"
+            value={SERVICE_LABEL[order.service_type || ''] || order.service_name || '—'}
+          />
+          <Row label="Order Status" value={(order.status || '').replace(/_/g, ' ')} />
         </View>
 
         {/* Both PDF actions run the same generator; while either is working
@@ -502,7 +498,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 2,
   },
-  itemWeight: {
+  itemCount: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.sm,
     fontWeight: '600',

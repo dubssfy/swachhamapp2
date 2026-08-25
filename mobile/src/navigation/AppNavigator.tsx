@@ -154,6 +154,20 @@ import SorterScanScreen
 import SorterDefectCaptureScreen
   from '../screens/sorter/SorterDefectCaptureScreen';
 
+// Batch processing — an ADDITIONAL Sorter workflow. The screens above are
+// unchanged and keep their own routes.
+import SorterBatchProcessingScreen
+  from '../screens/sorter/SorterBatchProcessingScreen';
+
+import SorterBatchDistributionScreen
+  from '../screens/sorter/SorterBatchDistributionScreen';
+
+import SorterBatchDetailScreen
+  from '../screens/sorter/SorterBatchDetailScreen';
+
+import SorterBatchScanScreen
+  from '../screens/sorter/SorterBatchScanScreen';
+
 
 // =========================================================
 // RIDER MODULE
@@ -584,6 +598,16 @@ function SorterStack() {
       <Stack.Screen name="SorterOrderDetailsScreen" component={SorterOrderDetailsScreen} />
       <Stack.Screen name="SorterScanScreen" component={SorterScanScreen} />
       <Stack.Screen name="SorterDefectCaptureScreen" component={SorterDefectCaptureScreen} />
+      {/* Batch processing: eligibility -> proposed distribution -> confirmed
+          batch -> batch barcode scan. Added alongside the routes above, which
+          keep working exactly as they did. */}
+      <Stack.Screen name="SorterBatchProcessingScreen" component={SorterBatchProcessingScreen} />
+      <Stack.Screen
+        name="SorterBatchDistributionScreen"
+        component={SorterBatchDistributionScreen}
+      />
+      <Stack.Screen name="SorterBatchDetailScreen" component={SorterBatchDetailScreen} />
+      <Stack.Screen name="SorterBatchScanScreen" component={SorterBatchScanScreen} />
     </Stack.Navigator>
   );
 }

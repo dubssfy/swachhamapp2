@@ -162,6 +162,29 @@ export default function SorterDashboardScreen({ navigation }: any) {
           <Ionicons name="chevron-forward" size={24} color={COLORS.Primary} />
         </TouchableOpacity>
 
+        {/* Batch processing — a THIRD button, added below the two that were
+            already here. Neither of those changed: this one opens the new
+            workflow and nothing else. Tapping it only opens a screen; the
+            optimisation runs when START BATCH is pressed there. */}
+        <TouchableOpacity
+          style={[styles.actionButton, styles.actionSecondary]}
+          onPress={() => navigation.navigate('SorterBatchProcessingScreen')}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Batch Processing"
+        >
+          <View style={[styles.actionIcon, styles.actionIconSecondary]}>
+            <Ionicons name="git-branch-outline" size={26} color={COLORS.Primary} />
+          </View>
+          <View style={styles.actionTextBlock}>
+            <Text style={styles.actionTitleSecondary}>Batch Processing</Text>
+            <Text style={styles.actionCaptionSecondary}>
+              Distribute approved orders across the machines
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={24} color={COLORS.Primary} />
+        </TouchableOpacity>
+
         {error ? (
           <View style={styles.errorBlock}>
             <Text style={styles.errorText}>{error}</Text>

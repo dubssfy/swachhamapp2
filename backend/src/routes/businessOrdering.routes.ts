@@ -31,6 +31,7 @@ import {
   getOrderTracking,
   repeatOrder,
   cancelOrder,
+  QUICK_ORDER_MULTIPLIER,
 } from '../services/businessOrder.service';
 import { getProfile, updateProfile, getOwnedBusinessId } from '../services/businessProfile.service';
 import { sendSuccess } from '../utils/response';
@@ -169,10 +170,22 @@ async function priceScope(req: Request): Promise<PriceScope> {
   };
 }
 
+/**
+ * The laundry services, and what a Quick Order costs.
+ *
+ * `quickOrderMultiplier` rides along on a call the app already makes, so the
+ * Cart can state the surcharge from the SAME constant the order is priced
+ * with. A number hard-coded in the app instead would be free to drift away
+ * from what the invoice actually charges.
+ */
 router.get('/services', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const [category, serviceTypes] = await Promise.all([getServiceCategory(), getServiceTypes()]);
-    sendSuccess(res, { category, serviceTypes }, 'Laundry services fetched successfully');
+    sendSuccess(
+      res,
+      { category, serviceTypes, quickOrderMultiplier: QUICK_ORDER_MULTIPLIER },
+      'Laundry services fetched successfully'
+    );
   } catch (error) {
     next(error);
   }

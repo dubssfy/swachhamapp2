@@ -78,13 +78,15 @@ async function assertBusiness(businessId: unknown): Promise<{
   return { ...result.rows[0], id: String(result.rows[0].id) };
 }
 
-/** The name a business is shown under: the establishment name. */
-export function displayBusinessName(row: {
-  name?: string | null;
-  establishment_name?: string | null;
-}): string {
-  return text(row.establishment_name) || text(row.name) || 'Business';
-}
+/**
+ * The name a business is shown under: the establishment name.
+ *
+ * Re-exported from `utils/businessName`, which is also where the SQL form of
+ * the same rule lives. Existing importers keep this path; there is still only
+ * one definition behind it.
+ */
+import { displayBusinessName } from '../utils/businessName';
+export { displayBusinessName };
 
 /* ===================================================================
  * THE LEDGER

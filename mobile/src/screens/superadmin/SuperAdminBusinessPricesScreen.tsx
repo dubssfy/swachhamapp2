@@ -14,6 +14,7 @@ import superAdminApi, {
 import CategoryItemPicker from './CategoryItemPicker';
 import { ActionButton } from './SuperAdminCustomerPricesScreen';
 import PriceCategoryGroups, { PriceItemRow } from './PriceCategoryGroups';
+import { printPriceListPdf } from './printPriceList';
 
 /**
  * Business Price List — a separate price list per business.
@@ -90,6 +91,8 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
   const [error, setError] = useState('');
 
   const [editing, setEditing] = useState<BusinessPrice | null>(null);
+  /** True while the printable rate card is being fetched. */
+  const [printing, setPrinting] = useState(false);
 
   const business = businesses.find((b) => b.business_id === businessId) || null;
 
@@ -188,6 +191,58 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
       );
     });
   }, [rows, search, filter, categoryFilter, subcategoryFilter, readyToList]);
+
+  /**
+   * Print THIS business's rate card, at the laundry type on screen.
+   *
+   * Both are already chosen above and every row belongs to them, so the sheet
+   * needs no further asking: it is "these rates, for this business, for this
+   * type". The other laundry type is a separate sheet, printed by switching
+   * the selector — never two rates for one item on one page.
+   *
+   * The Category -> Sub-category filters are NOT applied. They narrow the
+   * screen so one item can be found; the printed card is the whole list.
+   */
+  const printList = () => {
+    if (!businessId || printing) return;
+    const label = LAUNDRY_TYPES.find((t) => t.value === laundryType)?.label ?? '';
+    // The business row is only needed for what the dialogs call it. The sheet
+    // itself is named by the server from the stored record, so a list that has
+    // not finished loading must not block the print.
+    const name = business?.business_name ?? 'this business';
+
+    const run = async (includeUnset: boolean) => {
+      setPrinting(true);
+      setError('');
+      const { error: failure } = await printPriceListPdf(
+        superAdminApi.businessPriceListPdfUrl(businessId, laundryType, includeUnset),
+        `swachham-price-list-${businessId}-${laundryType}.pdf`,
+        `${name} — ${label}`
+      );
+      if (failure) setError(failure);
+      setPrinting(false);
+    };
+
+    // The unpriced items are the one real choice here, so it is asked rather
+    // than decided: a card handed to the business should not list items it
+    // has no rate for, but a working copy chasing the gaps should.
+    if (unsetCount === 0) {
+      run(false);
+      return;
+    }
+
+    Alert.alert(
+      `Print ${label} rates`,
+      `${name}\n\n` +
+        `${unsetCount} item(s) have no rate for this laundry type. Leave them off ` +
+        'for a card to hand over, include them to see the gaps on paper.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Priced items only', onPress: () => run(false) },
+        { text: 'Include not set', onPress: () => run(true) },
+      ]
+    );
+  };
 
   const toggleActive = async (row: BusinessPrice) => {
     if (!businessId || !row.id) return;
@@ -312,6 +367,40 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
           >
             <Ionicons name="add" size={20} color={COLORS.Surface} />
             <Text style={sa.addEntryText}>Add New Entry</Text>
+          </TouchableOpacity>
+
+          {/* The rate card for the business and laundry type chosen above.
+              Secondary to adding a price, and available as soon as a business
+              is picked — it does not wait for the category filters, because
+              the sheet is the whole list rather than what the table shows. */}
+          <TouchableOpacity
+            style={[
+              sa.buttonGhost,
+              {
+                marginHorizontal: SPACING.md,
+                flexDirection: 'row',
+                justifyContent: 'center',
+                gap: SPACING.xs,
+              },
+            ]}
+            onPress={printList}
+            disabled={printing}
+            accessibilityRole="button"
+            accessibilityLabel={`Print this business's ${
+              LAUNDRY_TYPES.find((t) => t.value === laundryType)?.label ?? ''
+            } price list`}
+            accessibilityState={{ disabled: printing }}
+          >
+            {printing ? (
+              <ActivityIndicator size="small" color={COLORS.TextPrimary} />
+            ) : (
+              <Ionicons name="print-outline" size={18} color={COLORS.TextPrimary} />
+            )}
+            <Text style={sa.buttonGhostText}>
+              {printing
+                ? 'Preparing…'
+                : `Print ${LAUNDRY_TYPES.find((t) => t.value === laundryType)?.label ?? ''} List`}
+            </Text>
           </TouchableOpacity>
 
           <View style={{ paddingHorizontal: SPACING.md, paddingTop: SPACING.sm }}>

@@ -118,12 +118,45 @@ function assertDeliveryAfterPickup(
     throw new AppError('Delivery date must be after pickup date.', 400);
   }
 
-  // Belt and braces: with delivery_date > pickup_date this cannot fail, but
-  // the requirement is on the datetimes, so the datetimes are what is
-  // asserted. If the date rule above is ever relaxed, this still holds.
-  if (`${deliveryDate}T${delivery.start}` <= `${pickupDate}T${pickup.start}`) {
-    throw new AppError('Delivery time must be after pickup time.', 400);
+  // A FULL 24 HOURS, measured from the pickup time — not merely the next day.
+  //
+  // "Tomorrow" is not the rule: a 6pm pickup collected on Monday cannot come
+  // back at 9am Tuesday, which is fifteen hours, so the gap is asserted on the
+  // datetimes rather than on the dates. The screen offers only slots that
+  // satisfy this, and this is what makes a request that skipped the screen
+  // fail the same way.
+  if (minutesBetween(pickupDate, pickup.start, deliveryDate, delivery.start) < MINUTES_PER_DAY) {
+    throw new AppError(
+      'Delivery must be at least 24 hours after the pickup time.',
+      400
+    );
   }
+}
+
+/** A full day, in minutes — the minimum turnaround between pickup and delivery. */
+const MINUTES_PER_DAY = 24 * 60;
+
+/**
+ * Minutes from one date+time to another.
+ *
+ * Both dates are YYYY-MM-DD and both times are HH:MM[:SS] as the slot table
+ * stores them. Built in UTC so the subtraction is pure arithmetic: these are
+ * wall-clock IST values on both sides, and the difference between two of them
+ * is unaffected by the server's own timezone.
+ */
+function minutesBetween(
+  fromDate: string,
+  fromTime: string,
+  toDate: string,
+  toTime: string
+): number {
+  return (toTimestamp(toDate, toTime) - toTimestamp(fromDate, fromTime)) / 60_000;
+}
+
+function toTimestamp(dateKey: string, time: string): number {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const [hour, minute] = time.split(':').map(Number);
+  return Date.UTC(year, month - 1, day, hour || 0, minute || 0);
 }
 
 /** A required YYYY-MM-DD field, with its own wording when absent or malformed. */

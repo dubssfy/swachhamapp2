@@ -30,7 +30,7 @@ const SERVICE_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
  *
  * The cards stay horizontal — artwork on the left, everything else in the
  * column beside it: details and this item's service buttons share the top
- * row, then a typed quantity, then Add to Cart.
+ * row, then a typed quantity, then Add to Order.
  *
  * The service is picked per item, never once for the whole order, so Shirt
  * can go to Wash & Iron while Trousers goes to Dry Clean. An item offering a
@@ -49,6 +49,9 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
   const [error, setError] = useState('');
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [addingItemId, setAddingItemId] = useState<string | null>(null);
+  /** The item showing its "ADDED" tick, cleared by a timer shortly after. */
+  const [addedItemId, setAddedItemId] = useState<string | null>(null);
+  const addedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** The service chosen for each item, kept per item id so lines never share one. */
   const [itemServices, setItemServices] = useState<Record<string, string>>({});
   /** Item ids whose Add was blocked because no service was chosen. */
@@ -140,7 +143,10 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
     services.find((service) => service.code === code)?.name ||
     (code === 'dry_clean' ? 'Dry Clean' : 'Wash & Iron');
 
-  const handleAddToCart = async (item: BusinessItem) => {
+  const handleAddToOrder = async (item: BusinessItem) => {
+    // First line of the double-tap defence. The button is disabled while an
+    // add is in flight and the store refuses a concurrent call as well, so a
+    // tap that beats the re-render still cannot create a second line.
     if (addingItemId) return;
 
     // Quantity first: it must be present and a whole number of at least 1.
@@ -174,28 +180,51 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
     try {
       setAddingItemId(item.id);
       setError('');
-      // Quantity travels to the cart as entered; the line weight stays
-      // standard weight x quantity, computed from the catalogue as before.
+      // Quantity travels to the order as entered. The catalogue still carries
+      // a standard weight per piece and the server still records it — that is
+      // what the Sorter loads machines by; it is simply not shown here.
       await addItem(item.id, quantity, lineService);
       setQuantities((prev) => ({ ...prev, [item.id]: '1' }));
+
+      // Confirm it landed. The tick replaces the spinner rather than following
+      // it, so the button never returns to a state that looks untouched.
+      if (addedTimerRef.current) clearTimeout(addedTimerRef.current);
+      setAddedItemId(item.id);
+      addedTimerRef.current = setTimeout(() => setAddedItemId(null), 1400);
     } catch (err: any) {
-      setError(err?.message || 'Failed to add item to cart');
+      setError(err?.message || 'Failed to add item to your order');
     } finally {
       setAddingItemId(null);
     }
   };
+
+  // A timer that outlives the screen would set state on an unmounted
+  // component; both timers are cleared on the way out.
+  useEffect(
+    () => () => {
+      if (addedTimerRef.current) clearTimeout(addedTimerRef.current);
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    },
+    []
+  );
 
   const renderItem = ({ item }: { item: BusinessItem }) => {
     const quantityText = getQuantityText(item.id);
     const selectedService = itemServices[item.id];
     const showServiceError = Boolean(serviceErrors[item.id]);
     const hasNoService = item.service_types.length === 0;
+    /** One service means nothing to choose — see the selector below. */
+    const hasSingleService = item.service_types.length === 1;
     const artwork = item.image_url ? { uri: item.image_url } : null;
+    const isAdding = addingItemId === item.id;
+    const isAdded = addedItemId === item.id;
+    /** Any add in flight locks every card, so two lines cannot be posted. */
+    const isBusy = addingItemId !== null;
 
     return (
       // Horizontal card: artwork on the left, everything else in the column
       // beside it — details, then the service buttons, the quantity field and
-      // Add to Cart, each at full size rather than squeezed into a corner.
+      // Add to Order, each at full size rather than squeezed into a corner.
       <View style={styles.itemCard}>
         <View style={styles.itemImage}>
           {artwork ? (
@@ -206,28 +235,42 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
         </View>
 
         <View style={styles.itemInfo}>
-          <Text style={styles.itemName}>{item.name}</Text>
-          {item.standard_size ? (
-            <Text style={styles.itemMeta}>Standard size: {item.standard_size}</Text>
-          ) : null}
-          {item.weight_kg ? (
-            <Text style={styles.itemMeta}>
-              Standard weight: {item.weight_kg} {item.weight_unit}
-            </Text>
-          ) : null}
+          <View style={styles.itemNameRow}>
+            <Text style={styles.itemName}>{item.name}</Text>
+            {/* Why this item is near the top. Shown only where it is earned,
+                so the badge stays meaningful rather than decorating the whole
+                list. */}
+            {item.order_count > 0 ? (
+              <View style={styles.frequentBadge}>
+                <Ionicons name="repeat" size={12} color={COLORS.PrimaryDark} />
+                <Text style={styles.frequentBadgeText}>Frequent</Text>
+              </View>
+            ) : null}
+          </View>
+          {/* Neither size nor weight is shown: the business orders by the
+              piece, so the unit is the only measure that means anything at
+              the point of ordering. */}
           <Text style={styles.itemMeta}>Unit: {item.unit}</Text>
 
-          {/* This item's own laundry services, from the catalogue. A single
-              service arrives already selected; several stay unselected until
-              the user picks one. Selection is per item.
+          {/* This item's own laundry services, from the catalogue.
 
-              They get a full row rather than a narrow right-hand column, so
-              the buttons can be full size without cramping the details. */}
+              ONE SERVICE IS NOT A CHOICE. When the catalogue offers the item a
+              single service it is already selected, so a picker with one
+              option would only ask the user to confirm what cannot be varied.
+              The service is stated as a plain line instead, and the selector
+              appears only where there is genuinely something to choose.
+
+              With several, the buttons get a full row rather than a narrow
+              right-hand column, so they can be full size without cramping the
+              details. Selection is per item. */}
+          {hasNoService ? (
+            <Text style={styles.serviceErrorText}>No service available for this item</Text>
+          ) : hasSingleService ? (
+            <Text style={styles.itemMeta}>Service: {serviceLabel(item.service_types[0])}</Text>
+          ) : (
+            <>
           <Text style={styles.sectionLabel}>Laundry Service</Text>
           <View style={styles.serviceRow}>
-            {hasNoService ? (
-              <Text style={styles.serviceErrorText}>No service available for this item</Text>
-            ) : null}
             {item.service_types.map((code) => {
               const isSelected = selectedService === code;
               return (
@@ -257,6 +300,8 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
           {showServiceError ? (
             <Text style={styles.serviceErrorText}>{ITEM_SERVICE_REQUIRED_MESSAGE}</Text>
           ) : null}
+            </>
+          )}
 
           {/* A typed numeric field, sized to be read and tapped easily. */}
           <View style={styles.quantityBlock}>
@@ -273,17 +318,42 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
             />
           </View>
 
+          {/* THREE STATES, and every one of them says which it is.
+
+              Idle -> ADDING (spinner, disabled) -> ADDED (tick, briefly), then
+              back to idle. The tick is what confirms the item actually landed
+              in the order: a button that simply stops spinning leaves the user
+              guessing, and guessing is what produces a second tap.
+
+              `disabled` covers the whole card while ANY item is being added,
+              matching the store's own single-flight guard, so a double tap
+              cannot post two lines. */}
           <View style={styles.itemActions}>
             <TouchableOpacity
-              style={[styles.addButton, hasNoService && styles.addButtonDisabled]}
-              onPress={() => handleAddToCart(item)}
-              disabled={addingItemId === item.id || hasNoService}
+              style={[
+                styles.addButton,
+                isAdded && styles.addButtonAdded,
+                (hasNoService || isBusy) && styles.addButtonDisabled,
+              ]}
+              onPress={() => handleAddToOrder(item)}
+              disabled={isBusy || hasNoService}
               activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel={`Add ${item.name} to order`}
+              accessibilityState={{ disabled: isBusy || hasNoService, busy: isAdding }}
             >
-              {addingItemId === item.id ? (
-                <ActivityIndicator size="small" color={COLORS.Surface} />
+              {isAdding ? (
+                <>
+                  <ActivityIndicator size="small" color={COLORS.Surface} />
+                  <Text style={styles.addButtonText}>ADDING…</Text>
+                </>
+              ) : isAdded ? (
+                <>
+                  <Ionicons name="checkmark-circle" size={22} color={COLORS.Surface} />
+                  <Text style={styles.addButtonText}>ADDED</Text>
+                </>
               ) : (
-                <Text style={styles.addButtonText}>ADD TO CART</Text>
+                <Text style={styles.addButtonText}>ADD TO ORDER</Text>
               )}
             </TouchableOpacity>
           </View>
@@ -454,6 +524,26 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
 
+  // ---- "Frequent" badge ----
+  // Sits beside the name rather than above it, so the ranked items are
+  // obvious while scanning without adding a row to every card.
+  itemNameRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs, flexWrap: 'wrap' },
+  frequentBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: COLORS.Accent + '40',
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  frequentBadgeText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: 10,
+    fontWeight: '800',
+    color: COLORS.PrimaryDark,
+  },
+
   // ---- Laundry service buttons ----
   // Full-size buttons rather than pills. `flexBasis` with `flexGrow` is what
   // makes them share a row on a wide screen and take a full row each on a
@@ -529,18 +619,22 @@ const styles = StyleSheet.create({
     color: COLORS.TextPrimary,
   },
 
-  // ---- Add to Cart ----
+  // ---- Add to Order ----
   // The card's most prominent control: full width of the content column.
   itemActions: { marginTop: SPACING.md },
   addButton: {
     backgroundColor: COLORS.Primary,
     borderRadius: BORDER_RADIUS.md,
     height: 56,
+    flexDirection: 'row',
+    gap: SPACING.xs,
     alignItems: 'center',
     justifyContent: 'center',
     ...SHADOWS.medium,
   },
   addButtonDisabled: { opacity: 0.5 },
+  /** The confirmed state — a darker green, so ADDED reads as a result. */
+  addButtonAdded: { backgroundColor: COLORS.PrimaryDark },
   addButtonText: {
     color: COLORS.Surface,
     fontFamily: TYPOGRAPHY.fontFamily,

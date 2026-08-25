@@ -1,5 +1,6 @@
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
+import { BUSINESS_DISPLAY_NAME_SQL } from '../utils/businessName';
 import { getCompleteness, Completeness } from './businessCompleteness';
 
 /**
@@ -92,7 +93,9 @@ async function getProfile(businessUserId: string): Promise<BusinessProfile> {
 
   const result = await query<BusinessProfile>(
     `SELECT b.id AS business_id,
-            b.name AS business_name,
+            -- The establishment name, not the legal one: this is the business
+            -- user's own profile screen. See utils/businessName.
+            ${BUSINESS_DISPLAY_NAME_SQL} AS business_name,
             b.business_type AS customer_type,
             b.registration_type,
             b.other_type_specify,

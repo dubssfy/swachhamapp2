@@ -64,8 +64,13 @@ export async function generateOrderPdf(
   }
 }
 
-/** Swachham logo, embedded as a data URI so the PDF renders it offline. */
-async function getLogoDataUri(): Promise<string | null> {
+/**
+ * Swachham logo, embedded as a data URI so the PDF renders it offline.
+ *
+ * Exported so other PDF generators — `batchDetailsPdf.ts` included — use the
+ * same asset instead of loading it a second way.
+ */
+export async function getLogoDataUri(): Promise<string | null> {
   try {
     const asset = Asset.fromModule(require('../../assets/swachham-logo.png'));
     await asset.downloadAsync();

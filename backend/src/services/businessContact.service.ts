@@ -1,5 +1,6 @@
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
+import { BUSINESS_DISPLAY_NAME_SQL } from '../utils/businessName';
 import { logger } from '../utils/logger';
 
 /**
@@ -259,7 +260,8 @@ export async function resolveLoginRoute(mobileInput: unknown): Promise<LoginRout
 
   const result = await query<any>(
     `SELECT c.id, c.name, c.designation, c.login_enabled, c.contact_type,
-            b.id AS business_id, b.name AS business_name, b.status AS business_status,
+            b.id AS business_id, ${BUSINESS_DISPLAY_NAME_SQL} AS business_name,
+            b.status AS business_status,
             (SELECT a.email FROM business_users a
               WHERE a.business_id = b.id AND a.is_active = true
                 AND a.password_hash IS NOT NULL AND a.email IS NOT NULL

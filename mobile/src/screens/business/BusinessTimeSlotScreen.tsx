@@ -32,6 +32,7 @@ import {
   formatShortDateIST,
   validatePickupDateTime,
   validateDeliveryDateTime,
+  getAvailableDeliverySlots,
 } from '../../utils/istDates';
 
 /**
@@ -179,9 +180,36 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
     (id && slots.find((slot) => slot.id === id)?.label) || null;
 
   const pickupSlot = pickupSlots.find((slot) => slot.id === pickupSlotId) || null;
-  const deliverySlot = deliverySlots.find((slot) => slot.id === deliverySlotId) || null;
+
+  /**
+   * THE 24-HOUR TURNAROUND, applied to what is offered rather than only to
+   * what is accepted.
+   *
+   * A slot fewer than 24 hours after the chosen pickup TIME is not shown at
+   * all, so the earliest delivery on the day after a 6pm pickup is 6pm. The
+   * list therefore depends on the pickup slot as well as the delivery date,
+   * and recomputes whenever either moves.
+   */
+  const availableDeliverySlots = useMemo(
+    () => getAvailableDeliverySlots(deliverySlots, deliveryDate, pickupDate, pickupSlot),
+    [deliverySlots, deliveryDate, pickupDate, pickupSlot]
+  );
+
+  const deliverySlot =
+    availableDeliverySlots.find((slot) => slot.id === deliverySlotId) || null;
   const pickupLabel = labelOf(pickupSlots, pickupSlotId);
-  const deliveryLabel = labelOf(deliverySlots, deliverySlotId);
+  const deliveryLabel = labelOf(availableDeliverySlots, deliverySlotId);
+
+  /**
+   * A delivery time chosen before the pickup moved later can stop qualifying.
+   * Dropping it here means the screen can never hold a selection that is no
+   * longer offered — which the user would otherwise only discover on Continue.
+   */
+  useEffect(() => {
+    if (deliverySlotId && !availableDeliverySlots.some((slot) => slot.id === deliverySlotId)) {
+      setDeliverySlotId(null);
+    }
+  }, [availableDeliverySlots, deliverySlotId]);
 
   // Continue needs the pickup and nothing else. A delivery that has been
   // half-entered still blocks it, because that is an unfinished edit rather
@@ -217,7 +245,12 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
       return;
     }
     if (deliveryDate && deliverySlotId) {
-      const deliveryProblem = validateDeliveryDateTime(pickupDate, deliveryDate, deliverySlot);
+      const deliveryProblem = validateDeliveryDateTime(
+        pickupDate,
+        deliveryDate,
+        deliverySlot,
+        pickupSlot
+      );
       if (deliveryProblem) {
         setError(deliveryProblem);
         return;
@@ -278,13 +311,19 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
+        {/* Matches the labelled pill BusinessHeader draws on every other
+            Business screen. This screen keeps its own compact header — it has
+            no brand row — but the Back control must not be a different one. */}
         <TouchableOpacity
           style={styles.backButton}
           onPress={() => navigation.goBack()}
+          activeOpacity={0.7}
           accessibilityRole="button"
           accessibilityLabel="Back to cart"
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
-          <Ionicons name="arrow-back" size={24} color={COLORS.PrimaryDark} />
+          <Ionicons name="arrow-back" size={22} color={COLORS.PrimaryDark} />
+          <Text style={styles.backButtonText}>Back</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Pickup & Delivery</Text>
       </View>
@@ -381,17 +420,25 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
                     <Text style={[styles.fieldLabel, styles.fieldLabelSpaced]}>
                       Delivery Time <Text style={styles.required}>*</Text>
                     </Text>
-                    {slotsBusy(isLoadingDeliverySlots) || (
-                      <TimeSlotRow
-                        slots={deliverySlots}
-                        selectedId={deliverySlotId}
-                        onSelect={(id) => {
-                          setDeliverySlotId(id);
-                          setError('');
-                        }}
-                        label="Delivery time"
-                      />
-                    )}
+                    {slotsBusy(isLoadingDeliverySlots) ||
+                      (availableDeliverySlots.length === 0 ? (
+                        // Every slot on this day falls inside the turnaround.
+                        // Saying why beats an empty row the user cannot act on.
+                        <Text style={styles.hintTextSmall}>
+                          No delivery times on this day are at least 24 hours after your
+                          pickup. Please choose a later delivery date.
+                        </Text>
+                      ) : (
+                        <TimeSlotRow
+                          slots={availableDeliverySlots}
+                          selectedId={deliverySlotId}
+                          onSelect={(id) => {
+                            setDeliverySlotId(id);
+                            setError('');
+                          }}
+                          label="Delivery time"
+                        />
+                      ))}
                   </>
                 ) : (
                   <Text style={styles.hintTextSmall}>
@@ -572,12 +619,22 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.Border,
   },
   backButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: COLORS.Background,
+    gap: 4,
+    minHeight: 48,
+    paddingHorizontal: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: COLORS.Surface,
+    borderWidth: 1.5,
+    borderColor: COLORS.Primary,
+  },
+  backButtonText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '700',
+    color: COLORS.PrimaryDark,
   },
   headerTitle: {
     flex: 1,

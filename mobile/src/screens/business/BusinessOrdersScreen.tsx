@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,8 @@ import {
   ActivityIndicator,
   RefreshControl,
   TouchableOpacity,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -15,7 +17,6 @@ import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../const
 import BusinessHeader from '../../components/business/BusinessHeader';
 import businessOrderApi, { BusinessOrderSummary } from '../../services/businessOrderApi';
 import { extractErrorMessage } from '../../services/api';
-import { formatWeightKg } from '../../utils/businessOrderPdf';
 
 /**
  * The three views of the order list.
@@ -125,6 +126,26 @@ export default function BusinessOrdersScreen({ navigation }: any) {
     </View>
   );
 
+  /**
+   * BACK TO TOP.
+   *
+   * The order list is long and is scrolled far more often than it is filtered,
+   * so getting back to the newest order meant a long swipe. The button appears
+   * only once there is somewhere to go — roughly a screen down — so it is not
+   * sitting over the first card doing nothing.
+   */
+  const listRef = useRef<FlatList<BusinessOrderSummary>>(null);
+  const [showTopButton, setShowTopButton] = useState(false);
+
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const offset = event.nativeEvent.contentOffset.y;
+    // Hysteresis-free but cheap: setState with the same value is a no-op in
+    // React, so this does not re-render on every scroll frame.
+    setShowTopButton(offset > SHOW_TOP_BUTTON_AFTER);
+  };
+
+  const scrollToTop = () => listRef.current?.scrollToOffset({ offset: 0, animated: true });
+
   const renderOrder = ({ item }: { item: BusinessOrderSummary }) => (
     <TouchableOpacity
       style={styles.card}
@@ -151,9 +172,16 @@ export default function BusinessOrdersScreen({ navigation }: any) {
             <Text style={styles.tagText}>{LAUNDRY_LABEL[item.laundry_type] || item.laundry_type}</Text>
           </View>
         ) : null}
-        {item.order_type ? (
-          <View style={styles.tag}>
-            <Text style={styles.tagText}>{ORDER_LABEL[item.order_type] || item.order_type}</Text>
+        {/* ONLY QUICK IS WORTH A CHIP. Standard is the default every order
+            now takes, so a "Standard Order" tag on every card says nothing;
+            Quick changes what the order costs, so it is flagged — and flagged
+            in the warning colour, not as one more neutral tag. */}
+        {item.order_type === 'quick' ? (
+          <View style={[styles.tag, styles.tagQuick]}>
+            <Ionicons name="flash" size={11} color={COLORS.Surface} />
+            <Text style={[styles.tagText, styles.tagTextQuick]}>
+              {ORDER_LABEL.quick}
+            </Text>
           </View>
         ) : null}
         {item.service_type ? (
@@ -170,8 +198,8 @@ export default function BusinessOrdersScreen({ navigation }: any) {
           {item.item_count} item{Number(item.item_count) === 1 ? '' : 's'} · Qty {item.total_quantity}
         </Text>
         <View style={styles.totalWrap}>
-          {/* Weight, not price — Business order summaries never show amounts. */}
-          <Text style={styles.total}>{formatWeightKg(item.total_weight_kg)}</Text>
+          {/* The counts on the left already say what the order holds; there is
+              no weight here and no amount, as before. */}
           <Ionicons name="chevron-forward" size={16} color={COLORS.TextSecondary} />
         </View>
       </View>
@@ -180,7 +208,15 @@ export default function BusinessOrdersScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <BusinessHeader title="Your Orders" />
+      {/* Your Orders is a tab root, so there is usually nothing on its own
+          stack to pop; in that case Back goes to the Business home rather than
+          doing nothing, which is what a dead Back button feels like. */}
+      <BusinessHeader
+        title="Your Orders"
+        onBack={() =>
+          navigation.canGoBack() ? navigation.goBack() : navigation.navigate('BusinessHome')
+        }
+      />
 
       {isLoading ? (
         <View style={styles.centered}>
@@ -204,10 +240,13 @@ export default function BusinessOrdersScreen({ navigation }: any) {
           {filterRow}
 
           <FlatList
+            ref={listRef}
             data={visibleOrders}
             keyExtractor={(item) => item.id}
             renderItem={renderOrder}
             contentContainerStyle={styles.listContent}
+            onScroll={handleScroll}
+            scrollEventThrottle={64}
             ListEmptyComponent={
               <View style={styles.emptyBlock}>
                 <Ionicons name="file-tray-outline" size={44} color={COLORS.TextSecondary} />
@@ -220,14 +259,65 @@ export default function BusinessOrdersScreen({ navigation }: any) {
               <RefreshControl refreshing={isRefreshing} onRefresh={() => load(true)} tintColor={COLORS.Primary} />
             }
           />
+
+          {showTopButton ? (
+            <TouchableOpacity
+              style={styles.topButton}
+              onPress={scrollToTop}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Scroll back to the top of the order list"
+            >
+              <Ionicons name="arrow-up" size={18} color={COLORS.Surface} />
+              <Text style={styles.topButtonText}>Top</Text>
+            </TouchableOpacity>
+          ) : null}
         </>
       )}
     </SafeAreaView>
   );
 }
 
+/** How far down the list the "Top" button starts being useful, in pixels. */
+const SHOW_TOP_BUTTON_AFTER = 400;
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
+
+  /**
+   * Floating, bottom-centre, above the list rather than inside it — a footer
+   * row would only be reachable after the very scrolling this button exists to
+   * undo.
+   */
+  /** Quick orders are flagged in the warning colour; standard gets no chip. */
+  tagQuick: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: COLORS.Error,
+    borderColor: COLORS.Error,
+  },
+  tagTextQuick: { color: COLORS.Surface, fontWeight: '800' },
+
+  topButton: {
+    position: 'absolute',
+    bottom: SPACING.lg,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.xs,
+    minHeight: 44,
+    paddingHorizontal: SPACING.lg,
+    borderRadius: 22,
+    backgroundColor: COLORS.PrimaryDark,
+    ...SHADOWS.medium,
+  },
+  topButtonText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '800',
+    color: COLORS.Surface,
+  },
   title: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.xl,

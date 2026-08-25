@@ -25,9 +25,23 @@ import {
   AdjustmentRecord,
   AdjustResult,
 } from '../services/defectAdjustment.service';
+import {
+  getBatchEligibility,
+  optimizeBatches,
+  confirmBatches,
+  listBatches,
+  listMachines,
+  getBatchById,
+  updateBatchStatus,
+  updateMachineStatus,
+  getBatchScanStatus,
+  scanBatchGarment,
+  ConfirmBatchInput,
+} from '../services/sorterBatch.service';
 import { sendSuccess } from '../utils/response';
 import { authenticate, authorize, AuthenticatedRequest } from '../middleware/auth';
 import { AppError } from '../utils/appError';
+import { logger } from '../utils/logger';
 
 /**
  * Sorter endpoints.
@@ -544,5 +558,231 @@ router.post(
     }
   }
 );
+
+/* ===================================================================
+ * BATCH PROCESSING
+ * ===================================================================
+ *
+ * ADDED, NOT WOVEN IN. Every route above is untouched: the queue, the
+ * approval and rejection transitions, the order detail, the acceptance and
+ * delivery scanners, quantity matching, defects and adjustments all behave
+ * exactly as they did before this section existed.
+ *
+ * SORTER ONLY, and not because a button is hidden. `authenticate` and
+ * `authorize('SORTER')` are applied once at the top of this router, so START
+ * BATCH, REGENERATE and CONFIRM BATCH are closed to a customer, business,
+ * rider, manager or super-admin token before any handler here is reached —
+ * 401 without a token, 403 with the wrong role. The service then re-checks
+ * the business rules (approved, eligible, unbatched, machine available) on
+ * locked rows, so the permission check and the data check are independent.
+ *
+ * WHERE THE WORK HAPPENS. The optimiser runs in the backend and ONLY when
+ * `POST /batches/optimize` is called — which is only when the Sorter presses
+ * START BATCH or REGENERATE. Nothing here runs on a schedule, on a page load
+ * or on a render.
+ */
+
+/**
+ * GET /api/sorter/batch-eligible-orders
+ *
+ * What the Sorter sees before pressing START BATCH: how many approved orders
+ * and lines are waiting, their total weight, and the three machines with
+ * their current status.
+ *
+ * A READ. It does not optimise anything — opening the screen must not start a
+ * calculation.
+ */
+router.get('/batch-eligible-orders', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await getBatchEligibility();
+    sendSuccess(res, result, `${result.approved_orders_ready} approved order(s) ready for batching`);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** The three machines and what each is currently doing. */
+router.get('/machines', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const machines = await listMachines();
+    sendSuccess(res, machines, 'Machines fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/sorter/batches/optimize      <- START BATCH, and REGENERATE
+ *
+ * Runs the optimisation once and returns a PROPOSED distribution.
+ *
+ * WRITES NOTHING. No batch row, no machine reservation, no order or item
+ * status. The Sorter reviews the proposal and either confirms it or does not;
+ * a proposal that is never confirmed leaves no trace, which is what makes
+ * REGENERATE free to press as often as they like.
+ */
+router.post('/batches/optimize', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const proposal = await optimizeBatches();
+    logger.info(
+      `[BatchOptimizer] START BATCH by user ${authReq.user!.id}: ` +
+        `${proposal.batches.length} proposed batch(es) from ${proposal.eligible_items} eligible item(s)`
+    );
+    sendSuccess(
+      res,
+      proposal,
+      proposal.batches.length
+        ? `${proposal.batches.length} batch(es) proposed — ` +
+            `${proposal.overall_utilization_percentage}% overall utilisation`
+        : 'No batch could be proposed from the approved laundry currently waiting'
+    );
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/sorter/batches/confirm       <- CONFIRM BATCH
+ *   { batches: [{ machineId, orderItemIds: [...] }] }
+ *
+ * The only call that makes a distribution permanent.
+ *
+ * The body names machines and order lines and NOTHING ELSE. It cannot state a
+ * weight, a washing group, an order status or whether a line is already
+ * batched: all of that is re-read from the database inside the transaction,
+ * on locked rows. A proposal that has gone stale — an order marked ready, a
+ * machine put into maintenance, a line another Sorter batched first — is
+ * refused with 409 and the message says to regenerate.
+ */
+router.post('/batches/confirm', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const raw = req.body?.batches;
+    if (!Array.isArray(raw)) {
+      return next(new AppError('batches must be an array of { machineId, orderItemIds }.', 400));
+    }
+    const input: ConfirmBatchInput[] = raw.map((entry: any) => {
+      const ids = entry?.orderItemIds ?? entry?.order_item_ids;
+      // `lines` carries a piece count per order line, which is what lets one
+      // line be split across two drums. `orderItemIds` remains the whole-line
+      // shorthand for a caller that is not splitting anything.
+      const lines = entry?.lines;
+      return {
+        machineId: String(entry?.machineId ?? entry?.machine_id ?? ''),
+        lines: Array.isArray(lines)
+          ? lines.map((line: any) => ({
+              orderItemId: String(line?.orderItemId ?? line?.order_item_id ?? ''),
+              quantity: Number(line?.quantity),
+            }))
+          : undefined,
+        orderItemIds: Array.isArray(ids) ? ids.map((id: any) => String(id)) : [],
+      };
+    });
+
+    const result = await confirmBatches(input, authReq.user!.id);
+    return sendSuccess(
+      res,
+      result,
+      `${result.batches.length} batch(es) created — ${result.total_weight_kg} kg`,
+      201
+    );
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/** The batches currently on the floor. `?status=` narrows it. */
+router.get('/batches', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const batches = await listBatches(status, limit);
+    sendSuccess(res, batches, 'Batches fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Every garment in the batch, with its batch-scan state and the counts.
+ *
+ * Declared before `/batches/:id` so the literal segment is matched first.
+ */
+router.get('/batches/:id/scan-status', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = await getBatchScanStatus(req.params.id);
+    sendSuccess(res, status, 'Batch scan status fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** One batch, with the order lines it contains. */
+router.get('/batches/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const batch = await getBatchById(req.params.id);
+    sendSuccess(res, batch, 'Batch fetched successfully');
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PATCH /api/sorter/batches/:id/status
+ *   { status: 'IN_MACHINE' | 'WASHING' | 'COMPLETED' | 'CANCELLED' }
+ *
+ * The transition is validated in the service inside a locked transaction, so
+ * a crafted request cannot skip a stage or restart a finished batch.
+ * COMPLETED and CANCELLED both release the machine; CANCELLED also returns
+ * the order lines to the eligible pool.
+ */
+router.patch('/batches/:id/status', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const batch = await updateBatchStatus(req.params.id, req.body?.status, authReq.user!.id);
+    sendSuccess(res, batch, `Batch ${batch.batch_number} is now ${batch.status}`);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * One barcode against one batch.
+ *
+ * THE EXISTING SCANNER IS NOT TOUCHED. `/orders/:id/scan/acceptance` and
+ * `/orders/:id/scan/delivery` above keep their own counts and their own
+ * rules; this adds the batch stage in the SAME `garment_scans` table, with
+ * the same one-scan-per-garment-per-stage unique key.
+ *
+ * Answers ACCEPTED, WRONG BATCH or ALREADY SCANNED, and returns the running
+ * counts so the screen never has to add up anything itself.
+ */
+router.post('/batches/:id/scan', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const result = await scanBatchGarment(req.params.id, req.body?.barcode, authReq.user!.id);
+    sendSuccess(res, result, result.message);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PATCH /api/sorter/machines/:id/status
+ *   { status: 'AVAILABLE' | 'IN_USE' | 'MAINTENANCE' | 'OFFLINE' | 'COMPLETED' }
+ *
+ * A machine still holding a live batch cannot be declared AVAILABLE by hand —
+ * that batch has to be completed or cancelled, which frees it properly.
+ */
+router.patch('/machines/:id/status', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const machine = await updateMachineStatus(req.params.id, req.body?.status, authReq.user!.id);
+    sendSuccess(res, machine, `${machine.name} is now ${machine.status}`);
+  } catch (error) {
+    next(error);
+  }
+});
 
 export default router;

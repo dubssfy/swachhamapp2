@@ -2,6 +2,7 @@ import bcrypt from 'bcrypt';
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
+import { BUSINESS_DISPLAY_NAME_SQL } from '../utils/businessName';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -86,7 +87,8 @@ async function findAccounts(mobile: string): Promise<ResolvedAccount[]> {
       id: string; name: string | null; email: string;
       business_id: string; business_name: string | null;
     }>(
-      `SELECT DISTINCT a.id, a.name, a.email, b.id AS business_id, b.name AS business_name
+      `SELECT DISTINCT a.id, a.name, a.email, b.id AS business_id,
+                ${BUSINESS_DISPLAY_NAME_SQL} AS business_name
          FROM business_users c
          JOIN businesses b ON b.id = c.business_id
          JOIN business_users a
@@ -369,7 +371,8 @@ async function findBusinessByContactMobile(mobileInput: unknown): Promise<Busine
     business_status: string; login_email: string | null;
   }>(
     `SELECT c.name AS contact_name, c.designation, c.contact_type, c.login_enabled,
-            b.id AS business_id, b.name AS business_name, b.status AS business_status,
+            b.id AS business_id, ${BUSINESS_DISPLAY_NAME_SQL} AS business_name,
+            b.status AS business_status,
             (SELECT a.email FROM business_users a
               WHERE a.business_id = b.id AND a.is_active = true
                 AND a.password_hash IS NOT NULL AND a.email IS NOT NULL

@@ -70,6 +70,8 @@ export interface BusinessItem {
   weight_unit: string;
   /** Service codes this item supports, e.g. ['wash_iron','dry_clean']. */
   service_types: string[];
+  /** How many times this business has ordered the item. 0 = never. */
+  order_count: number;
   image_url?: string | null;
   icon_name?: string | null;
   is_active: boolean;
@@ -84,6 +86,7 @@ function toItem(row: ItemRow): BusinessItem {
   return {
     ...row,
     weight_kg: row.weight_kg === null ? null : Number(row.weight_kg),
+    order_count: Number(row.order_count ?? 0),
     service_types: (row.service_types || '').split(',').filter(Boolean),
   };
 }
@@ -231,6 +234,31 @@ async function getSubCategories(
   );
 }
 
+/**
+ * How many times THIS business has ordered this item, all time.
+ *
+ * The catalogue is long and every business orders the same handful of things
+ * over and over, so the list is led by what this business actually orders.
+ * Scoped through `business_users` to the business, not the signed-in user, so
+ * the ranking reflects the establishment's habit rather than whichever member
+ * of staff happens to be holding the phone.
+ *
+ * COUNT of order lines, not SUM of quantity: "how often is this ordered" is
+ * the question, and summing quantity would let one 500-napkin order outrank
+ * an item ordered in every single delivery.
+ *
+ * A correlated subquery rather than a JOIN + GROUP BY, so the row shape and
+ * the existing filters are untouched — an item nobody has ordered simply
+ * scores 0 and keeps its normal place below the ranked ones.
+ */
+const ORDER_FREQUENCY = `(
+  SELECT COUNT(*)
+    FROM order_items oi
+    JOIN orders o ON o.id = oi.order_id
+    JOIN business_users obu ON obu.id = o.business_user_id
+   WHERE oi.service_id = i.id
+     AND obu.business_id = ?)`;
+
 const ITEM_SELECT = `
   SELECT i.id, i.category_id, c.name AS category_name,
          c.parent_id AS parent_category_id, p.name AS parent_category_name,
@@ -239,10 +267,20 @@ const ITEM_SELECT = `
             FROM item_service_types m
             JOIN services st ON st.id = m.service_id
            WHERE m.item_id = i.id AND st.is_active = true) AS service_types,
+         ${ORDER_FREQUENCY} AS order_count,
          i.image_url, i.icon_name, i.is_active
     FROM services i
     JOIN service_categories c ON c.id = i.category_id
     LEFT JOIN service_categories p ON p.id = c.parent_id`;
+
+/**
+ * Frequently ordered first, then the catalogue's own order.
+ *
+ * `order_count DESC` puts what this business orders at the top; everything
+ * below it keeps exactly the order it had before, so the rest of the list is
+ * still the catalogue the super admin arranged rather than an arbitrary one.
+ */
+const FREQUENT_FIRST = `order_count DESC`;
 
 /**
  * Items for a category. Passing a Main category id also returns the items of
@@ -266,8 +304,10 @@ async function getItemsByCategory(
              SELECT 1 FROM item_service_types m
                JOIN services st ON st.id = m.service_id
               WHERE m.item_id = i.id AND st.code = ? AND st.is_active = true))
-     ORDER BY i.display_order ASC, i.name ASC`,
-    [categoryId, categoryId, scope.businessId, scope.laundryType, st, st]
+     ORDER BY ${FREQUENT_FIRST}, i.display_order ASC, i.name ASC`,
+    // The leading businessId belongs to ORDER_FREQUENCY inside ITEM_SELECT,
+    // which is why it comes before the WHERE clause's own parameters.
+    [scope.businessId, categoryId, categoryId, scope.businessId, scope.laundryType, st, st]
   );
   return result.rows.map(toItem);
 }
@@ -285,7 +325,12 @@ async function searchItems(params: {
     `i.is_active = true`,
     PRICED_FOR_BUSINESS,
   ];
-  const values: unknown[] = [params.scope.businessId, params.scope.laundryType];
+  // ORDER_FREQUENCY's businessId first, then PRICED_FOR_BUSINESS's pair.
+  const values: unknown[] = [
+    params.scope.businessId,
+    params.scope.businessId,
+    params.scope.laundryType,
+  ];
 
   if (params.categoryId) {
     conditions.push('(i.category_id = ? OR c.parent_id = ?)');
@@ -305,7 +350,7 @@ async function searchItems(params: {
   const result = await query<ItemRow>(
     `${ITEM_SELECT}
      WHERE ${conditions.join(' AND ')}
-     ORDER BY i.name ASC
+     ORDER BY ${FREQUENT_FIRST}, i.name ASC
      LIMIT 200`,
     values
   );

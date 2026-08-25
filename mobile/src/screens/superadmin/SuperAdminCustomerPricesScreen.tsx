@@ -11,6 +11,7 @@ import { sa, STATUS_TONE } from './styles';
 import superAdminApi, { CustomerPrice } from '../../services/superAdminApi';
 import CategoryItemPicker from './CategoryItemPicker';
 import PriceCategoryGroups, { PriceItemRow } from './PriceCategoryGroups';
+import { printPriceListPdf } from './printPriceList';
 
 /**
  * Customer Price List — the GLOBAL price list.
@@ -68,6 +69,8 @@ export default function SuperAdminCustomerPricesScreen({ navigation }: any) {
 
   /** null = closed, 'new' = add form, otherwise the row being edited. */
   const [editing, setEditing] = useState<CustomerPrice | 'new' | null>(null);
+  /** True while the printable sheet is being fetched. */
+  const [printing, setPrinting] = useState(false);
 
   const load = useCallback(async () => {
     setError('');
@@ -163,6 +166,46 @@ export default function SuperAdminCustomerPricesScreen({ navigation }: any) {
   };
 
   /**
+   * Print the whole customer price list.
+   *
+   * THE WHOLE LIST, not the Category -> Sub-category the table is currently
+   * narrowed to: the filters exist so one item can be found on a screen, and
+   * a printed price list that stopped at one sub-category would not be a price
+   * list. The server builds it from the stored rows.
+   *
+   * Disabled entries are asked about rather than assumed. The sheet a customer
+   * would be shown carries only live prices; the super admin's own working
+   * copy is more useful with the switched-off rows on it, and only they know
+   * which one they are printing.
+   */
+  const printList = () => {
+    if (printing) return;
+    const run = async (includeInactive: boolean) => {
+      setPrinting(true);
+      setError('');
+      const { error: failure } = await printPriceListPdf(
+        superAdminApi.customerPriceListPdfUrl(includeInactive),
+        'swachham-customer-price-list.pdf',
+        'Customer Price List'
+      );
+      if (failure) setError(failure);
+      setPrinting(false);
+    };
+
+    Alert.alert(
+      'Print customer price list',
+      'Every item, grouped by category and sub-category.\n\n' +
+        'Disabled entries are prices no customer is charged. Leave them off for ' +
+        'a sheet to hand out, include them for your own copy.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Active prices only', onPress: () => run(false) },
+        { text: 'Include disabled', onPress: () => run(true) },
+      ]
+    );
+  };
+
+  /**
    * Delete asks first, and the default action is the safe one: disable.
    * Historical invoices reference these items, so removing the row
    * outright is offered only as the destructive second choice.
@@ -224,6 +267,27 @@ export default function SuperAdminCustomerPricesScreen({ navigation }: any) {
         >
           <Ionicons name="add" size={20} color={COLORS.Surface} />
           <Text style={sa.addEntryText}>Add New Entry</Text>
+        </TouchableOpacity>
+
+        {/* Printing is a secondary action, and deliberately not gated behind
+            the Category -> Sub-category choice below: the sheet is the whole
+            list, so it can be printed the moment the screen opens. */}
+        <TouchableOpacity
+          style={[sa.buttonGhost, { flexDirection: 'row', justifyContent: 'center', gap: SPACING.xs }]}
+          onPress={printList}
+          disabled={printing}
+          accessibilityRole="button"
+          accessibilityLabel="Print the customer price list"
+          accessibilityState={{ disabled: printing }}
+        >
+          {printing ? (
+            <ActivityIndicator size="small" color={COLORS.TextPrimary} />
+          ) : (
+            <Ionicons name="print-outline" size={18} color={COLORS.TextPrimary} />
+          )}
+          <Text style={sa.buttonGhostText}>
+            {printing ? 'Preparing…' : 'Print Price List'}
+          </Text>
         </TouchableOpacity>
 
         <TextInput
