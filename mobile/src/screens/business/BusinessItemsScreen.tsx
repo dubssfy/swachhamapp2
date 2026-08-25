@@ -41,11 +41,16 @@ const SERVICE_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
  * area: services belong to the item cards only.
  */
 export default function BusinessItemsScreen({ navigation, route }: any) {
-  const { categoryId, categoryName, parentName } = route.params || {};
+  const { categoryId, categoryName, parentName, initialSearch } = route.params || {};
 
   const [items, setItems] = useState<BusinessItem[]>([]);
   const [services, setServices] = useState<LaundryServiceType[]>([]);
-  const [search, setSearch] = useState('');
+  /**
+   * Pre-filled when this screen was opened from the home screen's item
+   * search, so the item searched for is already on screen instead of the
+   * whole category being listed again.
+   */
+  const [search, setSearch] = useState<string>(initialSearch || '');
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -196,8 +201,12 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
     [categoryId]
   );
 
+  // Seeded with the incoming search when there is one, so the first fetch is
+  // already the narrowed list rather than the full category.
   useEffect(() => {
-    fetchItems('');
+    fetchItems(initialSearch || '');
+    // `initialSearch` is a navigation param and is fixed for this mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchItems]);
 
   /**

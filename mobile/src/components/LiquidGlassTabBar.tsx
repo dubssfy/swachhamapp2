@@ -10,27 +10,43 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import Svg, { Path } from 'react-native-svg';
+import { notchGeometry, buildBarPath, NOTCH_DEPTH, BAR_RADIUS } from './tabBarNotch';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 
 const ACTIVE_COLOR = '#2E7D32';
 const INACTIVE_COLOR = '#777';
 
 const BAR_HEIGHT = 94;
-// Corner rounding on the two top corners only — the panel is edge-to-edge and
-// flush with the bottom of the screen, so the bottom corners are square.
 
-// Centre brand mark. The card is a fixed square and the image inside uses
-// resizeMode="contain", so the logo keeps its aspect ratio on every screen.
-// Both tab sets have four tabs, so the exact centre falls in the gap between
-// tab 2 and tab 3 and the badge never lands on an icon. It lives inside the
-// existing bar height, so the bar is not made any taller.
-const BADGE_SIZE = 48;
+/* =====================================================================
+ * THE NOTCHED BAR
+ *
+ * The panel is drawn as an SVG path rather than a styled View, because a
+ * concave scoop is not something a border radius can express: `borderRadius`
+ * only ever rounds a corner outwards. The path runs along the top edge, dips
+ * through a smooth curve at the centre and carries on, so the bar has a real
+ * notch the logo sits INSIDE rather than a circle floating on a straight edge.
+ *
+ * The geometry itself lives in `tabBarNotch.ts` — pure, with no React Native
+ * imports — so the curve can be measured on its own rather than eyeballed on
+ * one phone. See `backend/scripts/smoke_tab_bar_notch.ts`, which checks across
+ * device widths that the scoop never reaches an icon and never covers the icon
+ * row.
+ *
+ * Both tab sets have four tabs, so the centre falls in the gap between tab 2
+ * and tab 3 and the notch never lands on an icon.
+ * ===================================================================== */
+
+/** Diameter of the circular logo plate that sits in the notch. */
+const BADGE_SIZE = 56;
 const BADGE_IMAGE_SIZE = 34;
-// How far the badge lifts above the bar's top edge. The host reserves exactly
-// this much transparent headroom above the bar, so the badge is never clipped
-// and the bar itself stays BAR_HEIGHT tall.
-const BADGE_RAISE = 28;
-const BAR_RADIUS = 28;
+/**
+ * How far the plate's top sits ABOVE the bar's edge, and therefore how much
+ * transparent headroom the host reserves for it. Roughly a third stays proud
+ * of the bar; the rest nests in the scoop.
+ */
+const BADGE_RAISE = 26;
 
 /**
  * Icons and labels are keyed by route name. Both tab sets are listed, so the
@@ -176,6 +192,10 @@ export default function LiquidGlassTabBar({
   // above it, so the padding is the real inset with no artificial gap.
   const bottomInset = insets.bottom;
 
+  // Recomputed with the width, so a rotation or a fold resizes the notch
+  // instead of leaving it off-centre.
+  const notch = useMemo(() => notchGeometry(barWidth, tabWidth), [barWidth, tabWidth]);
+
   const indicatorX = useRef(new Animated.Value(state.index * tabWidth)).current;
   const bubbleWidth = useMemo(() => Math.max(tabWidth - 10, 40), [tabWidth]);
 
@@ -202,6 +222,20 @@ export default function LiquidGlassTabBar({
           { width: barWidth, height: BAR_HEIGHT + bottomInset, paddingBottom: bottomInset },
         ]}
       >
+        {/* The panel itself, drawn as a path so the centre can be scooped.
+            Behind everything and non-interactive: it is purely the surface
+            the tabs sit on. */}
+        <Svg
+          pointerEvents="none"
+          width={barWidth}
+          height={BAR_HEIGHT + bottomInset}
+          style={StyleSheet.absoluteFill}
+        >
+          <Path
+            d={buildBarPath(barWidth, BAR_HEIGHT + bottomInset, notch.centre, notch.half)}
+            fill="#FFFFFF"
+          />
+        </Svg>
 
         {/* The bubble that slides under the active tab. */}
         <Animated.View
@@ -255,11 +289,15 @@ export default function LiquidGlassTabBar({
         </View>
       </View>
 
-      {/* Swachham brand mark, centred and lifted so it rides the bar's top
-          edge. It sits outside the glass container because that container
-          clips its children; here in the host it can overhang. Decorative and
-          non-interactive, so taps still reach the tabs underneath — the
-          assistant is opened from the floating launcher on Select Items. */}
+      {/* Swachham brand mark, seated IN the scoop.
+
+          It lives in the host rather than in the bar because the bar would
+          clip it: the plate is deliberately larger than the notch is deep, so
+          it nests in the curve with its top third proud of the bar's edge.
+
+          `pointerEvents="none"` keeps it decorative — the tabs beneath it stay
+          fully tappable, and the notch sits in the gap between tab 2 and tab 3
+          in any case. */}
       <View pointerEvents="none" style={styles.brandBadgeWrap}>
         <View style={styles.brandBadge}>
           <Image
@@ -287,10 +325,16 @@ const styles = StyleSheet.create({
   // Edge-to-edge white panel, rounded at the top two corners only and flush
   // with the bottom of the screen. The shadow is cast upwards, so the bar
   // lifts off the content above it.
+  /*
+   * NO backgroundColor and NO borderRadius here: the white surface and the
+   * rounded top corners are both part of the SVG path now, because a View's
+   * background would fill the notch straight back in.
+   *
+   * The shadow stays on this View — Android's elevation needs a real view to
+   * lift, and the box is close enough to the path's silhouette to read right.
+   */
   bar: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: BAR_RADIUS,
-    borderTopRightRadius: BAR_RADIUS,
+    backgroundColor: 'transparent',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.10,
@@ -298,6 +342,7 @@ const styles = StyleSheet.create({
     elevation: 16,
   },
 
+  // Above the SVG surface, which is painted at the back of the bar.
   tabs: { flex: 1, flexDirection: 'row', zIndex: 3 },
 
   tab: { height: BAR_HEIGHT, alignItems: 'center', justifyContent: 'center' },
@@ -308,8 +353,10 @@ const styles = StyleSheet.create({
   activeBubble: {
     position: 'absolute',
     left: 0,
-    top: 9,
-    height: 66,
+    // Below the deepest point of the scoop, so the highlight never appears to
+    // spill out of the notch.
+    top: NOTCH_DEPTH + 2,
+    height: 60,
     borderRadius: 26,
     backgroundColor: 'rgba(46,125,50,0.08)',
     zIndex: 1,
@@ -350,10 +397,12 @@ const styles = StyleSheet.create({
     zIndex: 4,
   },
 
+  // Circular, to match the curve it sits in — a rounded square in a round
+  // scoop reads as two different shapes rather than one.
   brandBadge: {
     width: BADGE_SIZE,
     height: BADGE_SIZE,
-    borderRadius: 16,
+    borderRadius: BADGE_SIZE / 2,
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',

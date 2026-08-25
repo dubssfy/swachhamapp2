@@ -9,6 +9,7 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigationState } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import businessOrderApi, { BusinessProfile } from '../../services/businessOrderApi';
@@ -82,6 +83,16 @@ const ROWS: Row[] = [
 ];
 
 export default function BusinessProfileScreen({ navigation }: any) {
+  /**
+   * Whether THIS screen's own stack has somewhere to pop to.
+   *
+   * `navigation.canGoBack()` is not the test: from a tab's first page it can
+   * still report true because the tab navigator sits inside a parent stack,
+   * which would put a Back button on a root page that then left the Business
+   * section entirely.
+   */
+  const canGoBack = useNavigationState((state) => state.index > 0);
+
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -112,20 +123,21 @@ export default function BusinessProfileScreen({ navigation }: any) {
         <View style={styles.headerCard}>
           {/* Swachham logo, top-left, matching the shared Business header. */}
           <View style={styles.headerTopRow}>
-            {/* Back sits first, where a back control is looked for. It is
-                always offered: Profile is a tab root, so there is usually
-                nothing on its own stack to pop — it then returns to Select
-                Items, the Business section's home. */}
-            <TouchableOpacity
-              style={styles.headerBack}
-              onPress={() =>
-                navigation.canGoBack() ? navigation.goBack() : navigation.navigate('BusinessHome')
-              }
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-            >
-              <Ionicons name="arrow-back" size={22} color={COLORS.Surface} />
-            </TouchableOpacity>
+            {/* NO BACK BUTTON AT THE ROOT. Profile is the first page of its
+                tab, so there is nothing to go back TO; it appears only once
+                the stack has somewhere to pop to. The row is laid out with
+                `gap`, so its absence leaves no hole — the logo simply moves
+                to the leading edge. */}
+            {canGoBack ? (
+              <TouchableOpacity
+                style={styles.headerBack}
+                onPress={() => navigation.goBack()}
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+              >
+                <Ionicons name="arrow-back" size={22} color={COLORS.Surface} />
+              </TouchableOpacity>
+            ) : null}
             <Image
               source={require('../../../assets/swachham-logo.png')}
               style={styles.headerLogo}

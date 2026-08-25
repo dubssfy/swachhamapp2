@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   FlatList,
   ActivityIndicator,
+  TextInput,
   Modal,
   Pressable,
   Image,
@@ -20,7 +21,7 @@ import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../const
 import BusinessHeader from '../../components/business/BusinessHeader';
 import SwachhamChatLauncher from '../../components/chat/SwachhamChatLauncher';
 import CategoryGridCard from '../../components/business/CategoryGridCard';
-import businessOrderApi, { BusinessCategory } from '../../services/businessOrderApi';
+import businessOrderApi, { BusinessCategory, BusinessItem } from '../../services/businessOrderApi';
 import { getCategoryImage } from '../../constants/categoryImages';
 import { filterHiddenCategories } from '../../constants/hiddenCategories';
 import { extractErrorMessage } from '../../services/api';
@@ -98,6 +99,93 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
   const [categories, setCategories] = useState<BusinessCategory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+
+  /* =================================================================
+   * ITEM SEARCH
+   *
+   * Searches ITEMS, not categories. Someone who knows they want "napkin"
+   * should not have to work out which of five categories it is filed under
+   * first — that is the whole point of a search box on the landing screen.
+   *
+   * It searches ACROSS every category: `searchItems` takes an optional
+   * categoryId and is called without one here, so the whole priced catalogue
+   * for this business is in scope.
+   *
+   * TAPPING A RESULT HANDS OFF TO THE ITEMS SCREEN rather than growing an
+   * "add to order" control here. That screen already owns the item card, the
+   * service selector, the quantity field and the fly-to-cart animation; a
+   * second copy on this screen would be a second thing to keep in step.
+   * ================================================================= */
+  const [search, setSearch] = useState('');
+  const [results, setResults] = useState<BusinessItem[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  /**
+   * Why the last search failed, or '' when it did not.
+   *
+   * Kept SEPARATE from the empty-results case. Swallowing the error and
+   * showing an empty list would report a broken request as "no items match",
+   * which sends the user looking for a spelling mistake instead of telling
+   * them the search did not run.
+   */
+  const [searchError, setSearchError] = useState('');
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Guards against a slow early response overwriting a later one. */
+  const searchSeq = useRef(0);
+
+  const trimmedSearch = search.trim();
+  /** Below this the query is too broad to be useful, so the grid stays. */
+  const isSearchActive = trimmedSearch.length >= 2;
+
+  const runSearch = useCallback(async (term: string) => {
+    const seq = (searchSeq.current += 1);
+    try {
+      setIsSearching(true);
+      setSearchError('');
+      const response = await businessOrderApi.searchItems({ search: term });
+      // Out-of-order responses are dropped: typing fast fires several
+      // requests and the last one typed must win, not the last one to land.
+      if (seq === searchSeq.current) setResults(response.data ?? []);
+    } catch (err: any) {
+      if (seq === searchSeq.current) {
+        setResults([]);
+        // The server's own wording where there is one, so a real cause —
+        // an expired session, an unapproved account — reaches the user
+        // instead of being flattened into "no results".
+        setSearchError(extractErrorMessage(err, 'Could not search items'));
+      }
+    } finally {
+      if (seq === searchSeq.current) setIsSearching(false);
+    }
+  }, []);
+
+  // Debounced, so a request is not sent per keystroke.
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (!isSearchActive) {
+      setResults([]);
+      setSearchError('');
+      setIsSearching(false);
+      return;
+    }
+    setIsSearching(true);
+    searchTimer.current = setTimeout(() => runSearch(trimmedSearch), 350);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
+  }, [trimmedSearch, isSearchActive, runSearch]);
+
+  /**
+   * Opens the Items screen for the result's own category, with the search
+   * carried over so the item is already on screen when it opens.
+   */
+  const openSearchResult = (item: BusinessItem) => {
+    navigation.navigate('BusinessItemsScreen', {
+      categoryId: item.category_id,
+      categoryName: item.category_name,
+      parentName: item.parent_category_name,
+      initialSearch: item.name,
+    });
+  };
 
   // Long-pressing a card previews its full artwork.
   const [zoomed, setZoomed] = useState<BusinessCategory | null>(null);
@@ -227,9 +315,120 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
         }
       />
 
+      {/* Item search. Sits directly under the header, above the grid, where a
+          search box is looked for. */}
+      <View style={styles.searchWrap}>
+        <View style={styles.searchBar}>
+          <Ionicons name="search-outline" size={20} color={COLORS.TextSecondary} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search for an item…"
+            placeholderTextColor={COLORS.TextSecondary}
+            value={search}
+            onChangeText={setSearch}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+            accessibilityLabel="Search for an item across all categories"
+          />
+          {search ? (
+            <TouchableOpacity
+              onPress={() => setSearch('')}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+            >
+              <Ionicons name="close-circle" size={18} color={COLORS.TextSecondary} />
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </View>
+
       {errorBanner}
 
-      {isLoading ? (
+      {isSearchActive ? (
+        /* RESULTS REPLACE THE GRID while a search is active. Showing both
+           would leave the user scrolling past five category cards to reach
+           the thing they just typed the name of. */
+        <View style={styles.gridArea}>
+          {isSearching && results.length === 0 ? (
+            <View style={styles.centered}>
+              <ActivityIndicator size="large" color={COLORS.Primary} />
+            </View>
+          ) : (
+            <FlatList
+              data={results}
+              keyExtractor={(item) => item.id}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.resultsContent}
+              ListHeaderComponent={
+                results.length > 0 ? (
+                  <Text style={styles.resultsCount}>
+                    {results.length} item{results.length === 1 ? '' : 's'} found
+                  </Text>
+                ) : null
+              }
+              ListEmptyComponent={
+                searchError ? (
+                  // A FAILED SEARCH, said plainly and retryable — not dressed
+                  // up as an empty result.
+                  <View style={styles.centered}>
+                    <Ionicons name="alert-circle-outline" size={44} color={COLORS.Error} />
+                    <Text style={styles.searchErrorText}>{searchError}</Text>
+                    <TouchableOpacity
+                      style={styles.retryButton}
+                      onPress={() => runSearch(trimmedSearch)}
+                    >
+                      <Text style={styles.retryButtonText}>Try again</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.centered}>
+                    <Ionicons name="search-outline" size={44} color={COLORS.TextSecondary} />
+                    <Text style={styles.emptyText}>No items match “{trimmedSearch}”</Text>
+                  </View>
+                )
+              }
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.resultRow}
+                  onPress={() => openSearchResult(item)}
+                  activeOpacity={0.8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.name}, ${item.category_name || 'item'}`}
+                >
+                  <View style={styles.resultThumb}>
+                    {item.image_url ? (
+                      <Image
+                        source={{ uri: item.image_url }}
+                        style={styles.resultThumbImage}
+                        resizeMode="contain"
+                      />
+                    ) : (
+                      <Ionicons name="shirt-outline" size={22} color={COLORS.Primary} />
+                    )}
+                  </View>
+
+                  <View style={styles.resultText}>
+                    <Text style={styles.resultName} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    {/* Where it lives, so the same name under two categories
+                        is still distinguishable. */}
+                    <Text style={styles.resultMeta} numberOfLines={1}>
+                      {[item.parent_category_name, item.category_name]
+                        .filter(Boolean)
+                        .join(' › ') || 'Uncategorised'}
+                    </Text>
+                  </View>
+
+                  <Ionicons name="chevron-forward" size={18} color={COLORS.TextSecondary} />
+                </TouchableOpacity>
+              )}
+            />
+          )}
+        </View>
+      ) : isLoading ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={COLORS.Primary} />
         </View>
@@ -319,6 +518,85 @@ const styles = StyleSheet.create({
   gridContent: { padding: GRID_PADDING, flexGrow: 1, justifyContent: 'center' },
   row: { gap: GRID_GAP, marginBottom: GRID_GAP, justifyContent: 'center' },
   errorWrap: { paddingHorizontal: GRID_PADDING, paddingTop: SPACING.xs },
+
+  /* ---- Item search ----
+   *
+   * The grid measures its own height through onLayout, so the bar taking a
+   * strip back simply resizes the cards; it cannot leave a gap or push the
+   * second row off the screen.
+   */
+  searchWrap: { paddingHorizontal: SPACING.md, paddingBottom: SPACING.sm },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    height: 48,
+    paddingHorizontal: SPACING.md,
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.Border,
+    ...SHADOWS.light,
+  },
+  searchInput: {
+    flex: 1,
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    color: COLORS.TextPrimary,
+    padding: 0,
+  },
+
+  resultsContent: { paddingHorizontal: SPACING.md, paddingBottom: SPACING.xxl },
+  searchErrorText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.Error,
+    textAlign: 'center',
+    marginTop: SPACING.sm,
+    marginBottom: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
+  },
+  resultsCount: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xs,
+    color: COLORS.TextSecondary,
+    marginBottom: SPACING.sm,
+  },
+  resultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.Border,
+    padding: SPACING.sm,
+    marginBottom: SPACING.sm,
+    ...SHADOWS.light,
+  },
+  resultThumb: {
+    width: 48,
+    height: 48,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: COLORS.Accent + '30',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  resultThumbImage: { width: '100%', height: '100%' },
+  resultText: { flex: 1, minWidth: 0 },
+  resultName: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '700',
+    color: COLORS.TextPrimary,
+  },
+  resultMeta: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.xs,
+    color: COLORS.TextSecondary,
+    marginTop: 2,
+  },
 
   cartButton: {
     width: 44,
