@@ -138,6 +138,7 @@ export default function BusinessSubCategoriesScreen({ navigation, route }: any) 
         </View>
       ) : (
         <FlatList
+          key={`subcategories-grid-${COLUMNS}`}
           data={subCategories}
           keyExtractor={(item) => item.id}
           renderItem={renderCard}

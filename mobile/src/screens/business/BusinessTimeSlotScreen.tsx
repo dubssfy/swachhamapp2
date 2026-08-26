@@ -9,6 +9,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -310,6 +311,14 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      <View style={styles.topLogoWrap}>
+        <Image
+          source={require('../../../assets/swachham-header-logo.png')}
+          style={styles.topLogo}
+          resizeMode="contain"
+          accessibilityLabel="Swachham"
+        />
+      </View>
       <View style={styles.header}>
         {/* Matches the labelled pill BusinessHeader draws on every other
             Business screen. This screen keeps its own compact header — it has
@@ -607,6 +616,18 @@ function SummaryLine({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
+
+  topLogoWrap: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: SPACING.xs,
+    backgroundColor: 'transparent',
+  },
+  topLogo: {
+    width: '100%',
+    height: 70,
+  },
 
   header: {
     flexDirection: 'row',

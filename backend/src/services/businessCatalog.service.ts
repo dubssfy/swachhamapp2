@@ -336,9 +336,19 @@ async function searchItems(params: {
     conditions.push('(i.category_id = ? OR c.parent_id = ?)');
     values.push(params.categoryId, params.categoryId);
   }
-  if (params.search) {
-    conditions.push('i.name LIKE ?');
-    values.push(`%${params.search}%`);
+  if (params.search && params.search.trim() !== '') {
+    const tokens = params.search.trim().split(/\s+/).filter(Boolean);
+    for (const token of tokens) {
+      conditions.push(
+        `(i.name LIKE ? OR c.name LIKE ? OR EXISTS (
+           SELECT 1 FROM item_service_types m
+           JOIN services st ON st.id = m.service_id
+          WHERE m.item_id = i.id AND (st.name LIKE ? OR st.code LIKE ?) AND st.is_active = true
+         ))`
+      );
+      const pattern = `%${token}%`;
+      values.push(pattern, pattern, pattern, pattern);
+    }
   }
   if (serviceType) {
     conditions.push(`EXISTS (SELECT 1 FROM item_service_types m

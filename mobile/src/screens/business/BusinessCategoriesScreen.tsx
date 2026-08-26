@@ -19,7 +19,6 @@ import { useNavigationState } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import BusinessHeader from '../../components/business/BusinessHeader';
-import SwachhamChatLauncher from '../../components/chat/SwachhamChatLauncher';
 import CategoryGridCard from '../../components/business/CategoryGridCard';
 import businessOrderApi, { BusinessCategory, BusinessItem } from '../../services/businessOrderApi';
 import { getCategoryImage } from '../../constants/categoryImages';
@@ -357,6 +356,7 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
             </View>
           ) : (
             <FlatList
+              key="business-search-results-list"
               data={results}
               keyExtractor={(item) => item.id}
               keyboardShouldPersistTaps="handled"
@@ -440,6 +440,7 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
           onLayout={(event) => setGridHeight(event.nativeEvent.layout.height)}
         >
           <FlatList
+            key={`categories-grid-${COLUMNS}`}
             data={categories}
             keyExtractor={(item) => item.id}
             renderItem={renderCategory}
@@ -498,9 +499,6 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
           </TouchableOpacity>
         </Pressable>
       </Modal>
-
-      {/* Swachham assistant, bottom-right and clear of the bottom bar. */}
-      <SwachhamChatLauncher />
     </SafeAreaView>
   );
 }
@@ -670,3 +668,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 });
+

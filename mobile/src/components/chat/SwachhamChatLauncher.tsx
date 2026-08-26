@@ -34,7 +34,7 @@ interface Props {
   bottomOffset?: number;
 }
 
-export default function SwachhamChatLauncher({ bottomOffset = 20 }: Props) {
+export default function SwachhamChatLauncher({ bottomOffset = 8 }: Props) {
   const openChat = useChatStore((state) => state.open);
   const isChatOpen = useChatStore((state) => state.isOpen);
   const greetingShown = useChatStore((state) => state.greetingShown);
@@ -154,7 +154,7 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.full,
     backgroundColor: COLORS.Surface,
     borderWidth: 1,
-    borderColor: COLORS.Border,
+    borderColor: '#ffbd4a',
     ...SHADOWS.light,
   },
   label: {

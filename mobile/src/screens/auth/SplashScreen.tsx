@@ -77,56 +77,39 @@ export default function SplashScreen({ navigation }: any) {
   }, [isAuthenticated, isLoading, navigation]);
 
   return (
-    <SafeAreaView style={styles.container}>
-      <Animated.View 
+    <View style={styles.container}>
+      <Animated.View
         style={[
-          styles.logoContainer, 
-          { 
+          styles.imageContainer,
+          {
             opacity: fadeAnim,
-            transform: [{ scale: scaleAnim }]
-          }
+            transform: [{ scale: scaleAnim }],
+          },
         ]}
       >
-        {/* The one Swachham logo asset: also the app icon, the Android
-            adaptive icon, the native splash image and the in-app header mark. */}
         <Image
-          source={require('../../../assets/swachham-logo.png')}
-          style={[styles.logo, { width: logoSize, height: logoSize }]}
-          resizeMode="contain"
-          accessibilityLabel="Swachham"
+          source={require('../../../assets/swachham-splash.jpg')}
+          style={styles.splashImage}
+          resizeMode="cover"
+          accessibilityLabel="Swachham Splash"
         />
-        <Text style={styles.title}>SWACHHAM</Text>
-        <Text style={styles.tagline}>Premium Laundry Care</Text>
       </Animated.View>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.Background,
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
   },
-  logoContainer: {
-    alignItems: 'center',
+  imageContainer: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
   },
-  logo: {
-    marginBottom: SPACING.lg,
-  },
-  title: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.xxxl,
-    fontWeight: 'bold',
-    color: COLORS.PrimaryDark,
-    letterSpacing: 2,
-    marginBottom: SPACING.xs,
-  },
-  tagline: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.base,
-    color: COLORS.TextSecondary,
-    letterSpacing: 1,
+  splashImage: {
+    width: '100%',
+    height: '100%',
   },
 });

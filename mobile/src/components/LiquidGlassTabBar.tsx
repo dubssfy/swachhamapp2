@@ -17,7 +17,7 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 const ACTIVE_COLOR = '#2E7D32';
 const INACTIVE_COLOR = '#777';
 
-const BAR_HEIGHT = 94;
+const BAR_HEIGHT = 72;
 
 /* =====================================================================
  * THE NOTCHED BAR
@@ -46,7 +46,7 @@ const BADGE_IMAGE_SIZE = 34;
  * transparent headroom the host reserves for it. Roughly a third stays proud
  * of the bar; the rest nests in the scoop.
  */
-const BADGE_RAISE = 26;
+const BADGE_RAISE = 32;
 
 /**
  * Icons and labels are keyed by route name. Both tab sets are listed, so the
@@ -152,7 +152,7 @@ function TabItem({
             styles.label,
             {
               color: isFocused ? ACTIVE_COLOR : INACTIVE_COLOR,
-              fontWeight: isFocused ? '700' : '500',
+              fontWeight: '700',
             },
           ]}
           numberOfLines={1}
@@ -234,6 +234,8 @@ export default function LiquidGlassTabBar({
           <Path
             d={buildBarPath(barWidth, BAR_HEIGHT + bottomInset, notch.centre, notch.half)}
             fill="#FFFFFF"
+            stroke="#ffbd4a"
+            strokeWidth={1.5}
           />
         </Svg>
 
@@ -290,11 +292,9 @@ export default function LiquidGlassTabBar({
       </View>
 
       {/* Swachham brand mark, seated IN the scoop.
-
           It lives in the host rather than in the bar because the bar would
           clip it: the plate is deliberately larger than the notch is deep, so
           it nests in the curve with its top third proud of the bar's edge.
-
           `pointerEvents="none"` keeps it decorative — the tabs beneath it stay
           fully tappable, and the notch sits in the gap between tab 2 and tab 3
           in any case. */}
@@ -355,9 +355,9 @@ const styles = StyleSheet.create({
     left: 0,
     // Below the deepest point of the scoop, so the highlight never appears to
     // spill out of the notch.
-    top: NOTCH_DEPTH + 2,
-    height: 60,
-    borderRadius: 26,
+    top: NOTCH_DEPTH + 1,
+    height: 46,
+    borderRadius: 22,
     backgroundColor: 'rgba(46,125,50,0.08)',
     zIndex: 1,
   },
@@ -373,9 +373,9 @@ const styles = StyleSheet.create({
   },
 
   iconGlass: {
-    width: 46,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -384,13 +384,13 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
 
-  label: { fontSize: 12, marginTop: 3 },
+  label: { fontSize: 12, marginTop: 2, fontWeight: '700' },
 
   // Full-width strip so the badge is centred on any screen width. Pinned to
   // the top of the host, which is BADGE_RAISE above the bar's top edge.
   brandBadgeWrap: {
     position: 'absolute',
-    top: 0,
+    top: -6,
     left: 0,
     right: 0,
     alignItems: 'center',

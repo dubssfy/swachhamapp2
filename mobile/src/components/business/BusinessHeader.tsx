@@ -33,16 +33,15 @@ interface Props {
 export default function BusinessHeader({ title, subtitle, onBack, action }: Props) {
   return (
     <View style={styles.container}>
-      {/* Brand lockup — identical on every Business page. */}
-      <View style={styles.brandRow}>
+      {/* Brand banner — full width edge-to-edge on Android with transparent background */}
+      <View style={styles.brandBannerRow}>
         <Image
-          source={require('../../../assets/swachham-logo.png')}
-          style={styles.logo}
+          source={require('../../../assets/swachham-header-logo.png')}
+          style={styles.brandBanner}
           resizeMode="contain"
           accessibilityLabel="Swachham"
         />
-        <View style={styles.brandSpacer} />
-        {action}
+        {action ? <View style={styles.actionWrap}>{action}</View> : null}
       </View>
 
       <View style={styles.titleRow}>
@@ -78,20 +77,32 @@ export default function BusinessHeader({ title, subtitle, onBack, action }: Prop
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: SPACING.md,
-    paddingTop: SPACING.sm,
-    paddingBottom: SPACING.xs,
+    width: '100%',
     backgroundColor: COLORS.Background,
+    paddingBottom: SPACING.xs,
   },
-  brandRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
-  // Fixed box + contain keeps the aspect ratio on every screen size.
-  logo: { width: 52, height: 52, borderRadius: BORDER_RADIUS.sm },
-  brandSpacer: { flex: 1 },
+  brandBannerRow: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    backgroundColor: 'transparent',
+  },
+  brandBanner: {
+    width: '100%',
+    height: 70,
+  },
+  actionWrap: {
+    position: 'absolute',
+    right: SPACING.md,
+    top: SPACING.xs,
+  },
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: SPACING.sm,
-    marginTop: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    marginTop: SPACING.xs,
   },
   backButton: {
     flexDirection: 'row',

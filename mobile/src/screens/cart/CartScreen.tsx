@@ -11,6 +11,14 @@ export default function CartScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      <View style={styles.topLogoWrap}>
+        <Image
+          source={require('../../../assets/swachham-header-logo.png')}
+          style={styles.topLogo}
+          resizeMode="contain"
+          accessibilityLabel="Swachham"
+        />
+      </View>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <MaterialIcons name="arrow-back" size={24} color={COLORS.Surface} />
@@ -40,6 +48,17 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.Surface,
+  },
+  topLogoWrap: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: SPACING.xs,
+    backgroundColor: 'transparent',
+  },
+  topLogo: {
+    width: '100%',
+    height: 70,
   },
   header: {
     flexDirection: 'row',

@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Image } from 'react-native';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
@@ -57,6 +57,14 @@ export default function ProfileScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      <View style={styles.topLogoWrap}>
+        <Image
+          source={require('../../../assets/swachham-header-logo.png')}
+          style={styles.topLogo}
+          resizeMode="contain"
+          accessibilityLabel="Swachham"
+        />
+      </View>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>{user?.name || 'User'}</Text>
         <Text style={styles.headerSubtitle}>{user?.mobile || 'Not added'}</Text>
@@ -110,6 +118,17 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.Background,
+  },
+  topLogoWrap: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: SPACING.xs,
+    backgroundColor: 'transparent',
+  },
+  topLogo: {
+    width: '100%',
+    height: 70,
   },
   header: {
     backgroundColor: COLORS.Primary,

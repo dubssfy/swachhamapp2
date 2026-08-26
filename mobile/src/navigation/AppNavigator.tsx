@@ -193,6 +193,7 @@ import { useChatStore } from '../store/chatStore';
 
 import SignInPasswordScreen from '../screens/auth/SignInPasswordScreen';
 import ServiceCategoryScreen from '../screens/home/ServiceCategoryScreen';
+import OrderTypeScreen from '../screens/home/OrderTypeScreen';
 
 // One screen renders both legal documents; which one is a route param, so
 // neither section needs a stack of its own for them.
@@ -288,50 +289,50 @@ const CUSTOMER_TAB_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
 };
 
 function MainTab() {
+  const isChatOpen = useChatStore((state) => state.isOpen);
+  const closeChat = useChatStore((state) => state.close);
 
   return (
-    <Tab.Navigator
-     tabBar={(props) => <LiquidGlassTabBar {...props} />}
-      initialRouteName="Home"
-      screenOptions={({ route }) => ({
+    <>
+      <Tab.Navigator
+        tabBar={(props) => <LiquidGlassTabBar {...props} />}
+        initialRouteName="Home"
+        screenOptions={({ route }) => ({
+          headerShown: false,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons
+              name={CUSTOMER_TAB_ICONS[route.name] || 'home-outline'}
+              size={size}
+              color={color}
+            />
+          ),
+          tabBarActiveTintColor: '#2D6A4F',
+          tabBarInactiveTintColor: 'gray',
+        })}
+      >
+        <Tab.Screen
+          name="Home"
+          component={HomeScreen}
+        />
 
-        headerShown: false,
+        <Tab.Screen
+          name="Orders"
+          component={CustomerOrdersScreen}
+        />
 
-        tabBarIcon: ({ color, size }) => (
-          <Ionicons
-            name={CUSTOMER_TAB_ICONS[route.name] || 'home-outline'}
-            size={size}
-            color={color}
-          />
-        ),
+        <Tab.Screen
+          name="Cart"
+          component={CartStack}
+        />
 
-        tabBarActiveTintColor: '#2D6A4F',
+        <Tab.Screen
+          name="Profile"
+          component={ProfileScreen}
+        />
+      </Tab.Navigator>
 
-        tabBarInactiveTintColor: 'gray',
-      })}
-    >
-
-      <Tab.Screen
-        name="Home"
-        component={HomeScreen}
-      />
-
-      <Tab.Screen
-        name="Orders"
-        component={CustomerOrdersScreen}
-      />
-
-      <Tab.Screen
-        name="Cart"
-        component={CartStack}
-      />
-
-      <Tab.Screen
-        name="Profile"
-        component={ProfileScreen}
-      />
-
-    </Tab.Navigator>
+      <SwachhamChatbot visible={isChatOpen} onClose={closeChat} section="general" />
+    </>
   );
 }
 
@@ -395,6 +396,31 @@ function CustomerStack() {
         component={ServiceCategoryScreen}
       />
 
+      <Stack.Screen
+        name="OrderType"
+        component={OrderTypeScreen}
+      />
+
+      <Stack.Screen
+        name="OrderTypeScreen"
+        component={OrderTypeScreen}
+      />
+
+      <Stack.Screen
+        name="BusinessCategoriesScreen"
+        component={BusinessCategoriesScreen}
+      />
+
+      <Stack.Screen
+        name="BusinessSubCategoriesScreen"
+        component={BusinessSubCategoriesScreen}
+      />
+
+      <Stack.Screen
+        name="BusinessItemsScreen"
+        component={BusinessItemsScreen}
+      />
+
     </Stack.Navigator>
   );
 }
@@ -411,11 +437,20 @@ function CustomerStack() {
 function BusinessHomeStack() {
   return (
     <Stack.Navigator
-      initialRouteName="BusinessCategoriesScreen"
+      initialRouteName="HomeScreen"
       screenOptions={{ headerShown: false }}
     >
-      {/* The first page is the four main categories — no pre-selection step. */}
+      {/* 1. Home Page: Laundry Type (Hotel Laundry / Guest Laundry) & Search */}
+      <Stack.Screen name="HomeScreen" component={HomeScreen} />
+
+      {/* 2. Order Type: Standard Order / Quick Order */}
+      <Stack.Screen name="OrderType" component={OrderTypeScreen} />
+      <Stack.Screen name="OrderTypeScreen" component={OrderTypeScreen} />
+
+      {/* 3. Main Categories Page: 4 Main Categories */}
       <Stack.Screen name="BusinessCategoriesScreen" component={BusinessCategoriesScreen} />
+
+      {/* 4. Existing Services: SubCategories & Items */}
       <Stack.Screen name="BusinessSubCategoriesScreen" component={BusinessSubCategoriesScreen} />
       <Stack.Screen name="BusinessItemsScreen" component={BusinessItemsScreen} />
     </Stack.Navigator>

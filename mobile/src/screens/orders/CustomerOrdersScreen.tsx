@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY } from '../../constants/theme';
@@ -11,6 +11,14 @@ import { COLORS, SPACING, TYPOGRAPHY } from '../../constants/theme';
 export default function CustomerOrdersScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      <View style={styles.topLogoWrap}>
+        <Image
+          source={require('../../../assets/swachham-header-logo.png')}
+          style={styles.topLogo}
+          resizeMode="contain"
+          accessibilityLabel="Swachham"
+        />
+      </View>
       <Text style={styles.title}>My Orders</Text>
       <View style={styles.centered}>
         <Ionicons name="list-outline" size={48} color={COLORS.TextSecondary} />
@@ -22,12 +30,25 @@ export default function CustomerOrdersScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
+  topLogoWrap: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: SPACING.xs,
+    backgroundColor: 'transparent',
+  },
+  topLogo: {
+    width: '100%',
+    height: 70,
+  },
   title: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.xl,
     fontWeight: 'bold',
     color: COLORS.TextPrimary,
-    padding: SPACING.lg,
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.sm,
+    paddingBottom: SPACING.md,
   },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: SPACING.sm },
   emptyText: {

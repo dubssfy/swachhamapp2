@@ -7,8 +7,8 @@
     "icon": "./assets/swachham-logo.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/swachham-logo.png",
-      "resizeMode": "contain",
+      "image": "./assets/swachham-splash.jpg",
+      "resizeMode": "cover",
       "backgroundColor": "#FFFFFF"
     },
     "ios": {
@@ -42,9 +42,8 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/swachham-logo.png",
-          "imageWidth": 288,
-          "resizeMode": "contain",
+          "image": "./assets/swachham-splash.jpg",
+          "resizeMode": "cover",
           "backgroundColor": "#FFFFFF"
         }
       ]

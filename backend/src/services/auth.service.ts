@@ -1,4 +1,4 @@
-﻿import bcrypt from 'bcrypt';
+import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { query } from '../config/database';
 import {
@@ -22,6 +22,8 @@ export interface UserProfile {
   email: string;
   mobile: string;
   role: string;
+  establishment_name?: string;
+  business_name?: string;
   profile_image?: string;
   is_active: boolean;
   mobile_verified?: boolean;
@@ -202,6 +204,8 @@ export async function businessLogin(email: string, password: string): Promise<Au
   const userResult = await query<UserProfile & { password_hash: string; business_id: string }>(
     `SELECT bu.id, bu.name, bu.email, bu.password_hash, bu.is_active, bu.created_at, bu.updated_at,
             bu.mobile_number AS mobile,
+            b.name AS establishment_name,
+            b.name AS business_name,
             b.status as business_status
      FROM business_users bu
      JOIN businesses b ON bu.business_id = b.id
@@ -555,6 +559,8 @@ export async function getMe(userId: string, role?: string): Promise<UserProfile>
     query<UserProfile>(
       `SELECT bu.id, bu.name, bu.email,
               COALESCE(bu.mobile_number, '') AS mobile,
+              b.name AS establishment_name,
+              b.name AS business_name,
               'BUSINESS' as role, bu.is_active, bu.created_at, bu.updated_at
        FROM business_users bu
        JOIN businesses b ON b.id = bu.business_id
