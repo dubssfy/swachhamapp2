@@ -8,7 +8,7 @@
     "userInterfaceStyle": "light",
     "splash": {
       "image": "./assets/swachham-splash.jpg",
-      "resizeMode": "cover",
+      "resizeMode": "contain",
       "backgroundColor": "#FFFFFF"
     },
     "ios": {
@@ -43,7 +43,7 @@
         "expo-splash-screen",
         {
           "image": "./assets/swachham-splash.jpg",
-          "resizeMode": "cover",
+          "resizeMode": "contain",
           "backgroundColor": "#FFFFFF"
         }
       ]

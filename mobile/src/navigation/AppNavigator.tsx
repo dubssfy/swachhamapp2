@@ -524,7 +524,11 @@ function BusinessTabs() {
       <Tab.Navigator
         initialRouteName="BusinessHome"
         screenOptions={{ headerShown: false }}
-        tabBar={(props) => <LiquidGlassTabBar {...props} />}
+        /* No brand plate in the Business bar: every Business screen already
+           opens with the full-width Swachham banner, so the mark at the
+           bottom of the same page was the logo twice. The Customer tabs keep
+           theirs. */
+        tabBar={(props) => <LiquidGlassTabBar {...props} showBrandBadge={false} />}
       >
         <Tab.Screen name="BusinessHome" component={BusinessHomeStack} />
         <Tab.Screen name="BusinessOrders" component={BusinessOrdersStack} />

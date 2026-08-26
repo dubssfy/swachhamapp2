@@ -20,11 +20,32 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import BusinessHeader from '../../components/business/BusinessHeader';
 import CategoryGridCard from '../../components/business/CategoryGridCard';
+import SectionHeading from '../../components/SectionHeading';
 import businessOrderApi, { BusinessCategory, BusinessItem } from '../../services/businessOrderApi';
 import { getCategoryImage } from '../../constants/categoryImages';
 import { filterHiddenCategories } from '../../constants/hiddenCategories';
 import { extractErrorMessage } from '../../services/api';
-import { useBusinessOrderStore } from '../../store/businessOrderStore';
+import { useBusinessOrderStore, LaundryType, OrderType } from '../../store/businessOrderStore';
+
+/** How each laundry type is named and iconed here, matching the Order Type page. */
+const LAUNDRY_LABELS: Record<LaundryType, string> = {
+  hotel: 'Hotel Laundry',
+  guest: 'Guest Laundry',
+};
+const LAUNDRY_ICONS: Record<LaundryType, keyof typeof Ionicons.glyphMap> = {
+  hotel: 'business',
+  guest: 'person',
+};
+
+/** How each order type is named and iconed here, matching the Order Type page. */
+const ORDER_LABELS: Record<OrderType, string> = {
+  standard: 'Standard Order',
+  quick: 'Quick Order',
+};
+const ORDER_ICONS: Record<OrderType, keyof typeof Ionicons.glyphMap> = {
+  standard: 'calendar-outline',
+  quick: 'flash',
+};
 
 /** Icon fallback per main-category slug, used when no artwork is mapped. */
 const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -83,7 +104,7 @@ const MIN_CARD_SIZE = 140;
  * children, straight to Items when it does not, so an empty sub-category
  * screen can never appear. Service selection lives on the Items page only.
  */
-export default function BusinessCategoriesScreen({ navigation }: any) {
+export default function BusinessCategoriesScreen({ navigation, route }: any) {
   /**
    * Whether THIS screen's own stack has somewhere to pop to.
    *
@@ -213,11 +234,29 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
     return Math.max(MIN_CARD_SIZE, Math.min(byWidth, byHeight));
   }, [width, gridHeight]);
 
-  const { cart, loadCart } = useBusinessOrderStore();
+  const {
+    cart,
+    loadCart,
+    laundryType: storeLaundryType,
+    orderType: storeOrderType,
+  } = useBusinessOrderStore();
   const cartCount = useMemo(
     () => (cart?.items || []).reduce((sum, item) => sum + item.quantity, 0),
     [cart]
   );
+
+  /*
+   * What the last two screens decided, shown here so the choice does not
+   * vanish the moment the catalogue opens.
+   *
+   * Route params win when present -- they are what OrderTypeScreen just
+   * navigated here WITH, so they are more current than a store write that
+   * may still be in flight. The store is the fallback for every other way
+   * this screen is reached: the Home tab directly, or a cold start that
+   * restored a session already mid-order.
+   */
+  const laundryType: LaundryType | null = route?.params?.laundryType ?? storeLaundryType ?? null;
+  const orderType: OrderType | null = route?.params?.orderType ?? storeOrderType ?? null;
 
   const load = useCallback(async () => {
     try {
@@ -295,9 +334,12 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
           tab, so there is nothing to go back TO; a button that only jumped to
           another tab was navigation that did not match its own label. It
           appears as soon as the stack has somewhere to pop to, and
-          BusinessHeader renders no placeholder when it is absent. */}
+          BusinessHeader renders no placeholder when it is absent.
+
+          NO `title` EITHER: the page's name is now the SectionHeading pill
+          below rather than plain text up here, so passing one would say
+          "Select Items" twice. */}
       <BusinessHeader
-        title="Select Items"
         onBack={canGoBack ? () => navigation.goBack() : undefined}
         action={
           <TouchableOpacity
@@ -314,7 +356,38 @@ export default function BusinessCategoriesScreen({ navigation }: any) {
         }
       />
 
-      {/* Item search. Sits directly under the header, above the grid, where a
+      {/* What Order Type just decided, carried forward so it does not vanish
+          the moment the catalogue opens. Shown only once both halves of the
+          decision are actually known -- a business that lands here some
+          other way (the Home tab directly, say) has neither yet, and a
+          half-filled "Selected: | Quick Order" would raise a question this
+          screen has no answer for. */}
+      {laundryType && orderType ? (
+        <View style={styles.selectedRow}>
+          <Text style={styles.selectedLabel}>Selected:</Text>
+          <Ionicons name={LAUNDRY_ICONS[laundryType]} size={16} color={COLORS.Primary} />
+          <Text style={styles.selectedValue} numberOfLines={1}>
+            {LAUNDRY_LABELS[laundryType]}
+          </Text>
+          <Text style={styles.selectedSeparator}>|</Text>
+          <Ionicons name={ORDER_ICONS[orderType]} size={16} color={COLORS.Primary} />
+          <Text style={styles.selectedValue} numberOfLines={1}>
+            {ORDER_LABELS[orderType]}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Closes off the header block the same way Order Type's own header
+          does — a hairline rule under the back button / selected-choice row,
+          before the page's own content starts. */}
+      <View style={styles.headerDivider} />
+
+      {/* The page's name, styled the same way Order Type's own heading is —
+          the two screens are consecutive steps of one flow and should read
+          as such. */}
+      <SectionHeading style={styles.pageHeading}>SELECT ITEMS</SectionHeading>
+
+      {/* Item search. Sits directly under the heading, above the grid, where a
           search box is looked for. */}
       <View style={styles.searchWrap}>
         <View style={styles.searchBar}>
@@ -516,6 +589,48 @@ const styles = StyleSheet.create({
   gridContent: { padding: GRID_PADDING, flexGrow: 1, justifyContent: 'center' },
   row: { gap: GRID_GAP, marginBottom: GRID_GAP, justifyContent: 'center' },
   errorWrap: { paddingHorizontal: GRID_PADDING, paddingTop: SPACING.xs },
+
+  /* ---- Selected laundry type + order type, and the page's own heading ---- */
+  selectedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.sm,
+  },
+  selectedLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+  },
+  selectedValue: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '800',
+    color: COLORS.PrimaryDark,
+  },
+  selectedSeparator: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.Border,
+    marginHorizontal: 2,
+  },
+  // The same hairline Order Type's own header sits on, marking where the
+  // header block ends and the page's own content begins.
+  headerDivider: {
+    height: 1,
+    backgroundColor: COLORS.Border,
+    marginTop: SPACING.sm,
+  },
+  pageHeading: {
+    marginTop: SPACING.md,
+    // Was 0: with nothing between the heading and the search bar below it,
+    // the pill read as glued to the bar rather than sitting above its own
+    // section. This is what puts air back between the two.
+    marginBottom: SPACING.sm,
+  },
 
   /* ---- Item search ----
    *

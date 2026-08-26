@@ -4,7 +4,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 
 interface Props {
-  title: string;
+  /**
+   * Optional so a screen that carries its own heading below this one — a
+   * `SectionHeading` pill, say — is not forced into showing the same name
+   * twice. The row below the banner still renders when there is a back
+   * button to place, just without the text beside it.
+   */
+  title?: string;
   subtitle?: string;
   onBack?: () => void;
   /** Optional element rendered at the far right (e.g. a cart button). */
@@ -44,33 +50,40 @@ export default function BusinessHeader({ title, subtitle, onBack, action }: Prop
         {action ? <View style={styles.actionWrap}>{action}</View> : null}
       </View>
 
-      <View style={styles.titleRow}>
-        {onBack ? (
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={onBack}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityLabel="Go back"
-            // A generous slop so the tap lands even when the thumb does not.
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Ionicons name="arrow-back" size={22} color={COLORS.PrimaryDark} />
-            <Text style={styles.backText}>Back</Text>
-          </TouchableOpacity>
-        ) : null}
+      {/* Nothing to show below the banner: no title, no back button, no
+          subtitle. Rendering the row anyway would leave its own padding as a
+          dead strip of blank space. */}
+      {title || onBack || subtitle ? (
+        <View style={styles.titleRow}>
+          {onBack ? (
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={onBack}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+              // A generous slop so the tap lands even when the thumb does not.
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="arrow-back" size={22} color={COLORS.PrimaryDark} />
+              <Text style={styles.backText}>Back</Text>
+            </TouchableOpacity>
+          ) : null}
 
-        <View style={styles.titleWrap}>
-          <Text style={styles.title} numberOfLines={1}>
-            {title}
-          </Text>
-          {subtitle ? (
-            <Text style={styles.subtitle} numberOfLines={1}>
-              {subtitle}
-            </Text>
+          {title ? (
+            <View style={styles.titleWrap}>
+              <Text style={styles.title} numberOfLines={1}>
+                {title}
+              </Text>
+              {subtitle ? (
+                <Text style={styles.subtitle} numberOfLines={1}>
+                  {subtitle}
+                </Text>
+              ) : null}
+            </View>
           ) : null}
         </View>
-      </View>
+      ) : null}
     </View>
   );
 }

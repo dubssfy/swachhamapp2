@@ -18,10 +18,10 @@ import type { ImageSourcePropType } from 'react-native';
  */
 
 export const CATEGORY_IMAGES: Record<string, ImageSourcePropType> = {
-  'Room Linen': require('../assets/images/room-linen.png'),
-  'Spa & Pool': require('../assets/images/spa.png'),
-  'F&B Service': require('../assets/images/F&B.png'),
-  Uniforms: require('../assets/images/Uniform.png'),
+  'Room Linen': require('../assets/images/room-linen.jpeg'),
+  'Spa & Pool': require('../assets/images/spa.jpeg'),
+  'F&B Service': require('../assets/images/F&B.jpeg'),
+  Uniforms: require('../assets/images/Uniforms.jpeg'),
 };
 
 /**

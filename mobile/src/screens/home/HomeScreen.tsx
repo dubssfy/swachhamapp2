@@ -9,11 +9,14 @@ import {
   TextInput,
   Image,
   Keyboard,
+  ScrollView,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import SwachhamChatLauncher from '../../components/chat/SwachhamChatLauncher';
+import SectionHeading from '../../components/SectionHeading';
 import { useAuthStore } from '../../store/authStore';
 import businessApi from '../../services/businessApi';
 import businessOrderApi from '../../services/businessOrderApi';
@@ -21,8 +24,55 @@ import serviceApi from '../../services/serviceApi';
 import { extractErrorMessage } from '../../services/api';
 import { Business, Service } from '../../types';
 
+/*
+ * The two Laundry Type cards are the same card in two finishes: the Hotel card
+ * is teal with the saffron accent on it, the Guest card is the warm off-white
+ * inverse with the teal as its ink. Both keep the saffron border, which is
+ * what makes them read as a pair.
+ */
+/** The Hotel card's surface, and the Guest card's ink. */
+const LAUNDRY_TEAL = '#3d6f73';
+/** The saffron accent shared by both cards. */
+const LAUNDRY_SAFFRON = '#ffbd4a';
+/** The Guest card's surface: a warm off-white, not a flat grey. */
+const LAUNDRY_OFF_WHITE = '#FDF8F0';
+
+/** The largest the card title is allowed to get, however wide the screen. */
+const CARD_TITLE_MAX = 32;
+/** The smallest it may shrink to before readability outranks fitting. */
+const CARD_TITLE_MIN = 20;
+/**
+ * How wide "GUEST LAUNDRY" — the longer of the two labels — is in multiples
+ * of its own font size, in the heaviest weight the system font offers.
+ * Measured from the font's advance widths, with headroom for the fact that
+ * iOS and Android do not ship the same face.
+ */
+const TITLE_WIDTH_IN_EMS = 9.2;
+
+/**
+ * The card title's size on THIS screen.
+ *
+ * SIZED TO HOLD ONE LINE, because the two lines it used to take were what
+ * pushed the second card off the bottom of the screen. Dividing the card's
+ * inner width by the label's width in ems gives the largest size that still
+ * fits across, and the cap keeps a tablet from turning it into a billboard.
+ *
+ * Deriving it rather than fixing it is also what stops the label spilling on
+ * a narrow phone: a single word too wide for its line does not wrap, it
+ * overflows.
+ */
+function cardTitleSize(width: number): number {
+  const inner = width - SPACING.lg * 2 - 2.5 * 2 - SPACING.md * 2;
+  return Math.max(
+    CARD_TITLE_MIN,
+    Math.min(CARD_TITLE_MAX, Math.floor(inner / TITLE_WIDTH_IN_EMS))
+  );
+}
+
 export default function HomeScreen({ navigation }: any) {
   const { user } = useAuthStore();
+  const { width } = useWindowDimensions();
+  const titleSize = cardTitleSize(width);
   const [profile, setProfile] = useState<any>(null);
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [loadingBusinesses, setLoadingBusinesses] = useState(true);
@@ -190,14 +240,18 @@ export default function HomeScreen({ navigation }: any) {
         <View style={styles.userDivider} />
       </View>
 
-      {/* Laundry Type Selection Section */}
-      <View style={styles.defaultContent}>
+      {/* Laundry Type Selection Section.
+
+          A ScrollView, not a plain View: the card titles are now large enough
+          that the two cards are taller than a short phone's remaining space,
+          and a fixed View would simply cut the second one off. */}
+      <ScrollView
+        style={styles.defaultContent}
+        contentContainerStyle={styles.defaultContentInner}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.laundryTypeSection}>
-          <View style={styles.headingBadgeWrap}>
-            <View style={styles.headingBadge}>
-              <Text style={styles.sectionHeading}>LAUNDRY TYPE</Text>
-            </View>
-          </View>
+          <SectionHeading>LAUNDRY TYPE</SectionHeading>
 
           <View style={styles.laundryCardsContainer}>
             {/* Hotel Laundry Card */}
@@ -208,26 +262,39 @@ export default function HomeScreen({ navigation }: any) {
               accessibilityRole="button"
               accessibilityLabel="Hotel Laundry"
             >
-              <View style={styles.cardHeader}>
+              {/* Icon left, chevron right. The title no longer shares this
+                  row: at its size it needs the card's full width, and boxed
+                  in between these two it would have had barely a third. */}
+              <View style={styles.cardTopRow}>
                 <View style={styles.iconCircle}>
-                  <Ionicons name="business" size={26} color="#ffbd4a" />
+                  <Ionicons name="business" size={26} color={LAUNDRY_SAFFRON} />
                 </View>
-                <View style={styles.cardHeaderText}>
-                  <Text style={styles.cardTitle}>HOTEL LAUNDRY</Text>
-                  <Text style={styles.cardSubtitle}>Linen & property-owned items</Text>
-                </View>
-                <Ionicons name="chevron-forward-circle" size={28} color="#ffbd4a" />
+                <Ionicons name="chevron-forward-circle" size={28} color={LAUNDRY_SAFFRON} />
               </View>
+
+              <Text
+                style={[
+                  styles.cardTitle,
+                  styles.cardTitleHotel,
+                  { fontSize: titleSize, lineHeight: titleSize + 2 },
+                ]}
+              >
+                HOTEL LAUNDRY
+              </Text>
+              {/* A short accent rule under the label, tying it to the icon
+                  above and separating it from the small print below. */}
+              <View style={styles.cardTitleUnderline} />
+              <Text style={styles.cardSubtitle}>Linen & property-owned items</Text>
 
               <View style={styles.cardDivider} />
 
               <View style={styles.cardFeatures}>
                 <View style={styles.featureItem}>
-                  <Ionicons name="checkmark" size={16} color="#ffbd4a" />
+                  <Ionicons name="checkmark" size={16} color={LAUNDRY_SAFFRON} />
                   <Text style={styles.featureText}>Hotel linen, towels & bedding</Text>
                 </View>
                 <View style={styles.featureItem}>
-                  <Ionicons name="checkmark" size={16} color="#ffbd4a" />
+                  <Ionicons name="checkmark" size={16} color={LAUNDRY_SAFFRON} />
                   <Text style={styles.featureText}>Property & uniform management</Text>
                 </View>
               </View>
@@ -235,39 +302,53 @@ export default function HomeScreen({ navigation }: any) {
 
             {/* Guest Laundry Card */}
             <TouchableOpacity
-              style={styles.laundryCard}
+              style={[styles.laundryCard, styles.laundryCardGuest]}
               onPress={() => handleSelectLaundryType('guest', 'Guest Laundry')}
               activeOpacity={0.85}
               accessibilityRole="button"
               accessibilityLabel="Guest Laundry"
             >
-              <View style={styles.cardHeader}>
-                <View style={styles.iconCircle}>
-                  <Ionicons name="person" size={26} color="#ffbd4a" />
+              <View style={styles.cardTopRow}>
+                <View style={[styles.iconCircle, styles.iconCircleGuest]}>
+                  <Ionicons name="person" size={26} color={LAUNDRY_SAFFRON} />
                 </View>
-                <View style={styles.cardHeaderText}>
-                  <Text style={styles.cardTitle}>GUEST LAUNDRY</Text>
-                  <Text style={styles.cardSubtitle}>Items belonging to your guests</Text>
-                </View>
-                <Ionicons name="chevron-forward-circle" size={28} color="#ffbd4a" />
+                <Ionicons name="chevron-forward-circle" size={28} color={LAUNDRY_TEAL} />
               </View>
 
-              <View style={styles.cardDivider} />
+              <Text
+                style={[
+                  styles.cardTitle,
+                  styles.cardTitleGuest,
+                  { fontSize: titleSize, lineHeight: titleSize + 2 },
+                ]}
+              >
+                GUEST LAUNDRY
+              </Text>
+              <View style={[styles.cardTitleUnderline, styles.cardTitleUnderlineGuest]} />
+              <Text style={[styles.cardSubtitle, styles.cardSubtitleGuest]}>
+                Items belonging to your guests
+              </Text>
+
+              <View style={[styles.cardDivider, styles.cardDividerGuest]} />
 
               <View style={styles.cardFeatures}>
                 <View style={styles.featureItem}>
-                  <Ionicons name="checkmark" size={16} color="#ffbd4a" />
-                  <Text style={styles.featureText}>Personal guest garment care</Text>
+                  <Ionicons name="checkmark" size={16} color={LAUNDRY_TEAL} />
+                  <Text style={[styles.featureText, styles.featureTextGuest]}>
+                    Personal guest garment care
+                  </Text>
                 </View>
                 <View style={styles.featureItem}>
-                  <Ionicons name="checkmark" size={16} color="#ffbd4a" />
-                  <Text style={styles.featureText}>Express room delivery available</Text>
+                  <Ionicons name="checkmark" size={16} color={LAUNDRY_TEAL} />
+                  <Text style={[styles.featureText, styles.featureTextGuest]}>
+                    Express room delivery available
+                  </Text>
                 </View>
               </View>
             </TouchableOpacity>
           </View>
         </View>
-      </View>
+      </ScrollView>
 
       {/* Swachham AI assistant floating launcher */}
       <SwachhamChatLauncher />
@@ -435,7 +516,12 @@ const styles = StyleSheet.create({
   },
   defaultContent: {
     flex: 1,
+  },
+  defaultContentInner: {
     paddingHorizontal: SPACING.lg,
+    // Clears the floating assistant button, which sits over the bottom-right
+    // of this list.
+    paddingBottom: SPACING.xxl,
   },
   sectionTitle: {
     fontFamily: TYPOGRAPHY.fontFamily,
@@ -521,44 +607,39 @@ const styles = StyleSheet.create({
     fontSize: TYPOGRAPHY.sizes.sm,
   },
   laundryTypeSection: {
-    marginBottom: SPACING.lg,
-  },
-  headingBadgeWrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: SPACING.md,
-  },
-  headingBadge: {
-    backgroundColor: '#ffbd4a',
-    paddingHorizontal: SPACING.xl,
-    paddingVertical: SPACING.xs + 2,
-    borderRadius: BORDER_RADIUS.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...SHADOWS.light,
-  },
-  sectionHeading: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.lg,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
+    // No bottom margin: the scroll container's own paddingBottom already
+    // ends the page, and this margin was pure height the cards needed back.
+    // The lg gap BETWEEN the two cards is deliberately untouched — that is
+    // the spacing that separates the two choices.
+    marginBottom: 0,
   },
   laundryCardsContainer: {
     gap: SPACING.lg,
   },
   laundryCard: {
-    backgroundColor: '#3d6f73',
+    backgroundColor: LAUNDRY_TEAL,
     borderRadius: BORDER_RADIUS.lg,
     borderWidth: 2.5,
-    borderColor: '#ffbd4a',
-    padding: SPACING.lg,
+    borderColor: LAUNDRY_SAFFRON,
+    // Down from lg: 16px either side gives the enlarged title the room it
+    // needs to hold "LAUNDRY" on one line on a narrow phone.
+    padding: SPACING.md,
     ...SHADOWS.medium,
   },
-  cardHeader: {
+  /*
+   * The Guest card, in the same shape, radius, padding, border weight and
+   * saffron border as the Hotel card — only the surface differs, so the two
+   * still read as one pair rather than two designs.
+   */
+  laundryCardGuest: {
+    backgroundColor: LAUNDRY_OFF_WHITE,
+  },
+  // Icon on the left, chevron on the right, nothing between them.
+  cardTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: SPACING.xs,
   },
   iconCircle: {
     width: 46,
@@ -567,28 +648,77 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.15)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: SPACING.md,
   },
-  cardHeaderText: {
-    flex: 1,
+  // Solid teal rather than a translucent white, which would vanish on the
+  // off-white surface — the saffron icon needs something to sit on.
+  iconCircleGuest: {
+    backgroundColor: LAUNDRY_TEAL,
   },
   cardTitle: {
     fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.lg,
-    fontWeight: '800',
+    /*
+     * `fontSize` and `lineHeight` are set per-render from `cardTitleSize`, not
+     * here — they depend on how wide the screen is. See that function, which
+     * picks a size the label holds on ONE line.
+     *
+     * Still no `numberOfLines`: the size is derived to fit rather than the
+     * text clamped to fit, so a font this screen renders slightly wider than
+     * measured wraps to a second line instead of being truncated.
+     *
+     * No letterSpacing either — it is width the label cannot spare.
+     */
+    fontWeight: '900',
     color: '#FFFFFF',
-    letterSpacing: 0.5,
+  },
+  /*
+   * The outline asked for on the Hotel card's title, drawn the only way RN
+   * allows: a zero-offset shadow, which lays an even hairline around every
+   * glyph instead of dropping it to one side.
+   *
+   * NOTE THAT #3D6F73 IS ALSO THIS CARD'S BACKGROUND, so the outline is very
+   * nearly invisible here — it is the same colour as the surface it is drawn
+   * on. Kept as specified; a contrasting colour is a one-line change.
+   */
+  cardTitleHotel: {
+    textShadowColor: '#3D6F73',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 1,
+  },
+  // The same type in the Guest card's ink. Size and weight are inherited, so
+  // the two labels stay identical in everything but colour.
+  cardTitleGuest: {
+    color: LAUNDRY_TEAL,
+  },
+  cardTitleUnderline: {
+    width: 64,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: LAUNDRY_SAFFRON,
+    // The rule sits close under the title on purpose — it belongs to it, and
+    // the height saved is height the second card needs.
+    marginTop: SPACING.xs,
+  },
+  cardTitleUnderlineGuest: {
+    backgroundColor: LAUNDRY_TEAL,
   },
   cardSubtitle: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.xs,
     color: '#D8F3DC',
-    marginTop: 2,
+    // Back in tight now the title above it is no longer two lines tall.
+    marginTop: SPACING.xs,
+  },
+  cardSubtitleGuest: {
+    color: COLORS.TextSecondary,
   },
   cardDivider: {
     height: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    marginVertical: SPACING.md,
+    // Tightened from md: two cards and a heading have to share one screen.
+    marginVertical: SPACING.sm,
+  },
+  cardDividerGuest: {
+    backgroundColor: 'rgba(61, 111, 115, 0.18)',
   },
   cardFeatures: {
     gap: 6,
@@ -602,6 +732,10 @@ const styles = StyleSheet.create({
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.sm,
     color: '#FFFFFF',
+    flex: 1,
+  },
+  featureTextGuest: {
+    color: LAUNDRY_TEAL,
   },
 });
 

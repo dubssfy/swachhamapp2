@@ -30,11 +30,22 @@ interface Props {
    * above the bar and above the system inset — the offset is measured from
    * there, and a small one is enough to clear it. A screen with a different
    * bottom bar can pass its own.
+   *
+   * The default is deliberately small. The caption pill should sit just off
+   * the bar's border — close enough to read as belonging to it, but with a
+   * band of background clearly showing between the two rather than a hair. Because the offset is
+   * measured from ABOVE the bar it can never reach it: at 0 the pill would
+   * rest exactly on the border, and every value above that only widens the
+   * gap. There is no value here that overlaps the navigation.
+   *
+   * This assumes the bar reserves no transparent headroom above itself,
+   * which is true wherever its brand plate is hidden. Where the plate IS
+   * shown the plate occupies that band, and the launcher sits above it.
    */
   bottomOffset?: number;
 }
 
-export default function SwachhamChatLauncher({ bottomOffset = 8 }: Props) {
+export default function SwachhamChatLauncher({ bottomOffset = 10 }: Props) {
   const openChat = useChatStore((state) => state.open);
   const isChatOpen = useChatStore((state) => state.isOpen);
   const greetingShown = useChatStore((state) => state.greetingShown);

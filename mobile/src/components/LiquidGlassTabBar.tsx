@@ -17,7 +17,16 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 const ACTIVE_COLOR = '#2E7D32';
 const INACTIVE_COLOR = '#777';
 
-const BAR_HEIGHT = 72;
+/*
+ * The bar's own height, above the system inset it also covers.
+ *
+ * 66 is close to the floor. The FOCUSED tab is what sets it: that tab scales
+ * to 1.18 and lifts 5px, so its icon reaches 30.4px above the tab's centre —
+ * below about 61 the glyph would climb out of the panel altogether. 66 keeps
+ * 2.6px of clearance above the focused icon and 7.3px below its label, which
+ * is snug but still comfortable; the resting tabs have far more.
+ */
+const BAR_HEIGHT = 66;
 
 /* =====================================================================
  * THE NOTCHED BAR
@@ -164,6 +173,23 @@ function TabItem({
   );
 }
 
+interface Props extends BottomTabBarProps {
+  /**
+   * Whether the round Swachham plate is seated in the bar's notch.
+   *
+   * On by default, because the Customer tabs still carry it. The Business
+   * tabs pass `false`: the Swachham mark is already the full-width banner at
+   * the top of every Business screen, so repeating it at the bottom of the
+   * same screen was the brand twice on one page.
+   *
+   * THIS HIDES THE PLATE ONLY. The notch is part of the bar's shape, not the
+   * plate's packaging, so the scoop is drawn either way and both tab sets
+   * keep the identical silhouette. Nothing moves either: the host reserves
+   * the same height regardless.
+   */
+  showBrandBadge?: boolean;
+}
+
 /**
  * Solid white bottom bar.
  *
@@ -178,7 +204,8 @@ export default function LiquidGlassTabBar({
   state,
   descriptors,
   navigation,
-}: BottomTabBarProps) {
+  showBrandBadge = true,
+}: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
 
@@ -191,6 +218,19 @@ export default function LiquidGlassTabBar({
   // The white extends behind the gesture bar / nav bar rather than floating
   // above it, so the padding is the real inset with no artificial gap.
   const bottomInset = insets.bottom;
+
+  /*
+   * Transparent room ABOVE the bar for the plate's proud top third.
+   *
+   * Reserved only when there is a plate to reserve it for. Without one it was
+   * 32px of dead space between the bar's border and the bottom of the screen
+   * — invisible, but it pushed every screen's content up and left anything
+   * anchored to the screen's bottom edge floating well clear of the bar.
+   *
+   * The BAR is untouched either way: same height, same path, same notch, same
+   * position. This is only the headroom above it.
+   */
+  const badgeHeadroom = showBrandBadge ? BADGE_RAISE : 0;
 
   // Recomputed with the width, so a rotation or a fold resizes the notch
   // instead of leaving it off-centre.
@@ -211,10 +251,23 @@ export default function LiquidGlassTabBar({
 
   return (
     <View
-      style={[
-        styles.host,
-        { height: BAR_HEIGHT + bottomInset + BADGE_RAISE, paddingBottom: bottomInset },
-      ]}
+      /*
+       * NO paddingBottom HERE — the inset is the BAR's business, not the
+       * host's.
+       *
+       * The host used to add `bottomInset` to its height AND apply it as
+       * bottom padding, which left a content box of BAR_HEIGHT + headroom.
+       * But the bar is BAR_HEIGHT + bottomInset tall in its own right, so it
+       * was taller than the box holding it, and `justifyContent: 'flex-end'`
+       * pins its BOTTOM — so the surplus grew upwards, out of the host and
+       * into the screen above it. The bar paints after the screen, so it
+       * covered whatever sat in that band: on a phone with a 24px inset, the
+       * bottom 24px of every page, including the assistant's caption.
+       *
+       * The plate's 32px of headroom used to absorb it, which is why this
+       * only surfaced once the Business bar stopped reserving that headroom.
+       */
+      style={[styles.host, { height: BAR_HEIGHT + bottomInset + badgeHeadroom }]}
     >
       <View
         style={[
@@ -291,23 +344,26 @@ export default function LiquidGlassTabBar({
         </View>
       </View>
 
-      {/* Swachham brand mark, seated IN the scoop.
+      {/* Swachham brand mark, seated IN the scoop — on the tab sets that ask
+          for it; see `showBrandBadge`.
           It lives in the host rather than in the bar because the bar would
           clip it: the plate is deliberately larger than the notch is deep, so
           it nests in the curve with its top third proud of the bar's edge.
           `pointerEvents="none"` keeps it decorative — the tabs beneath it stay
           fully tappable, and the notch sits in the gap between tab 2 and tab 3
           in any case. */}
-      <View pointerEvents="none" style={styles.brandBadgeWrap}>
-        <View style={styles.brandBadge}>
-          <Image
-            source={require('../../assets/swachham-logo1.png')}
-            style={styles.brandBadgeImage}
-            resizeMode="contain"
-            accessibilityLabel="Swachham"
-          />
+      {showBrandBadge ? (
+        <View pointerEvents="none" style={styles.brandBadgeWrap}>
+          <View style={styles.brandBadge}>
+            <Image
+              source={require('../../assets/swachham-logo1.png')}
+              style={styles.brandBadgeImage}
+              resizeMode="contain"
+              accessibilityLabel="Swachham"
+            />
+          </View>
         </View>
-      </View>
+      ) : null}
     </View>
   );
 }
@@ -356,7 +412,9 @@ const styles = StyleSheet.create({
     // Below the deepest point of the scoop, so the highlight never appears to
     // spill out of the notch.
     top: NOTCH_DEPTH + 1,
-    height: 46,
+    // Trimmed with BAR_HEIGHT (was 46 at 72) so the highlight still ends
+    // level with the icon row rather than running past it.
+    height: 40,
     borderRadius: 22,
     backgroundColor: 'rgba(46,125,50,0.08)',
     zIndex: 1,
