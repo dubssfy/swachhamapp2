@@ -209,7 +209,11 @@ async function addItem(
     ? await lookupBusinessPrice(
         owner.rows[0].business_id,
         itemId,
-        cartType.rows[0]?.laundry_type ?? null
+        cartType.rows[0]?.laundry_type ?? null,
+        // The service chosen for THIS line, so a staged figure reflects the
+        // rate the order will actually be billed at when the item is priced
+        // differently for Wash & Fold and Dry Clean.
+        lineServiceId
       )
     : null;
 

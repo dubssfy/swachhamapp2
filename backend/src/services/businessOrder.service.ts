@@ -7,7 +7,7 @@ import { getCart, BusinessCart } from './businessCart.service';
 import { assertComplete } from './businessCompleteness';
 import { generateGarmentsForOrder } from './garment.service';
 import { OrderSchedule, resolveDeliverySchedule } from './pickupSlot.service';
-import { resolveBusinessPrices } from './priceList.service';
+import { resolveBusinessPrices, priceKey } from './priceList.service';
 import { normaliseMobileOrNull } from './businessContact.service';
 
 const LAUNDRY_TYPE_CODE: Record<string, string> = { hotel: 'H', guest: 'G' };
@@ -42,9 +42,20 @@ export const QUICK_ORDER_MULTIPLIER = 2;
  * The calendar day comes from the database clock shifted into the configured
  * business timezone (the DB server runs UTC), never from the device.
  */
-async function generateBusinessOrderNumber(
+export async function generateBusinessOrderNumber(
   connection: any,
-  laundryType: string
+  laundryType: string,
+  /**
+   * The day the order belongs to, as YYYY-MM-DD. Omitted means TODAY, which
+   * is what every order placed through the app is and how this has always
+   * behaved.
+   *
+   * A BACKDATED WALKING ORDER PASSES ITS OWN DATE, so its number carries the
+   * day the laundry was actually taken in and it draws from that day's
+   * counter — an order filed under 15 August whose number said 28 August
+   * would be the one thing on the document contradicting the rest of it.
+   */
+  onDate?: string | null
 ): Promise<string> {
   const code = LAUNDRY_TYPE_CODE[laundryType];
   if (!code) {
@@ -55,11 +66,16 @@ async function generateBusinessOrderNumber(
 
   // One source of truth for the day: the same instant formats both the
   // counter key and the printed DDMMYYYY, so they can never disagree.
-  const [dateRows]: any = await connection.execute(
-    `SELECT DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?)) AS ymd,
-            DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?), '%d%m%Y') AS ddmmyyyy`,
-    [tz, tz]
-  );
+  const [dateRows]: any = onDate
+    ? await connection.execute(
+        `SELECT DATE(?) AS ymd, DATE_FORMAT(DATE(?), '%d%m%Y') AS ddmmyyyy`,
+        [onDate, onDate]
+      )
+    : await connection.execute(
+        `SELECT DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?)) AS ymd,
+                DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?), '%d%m%Y') AS ddmmyyyy`,
+        [tz, tz]
+      );
   const { ymd, ddmmyyyy } = dateRows[0];
 
   await connection.execute(
@@ -234,9 +250,17 @@ async function createOrder(
   // "No business price configured for this item and laundry type", which
   // stops the order rather than inventing a figure or borrowing the
   // other type's rate.
+  //
+  // THE SERVICE IS PART OF THE PRICE. An item offered for both Wash & Fold
+  // and Dry Clean can carry a different rate for each, so the service the
+  // customer actually chose for the line is handed to the lookup. An item
+  // priced once, with no per-service row, still resolves to that one price.
   const unitPrices = await resolveBusinessPrices(
     businessId,
-    cartItems.map((item) => String(item.service_id)),
+    cartItems.map((item) => ({
+      itemId: String(item.service_id),
+      serviceId: item.laundry_service_id ? String(item.laundry_service_id) : null,
+    })),
     cart.laundry_type
   );
   // QUICK ORDER IS CHARGED AT DOUBLE THE STANDARD RATE.
@@ -250,11 +274,23 @@ async function createOrder(
   // applies when the cart says quick, so an ordinary order prices exactly as
   // it did before this rule existed.
   const rateMultiplier = cart.order_type === 'quick' ? QUICK_ORDER_MULTIPLIER : 1;
-  const unitPriceOf = (item: { service_id: string }) =>
+  const unitPriceOf = (item: { service_id: string; laundry_service_id: string | null }) =>
     // Rounded to paise: doubling a price with two decimals is exact, but
     // rounding here means no other multiplier could ever introduce a
     // fraction the DECIMAL(10,2) column would silently truncate.
-    Math.round(unitPrices.get(String(item.service_id))! * rateMultiplier * 100) / 100;
+    //
+    // Looked up by item AND service: the same item at two services is two
+    // rates, so the item id alone is not enough to find the right one.
+    Math.round(
+      unitPrices.get(
+        priceKey(
+          String(item.service_id),
+          item.laundry_service_id ? String(item.laundry_service_id) : null
+        )
+      )! *
+        rateMultiplier *
+        100
+    ) / 100;
 
   const subtotal = cartItems.reduce(
     (sum, item) => sum + unitPriceOf(item) * item.quantity,

@@ -16,6 +16,7 @@ import superAdminApi, {
 } from '../../services/superAdminApi';
 import { ActionButton } from './SuperAdminCustomerPricesScreen';
 import GstInvoiceModal from './GstInvoiceModal';
+import WalkingOrderModal from './WalkingOrderModal';
 /*
  * THE EXISTING Order Confirmation PDF generator, imported as-is.
  *
@@ -248,6 +249,7 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const [walkingOpen, setWalkingOpen] = useState(false);
   /** The order whose PDF is being built, so only its own row shows a spinner. */
   const [pdfFor, setPdfFor] = useState<string | null>(null);
 
@@ -336,6 +338,19 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
         <Text style={sa.addEntryText}>Generate Invoice</Text>
       </TouchableOpacity>
 
+      {/* Counter laundry from a past date, entered as a real order on that
+          date. Available for every business, beside Generate Invoice because
+          the two are the same kind of action on the same account. */}
+      <TouchableOpacity
+        style={[sa.addEntryBtn, { backgroundColor: COLORS.PrimaryDark, marginTop: SPACING.xs }]}
+        onPress={() => setWalkingOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel={`Add a backdated walking order for ${business.name}`}
+      >
+        <Ionicons name="cloud-upload-outline" size={18} color={COLORS.Surface} />
+        <Text style={sa.addEntryText}>Add Backdated Walking Order</Text>
+      </TouchableOpacity>
+
       <Text style={[sa.cardMeta, { marginTop: SPACING.xs, marginBottom: SPACING.sm }]}>
         {orders.length} order{orders.length === 1 ? '' : 's'} for {business.name}.
       </Text>
@@ -389,6 +404,16 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
           </View>
         ))
       )}
+
+      {/* Reloads the order list on success, so the newly created backdated
+          order appears without leaving the screen. */}
+      <WalkingOrderModal
+        visible={walkingOpen}
+        businessId={business.id}
+        businessName={business.name}
+        onClose={() => setWalkingOpen(false)}
+        onImported={load}
+      />
 
       <GstInvoiceModal
         visible={invoiceOpen}

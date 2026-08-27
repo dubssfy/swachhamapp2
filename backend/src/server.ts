@@ -51,9 +51,21 @@ app.use(cors({ origin: config.CLIENT_URL || '*' }));
  */
 const jsonParser = express.json();
 const DEFECT_PHOTO_PATH = /^\/api\/sorter\/orders\/[^/]+\/defect$/;
+/**
+ * The backdated walking-order upload, which carries a base64 spreadsheet.
+ *
+ * Same treatment and the same reason as the defect photo above: this parser
+ * runs first and would reject the body with 413 long before the route's own
+ * parser saw it, so the path is skipped HERE and parsed there.
+ */
+const WALKING_ORDER_PATH =
+  /^\/api\/super-admin\/business-account\/[^/]+\/walking-orders\/(preview|import)$/;
 
 app.use((req, res, next) => {
-  if (req.method === 'POST' && DEFECT_PHOTO_PATH.test(req.path)) {
+  if (
+    req.method === 'POST' &&
+    (DEFECT_PHOTO_PATH.test(req.path) || WALKING_ORDER_PATH.test(req.path))
+  ) {
     return next();
   }
   return jsonParser(req, res, next);

@@ -426,7 +426,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
                     <Ionicons
                       name={isSelected ? 'radio-button-on' : 'radio-button-off'}
                       size={16}
-                      color={isSelected ? COLORS.Primary : COLORS.TextSecondary}
+                      color={isSelected ? COLORS.Primary : COLORS.PrimaryDark}
                     />
                     <Text
                       style={[
@@ -514,9 +514,11 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* NO `title`/`subtitle`: the page's name is now the centred line
+          below, in the same shape Order Type states its own choice in —
+          a quiet label, the category's icon, then the value in weight.
+          Passing a title here as well would say it twice. */}
       <BusinessHeader
-        title={categoryName || 'Items'}
-        subtitle={parentName || undefined}
         onBack={() => navigation.goBack()}
         action={
           <TouchableOpacity
@@ -536,6 +538,19 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
           </TouchableOpacity>
         }
       />
+
+      {/* Which category's items these are, below the header's rule — the same
+          centred label/icon/value line Order Type and the Sub Category page
+          carry, so the three steps of one flow name themselves the same way.
+          Both halves the header used to show are here: the main category and
+          the sub-category, in the order they were walked. */}
+      <View style={styles.selectedRow}>
+        <Text style={styles.selectedLabel}>Category:</Text>
+        <Ionicons name="albums-outline" size={16} color={COLORS.Primary} />
+        <Text style={styles.selectedValue} numberOfLines={1}>
+          {[parentName, categoryName].filter(Boolean).join(' › ') || 'Items'}
+        </Text>
+      </View>
 
       <FlatList
         data={items}
@@ -670,9 +685,52 @@ const QTY_W = 60;
 const SERVICE_W = 104;
 const SELECT_W = 46;
 
+/**
+ * THE LIST'S HIGHLIGHT BELT.
+ *
+ * A light tint of the app's saffron accent (#FFBD4A), and the ONE shade the
+ * whole Item List is banded with: every row wears it, so the list reads as a
+ * run of even horizontal belts rather than as a few rows singled out. That is
+ * the point — a highlight applied per item would be saying something about
+ * those items, and there is nothing here to say.
+ *
+ * Light on purpose. The full accent is right for a border or a plate a few
+ * pixels wide; across every row of a long list it is a wall of orange, and it
+ * drags contrast on the item name down with it. This tint sits a hair off the
+ * page's own background, which is all a belt has to do.
+ */
+const LIST_BELT = '#FFF1D6';
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
   listContent: { padding: SPACING.md, paddingBottom: SPACING.lg },
+
+  /* ---- Which category's items these are, under the header rule ---- */
+  selectedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Kept on one line: the value shrinks to fit rather than wrapping to a
+    // second row and pushing the list down.
+    flexWrap: 'nowrap',
+    gap: 6,
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.sm,
+    paddingBottom: SPACING.xs,
+  },
+  selectedLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+    flexShrink: 0,
+  },
+  selectedValue: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '800',
+    color: COLORS.PrimaryDark,
+    flexShrink: 1,
+  },
 
   cartButton: {
     width: 44,
@@ -725,14 +783,21 @@ const styles = StyleSheet.create({
   },
 
   // ---- Column headings ----
+  // The head of the belt: the same tint the rows carry, so the list opens on
+  // the band rather than the band starting under the headings. Its own
+  // padding and the columns beneath it are unchanged.
   headerRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: SPACING.xs,
     paddingHorizontal: SPACING.sm,
+    paddingTop: SPACING.xs,
     paddingBottom: SPACING.xs,
+    backgroundColor: LIST_BELT,
+    borderTopLeftRadius: BORDER_RADIUS.md,
+    borderTopRightRadius: BORDER_RADIUS.md,
     borderBottomWidth: 2,
-    borderBottomColor: COLORS.Primary,
+    borderBottomColor: '#FFBD4A',
     marginBottom: SPACING.xs,
   },
   headerCell: {
@@ -745,17 +810,22 @@ const styles = StyleSheet.create({
   },
 
   // ---- Rows ----
+  // The belt itself. Same tint on every row; the card's own shape — radius,
+  // padding, spacing, border and shadow — is untouched, so this is a change
+  // of ground colour only.
   row: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: SPACING.xs,
-    backgroundColor: COLORS.Surface,
+    backgroundColor: LIST_BELT,
     borderRadius: BORDER_RADIUS.md,
     paddingVertical: SPACING.sm,
     paddingHorizontal: SPACING.sm,
     marginBottom: SPACING.xs,
     borderWidth: 1,
-    borderColor: COLORS.Border,
+    // The hairline moves to the accent's own family: the neutral grey read
+    // as a stray edge once the ground behind it turned warm.
+    borderColor: '#F3DFB4',
     ...SHADOWS.light,
   },
 
@@ -765,11 +835,15 @@ const styles = StyleSheet.create({
   serviceCell: { width: SERVICE_W },
   selectCell: { width: SELECT_W, alignItems: 'center' },
 
-  // A clean, subtle tint behind the Services column's content so it reads as
-  // its own block. Column width, position and text are unchanged.
+  // The Services column still reads as its own block, but INVERTED now that
+  // the row underneath is the belt: a clean white plate ringed in the full
+  // accent, rather than a second, stronger orange fighting the belt for
+  // attention. Column width, position and layout are unchanged.
   serviceCellHighlight: {
-    backgroundColor: COLORS.Accent + '22',
+    backgroundColor: COLORS.Surface,
     borderRadius: BORDER_RADIUS.sm,
+    borderWidth: 1,
+    borderColor: '#FFBD4A',
     paddingHorizontal: 4,
     paddingVertical: 2,
   },
@@ -838,13 +912,15 @@ const styles = StyleSheet.create({
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: 12,
     fontWeight: '600',
-    color: COLORS.TextSecondary,
+    // PrimaryDark, not TextSecondary: the grey did not carry enough contrast
+    // once this column's ground became solid saffron.
+    color: COLORS.PrimaryDark,
   },
   serviceOptionTextSelected: { color: COLORS.PrimaryDark, fontWeight: '800' },
   serviceNone: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: 11,
-    color: COLORS.TextSecondary,
+    color: COLORS.PrimaryDark,
     fontStyle: 'italic',
   },
   serviceErrorText: {

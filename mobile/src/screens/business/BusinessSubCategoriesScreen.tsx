@@ -41,6 +41,10 @@ const CARD_BACKGROUNDS = ['#FFBD4A', '#3D6F73'];
  * sub-categories, and FlatList both virtualises them and guarantees the list
  * owns the remaining screen height, so every card stays reachable by
  * scrolling.
+ *
+ * The PAGE furniture — the shared header and the centred line naming the main
+ * category — follows the Order Type page; the cards themselves are this
+ * screen's own design.
  */
 export default function BusinessSubCategoriesScreen({ navigation, route }: any) {
   const { categoryId, categoryName } = route.params || {};
@@ -125,8 +129,13 @@ export default function BusinessSubCategoriesScreen({ navigation, route }: any) 
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* The shared Business header, which carries the brand banner, the BACK
+          pill and HOME.
+
+          NO `title`: the page's name is the SectionHeading pill below, and
+          the main category it belongs to is stated on the row under the
+          header rule, so a title here would say one of them twice. */}
       <BusinessHeader
-        title={categoryName || 'Sub Categories'}
         onBack={() => navigation.goBack()}
         action={
           <TouchableOpacity
@@ -142,6 +151,17 @@ export default function BusinessSubCategoriesScreen({ navigation, route }: any) 
           </TouchableOpacity>
         }
       />
+
+      {/* The main category this page belongs to, below the header's rule —
+          stated the way Order Type states the laundry type chosen on the
+          page before it, and the way Select Items states both. */}
+      <View style={styles.selectedRow}>
+        <Text style={styles.selectedLabel}>Category:</Text>
+        <Ionicons name="albums-outline" size={16} color={COLORS.Primary} />
+        <Text style={styles.selectedValue} numberOfLines={1}>
+          {categoryName || 'Sub Categories'}
+        </Text>
+      </View>
 
       {isLoading ? (
         <View style={styles.centered}>
@@ -173,6 +193,31 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: SPACING.sm, padding: SPACING.xl },
   listContent: { padding: GRID_PADDING, paddingBottom: SPACING.xxl },
+
+  /* ---- The main category, under the header rule ---- */
+  selectedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'nowrap',
+    gap: 6,
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.sm,
+    paddingBottom: SPACING.xs,
+  },
+  selectedLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+    flexShrink: 0,
+  },
+  selectedValue: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '800',
+    color: COLORS.PrimaryDark,
+    flexShrink: 1,
+  },
 
   // One card per row, split into a left image section and a right name
   // section. The background colour is set per card (alternating) at render.

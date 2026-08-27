@@ -15,10 +15,15 @@ import { authenticate, authorize, AuthenticatedRequest } from '../middleware/aut
 import { logger } from '../utils/logger';
 import { AppError } from '../utils/appError';
 import { verifyGstin, verifyGSTIN } from '../services/gstVerification.service';
-import { buildInvoice } from '../services/gstInvoice.service';
+import { buildInvoice, parseLaundryType } from '../services/gstInvoice.service';
+import { buildItemQuantityReport } from '../services/itemQuantityReport.service';
+import {
+  renderItemQuantityReportPdf,
+  itemQuantityReportFileName,
+} from '../services/itemQuantityReportPdf.service';
 import { recentPeriodsForBusiness } from '../services/billingCycle.service';
 import { panFromGstin } from '../services/creationRequest.service';
-import { renderInvoicePdf } from '../services/invoicePdf.service';
+import { renderInvoicePdf, invoiceFileName } from '../services/invoicePdf.service';
 import { createCatalogueItem } from '../services/priceList.service';
 import priceRoutes from './superAdminPrice.routes';
 import requestRoutes from './superAdminRequest.routes';
@@ -388,9 +393,17 @@ router.get(
   }
 );
 
+/*
+ * `laundry_type=hotel|guest` narrows every endpoint below to ONE laundry
+ * type, which is what makes the Hotel and Guest invoices two separate
+ * documents that never share a line. Leaving it off bills both, exactly as
+ * these endpoints always did — which is what keeps a historical invoice, and
+ * the payment receipts recorded against it, opening unchanged.
+ */
 router.get('/businesses/:id/invoice', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const invoice = await buildInvoice(req.params.id, req.query.from, req.query.to);
+    const laundryType = parseLaundryType(req.query.laundry_type);
+    const invoice = await buildInvoice(req.params.id, req.query.from, req.query.to, laundryType);
     sendSuccess(res, invoice, 'Invoice generated');
   } catch (error) {
     next(error);
@@ -406,10 +419,14 @@ router.get('/businesses/:id/invoice', async (req: Request, res: Response, next: 
 router.get('/businesses/:id/invoice.pdf', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authReq = req as AuthenticatedRequest;
-    const invoice = await buildInvoice(req.params.id, req.query.from, req.query.to);
+    const laundryType = parseLaundryType(req.query.laundry_type);
+    const invoice = await buildInvoice(req.params.id, req.query.from, req.query.to, laundryType);
     const pdf = await renderInvoicePdf(invoice);
 
-    const fileName = `${invoice.invoice_number.replace(/[^A-Za-z0-9._-]/g, '-')}.pdf`;
+    // Named by the establishment and the period — see `invoiceFileName`. The
+    // full invoice number stays the identifier, in the log line below and on
+    // the document itself.
+    const fileName = invoiceFileName(invoice);
     logger.info(
       `[Invoice] ${invoice.invoice_number} downloaded by super admin ${authReq.user!.id}`
     );
@@ -422,5 +439,48 @@ router.get('/businesses/:id/invoice.pdf', async (req: Request, res: Response, ne
     next(error);
   }
 });
+
+/**
+ * GET /businesses/:id/item-report.pdf?from=&to=&laundry_type=
+ *
+ * THE SECOND DOCUMENT: the day-wise item quantity sheet that accompanies the
+ * invoice. Item names down the side, dates across the top, quantities in the
+ * cells, totals along the foot.
+ *
+ * IT TAKES THE SAME THREE PARAMETERS AS THE INVOICE ABOVE, and the app sends
+ * the very values it just generated the invoice with — so the two documents
+ * cannot end up describing different windows or different laundry types.
+ * `from` and `to` are REQUIRED here: there is no billing-cycle fallback to
+ * guess a period with, because this sheet only exists to accompany an invoice
+ * whose period is already decided.
+ */
+router.get(
+  '/businesses/:id/item-report.pdf',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const laundryType = parseLaundryType(req.query.laundry_type);
+      const report = await buildItemQuantityReport(
+        req.params.id,
+        req.query.from,
+        req.query.to,
+        laundryType
+      );
+      const pdf = await renderItemQuantityReportPdf(report);
+      const fileName = itemQuantityReportFileName(report);
+
+      logger.info(
+        `[ItemReport] ${report.invoice_number} downloaded by super admin ${authReq.user!.id}`
+      );
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', String(pdf.length));
+      res.end(pdf);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 export default router;

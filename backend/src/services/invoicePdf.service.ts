@@ -1,17 +1,29 @@
 import PDFDocument from 'pdfkit';
-import fs from 'fs';
-import path from 'path';
 import { GstInvoice } from './gstInvoice.service';
+import {
+  THEME,
+  LOGO_SIZE,
+  logoPath,
+  inr,
+  dmy,
+  periodFileNamePart,
+  safeFileNamePart,
+} from './pdfTheme';
 
 /**
  * Renders a tax invoice to PDF, on the server.
  *
  * The layout follows the Swachham reference invoice (Sale_21, 18-07-2026):
  * a blue-banded header carrying the company block, a Bill To / Invoice
- * Details pair, the `# | Item name | Quantity | Unit | Price/ unit | GST |
- * Amount` table with a totals row, the amount in words, terms, the Pay To
- * bank block, the authorised-signatory line, and the tear-off acknowledgment
- * at the foot.
+ * Details pair, the `# | Item name | Quantity | Unit | Price/ unit | Amount`
+ * table with a totals row, the amount in words, terms, the Pay To bank
+ * block, the authorised-signatory line, and the tear-off acknowledgment at
+ * the foot.
+ *
+ * NO GST COLUMN. The tax is still computed, still summed and still printed —
+ * in the summary block under the table, as SGST/CGST or IGST — but it is no
+ * longer a column of the line table. `Amount` is quantity x price/unit, so
+ * the three money columns read as one multiplication.
  *
  * Every figure comes from the invoice object the service computed, so the page
  * shows what the database produced — the app receives finished bytes and has
@@ -19,48 +31,50 @@ import { GstInvoice } from './gstInvoice.service';
  * rather than filled with a placeholder.
  */
 
-/**
- * The Swachham palette, the same greens the Business Order PDF is drawn in, so
- * the two documents read as coming from one company.
+/*
+ * THE PALETTE, THE MARK'S SIZE AND THE FORMATTERS NOW LIVE IN `pdfTheme`,
+ * shared with the Order Summary so the two documents cannot drift apart.
  *
- * ONLY THE COLOURS CHANGED. Every band, rule, column and block is where it
- * was; `BLUE` keeps its name because it names the ACCENT ROLE in this layout —
- * the banded header and the section rules — and renaming it would have meant
- * touching thirty lines that are not part of this change.
+ * The local aliases below are kept deliberately: `BLUE` names the ACCENT
+ * ROLE in this layout — the banded header, the table head, the section
+ * rules — and renaming it at every use site would have meant touching thirty
+ * lines that are not part of this change. It is teal now, not blue.
  */
-const BLUE = '#2D6A4F';
-const TEXT = '#1B1B1B';
-const MUTED = '#6B7280';
-const RULE = '#D8E6DD';
-const ZEBRA = '#F1F7F3';
+const BLUE = THEME.PRIMARY;
+const TEXT = THEME.TEXT;
+const MUTED = THEME.MUTED;
+const RULE = THEME.RULE;
+const ZEBRA = THEME.ZEBRA;
 /** The tinted band behind a totals/section strip. */
-const BAND = '#E8F3EC';
+const BAND = THEME.BAND;
 
 const MARGIN = 36;
 
-/** The Swachham mark, drawn when the asset is present. */
-function logoPath(): string | null {
-  const candidates = [
-    path.resolve(process.cwd(), '../mobile/assets/swachham-logo.png'),
-    path.resolve(process.cwd(), 'assets/swachham-logo.png'),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
-}
-
-/** 1234.5 -> "1,234.50" with Indian digit grouping. */
-function inr(value: number): string {
-  const fixed = Math.abs(value).toFixed(2);
-  const [whole, paise] = fixed.split('.');
-  const last3 = whole.slice(-3);
-  const rest = whole.slice(0, -3);
-  const grouped = rest ? `${rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',')},${last3}` : last3;
-  return `${value < 0 ? '-' : ''}${grouped}.${paise}`;
-}
-
-/** "2026-08-21" -> "21-08-2026", the format the reference prints. */
-function dmy(iso: string): string {
-  const [y, m, d] = iso.split('-');
-  return `${d}-${m}-${y}`;
+/**
+ * The tax invoice's file name.
+ *
+ *   "The_Taj_Mumbai_01-Aug-2026_to_15-Aug-2026_Hotel_Laundry.pdf"
+ *
+ * NAMED BY THE ESTABLISHMENT AND THE PERIOD, not by the invoice number: a
+ * folder of downloads then sorts and reads by business and date, which is how
+ * an accounts inbox is actually searched. The full invoice number stays on
+ * the document and in the log line, where it remains the identifier.
+ *
+ * `customer.name` is the establishment name — `buildInvoice` resolves it as
+ * `establishment_name || name` — so nothing here is hardcoded, and a business
+ * whose two names differ is filed under the one it trades as.
+ *
+ * The laundry type is appended when the invoice has one, because Hotel and
+ * Guest are two different invoices over the same business and dates and would
+ * otherwise download over each other.
+ */
+export function invoiceFileName(invoice: GstInvoice): string {
+  const name = safeFileNamePart(invoice.customer.name) || 'Invoice';
+  const period = periodFileNamePart(invoice.period.from, invoice.period.to);
+  const type = invoice.laundry_type_label
+    ? `_${safeFileNamePart(invoice.laundry_type_label)}`
+    : '';
+  return `${name}_${period}${type}.pdf`;
 }
 
 export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
@@ -86,36 +100,50 @@ export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
 
     let y = MARGIN + 38;
 
+    /*
+     * THE MARK, AT `LOGO_SIZE` — the same size the Order Summary draws it.
+     *
+     * The source art is square and this is a square `fit` box, so PDFKit
+     * scales it without distortion; the aspect ratio holds by construction.
+     * It sits BESIDE the company block, and the block's width is measured
+     * from where the logo ends, so a larger mark narrows that column rather
+     * than being written over by it.
+     */
     const logo = logoPath();
     if (logo) {
       try {
-        doc.image(logo, left, y, { fit: [52, 52] });
+        doc.image(logo, left, y, { fit: [LOGO_SIZE, LOGO_SIZE] });
       } catch {
         // A missing or unreadable image must never cost the invoice.
       }
     }
 
-    const companyX = left + (logo ? 62 : 0);
+    const companyX = left + (logo ? LOGO_SIZE + 10 : 0);
+    /** Stops short of the page's midpoint, which is where Bill To begins. */
+    const companyW = mid - 12 - companyX;
+
     doc.fillColor(BLUE).font('Helvetica-Bold').fontSize(15)
-      .text(invoice.supplier.legal_name, companyX, y, { width: 300 });
+      .text(invoice.supplier.legal_name, companyX, y, { width: companyW });
 
     doc.font('Helvetica').fontSize(8.5).fillColor(TEXT)
-      .text(invoice.supplier.address, companyX, doc.y + 1, { width: 300 });
+      .text(invoice.supplier.address, companyX, doc.y + 1, { width: companyW });
 
     if (invoice.supplier.phone) {
-      doc.text(`Phone no.: ${invoice.supplier.phone}`, companyX, doc.y, { width: 300 });
+      doc.text(`Phone no.: ${invoice.supplier.phone}`, companyX, doc.y, { width: companyW });
     }
     if (invoice.supplier.email) {
-      doc.text(`Email: ${invoice.supplier.email}`, companyX, doc.y, { width: 300 });
+      doc.text(`Email: ${invoice.supplier.email}`, companyX, doc.y, { width: companyW });
     }
     if (invoice.supplier.gstin) {
       doc.font('Helvetica-Bold')
-        .text(`GSTIN: ${invoice.supplier.gstin}`, companyX, doc.y, { width: 300 });
+        .text(`GSTIN: ${invoice.supplier.gstin}`, companyX, doc.y, { width: companyW });
     }
     doc.font('Helvetica')
-      .text(`State: ${invoice.supplier.state}`, companyX, doc.y, { width: 300 });
+      .text(`State: ${invoice.supplier.state}`, companyX, doc.y, { width: companyW });
 
-    y = Math.max(doc.y + 10, y + 62);
+    // Whichever is taller — the mark or the company block — decides where the
+    // rule goes, so the larger logo can never be crossed by it.
+    y = Math.max(doc.y + 10, y + LOGO_SIZE + 8);
     doc.moveTo(left, y).lineTo(right, y).strokeColor(BLUE).lineWidth(1).stroke();
     y += 10;
 
@@ -173,6 +201,13 @@ export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
 
     detail('Invoice No.:', invoice.invoice_number_display);
     detail('Date:', dmy(invoice.invoice_date));
+    // WHICH LAUNDRY TYPE THIS INVOICE IS. Hotel and Guest are now two separate
+    // invoices over the same business and dates, so the document has to say
+    // which of them it is. Omitted on an invoice that covers both, where there
+    // is no single type to name.
+    if (invoice.laundry_type_label) {
+      detail('Type:', invoice.laundry_type_label);
+    }
     detail('Billing Period:', `${dmy(invoice.period.from)} to ${dmy(invoice.period.to)}`);
     detail('Place of Supply:', invoice.customer.state || invoice.supplier.state);
 
@@ -181,15 +216,32 @@ export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
     // =================================================================
     // LINE TABLE
     // =================================================================
+    /*
+     * THE GST COLUMN IS GONE, and the 82pt it held has been given to the item
+     * name rather than left as a gap — the remaining five columns keep their
+     * own widths and their right-hand positions, so nothing else moved.
+     *
+     * The tax itself is untouched: it is still computed per line, still
+     * summed into the tax summary block below the table, and still printed
+     * there as SGST/CGST or IGST. Only the COLUMN was removed.
+     */
     const col = {
       sn: left,
       item: left + 24,
-      qty: left + 232,
-      unit: left + 278,
-      rate: left + 322,
-      gst: left + 392,
+      qty: left + 290,
+      unit: left + 336,
+      rate: left + 380,
       amount: right - 78,
     };
+    /**
+     * How wide the item name may run before it wraps.
+     *
+     * The five boxes are laid out so none overlaps the next on an A4 page:
+     * item 60-320, qty 326-368, unit 372-410, rate 416-478, amount 481-553.
+     * The right-hand four are right-aligned, so their text sits at the far
+     * edge of each box and a wide figure still cannot run into its neighbour.
+     */
+    const ITEM_W = 260;
 
     const tableHead = (top: number): number => {
       doc.rect(left, top, width, 19).fill(BLUE);
@@ -201,7 +253,6 @@ export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
       // PDFKit's built-in fonts are WinAnsi and have no rupee glyph, so the
       // currency is stated in the heading instead of printed per amount.
       doc.text('Price/ unit', col.rate, top + 6, { width: 62, align: 'right' });
-      doc.text('GST', col.gst, top + 6, { width: 82, align: 'right' });
       doc.text('Amount', col.amount, top + 6, { width: 72, align: 'right' });
       return top + 19;
     };
@@ -216,12 +267,17 @@ export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
         y = tableHead(y);
       }
 
-      // The description carries both qualifiers the rate depends on: the
-      // laundry service and the laundry type. The same item billed at the
-      // Hotel and Guest rates appears as two lines, so each must say which
-      // it is or the invoice shows one item at two prices with no reason.
-      const qualifiers = [line.laundry_type, line.service].filter(Boolean).join(', ');
-      const named = qualifiers ? `${line.description} (${qualifiers})` : line.description;
+      /*
+       * THE ITEM NAME, AND NOTHING ELSE.
+       *
+       * The laundry type and the laundry service used to be appended here as
+       * qualifiers, because one invoice could carry the same item at both the
+       * Hotel and the Guest rate and needed to say which line was which.
+       * Hotel and Guest are now SEPARATE INVOICES, each headed with its Type,
+       * so the qualifier the reader needed is on the document rather than
+       * repeated down every row.
+       */
+      const named = line.description;
 
       /*
        * THE DEFECTIVE ADJUSTMENT, WHERE IT FITS.
@@ -244,7 +300,7 @@ ${line.ordered_quantity} ordered, ${line.defective_quantity} defective — ` +
             `${line.quantity} billable`
           : named;
       doc.font('Helvetica').fontSize(8.5);
-      const rowHeight = Math.max(17, doc.heightOfString(label, { width: 202 }) + 7);
+      const rowHeight = Math.max(17, doc.heightOfString(label, { width: ITEM_W }) + 7);
 
       if (index % 2 === 1) {
         doc.rect(left, y, width, rowHeight).fill(ZEBRA);
@@ -252,27 +308,33 @@ ${line.ordered_quantity} ordered, ${line.defective_quantity} defective — ` +
 
       doc.fillColor(TEXT).font('Helvetica').fontSize(8.5);
       doc.text(String(index + 1), col.sn + 5, y + 5);
-      doc.text(label, col.item, y + 5, { width: 202 });
+      doc.text(label, col.item, y + 5, { width: ITEM_W });
       doc.text(String(line.quantity), col.qty, y + 5, { width: 42, align: 'right' });
       doc.text(line.unit, col.unit, y + 5, { width: 38 });
       doc.text(`${inr(line.rate)}`, col.rate, y + 5, { width: 62, align: 'right' });
-      // GST shows the amount and the rate, exactly as the reference does.
-      doc.text(
-        `${inr(line.gst_amount)} (${invoice.totals.gst_rate.toFixed(1)}%)`,
-        col.gst, y + 5, { width: 82, align: 'right' }
-      );
+      // Quantity x Price/ unit — the two columns immediately to its left.
       doc.text(`${inr(line.amount)}`, col.amount, y + 5, { width: 72, align: 'right' });
 
       y += rowHeight;
       doc.strokeColor(RULE).lineWidth(0.5).moveTo(left, y).lineTo(right, y).stroke();
     });
 
-    // Totals row across the foot of the table.
+    /*
+     * Totals row across the foot of the table.
+     *
+     * It sums the AMOUNT COLUMN — every line's quantity x price — so the
+     * column and the figure closing it agree. It is therefore the pre-tax
+     * subtotal; the tax and the payable grand total are stated in the summary
+     * block immediately below, which is where they were before.
+     */
+    const linesTotal = invoice.lines.reduce((sum, line) => sum + line.amount, 0);
+    const quantityTotal = invoice.lines.reduce((sum, line) => sum + line.quantity, 0);
+
     doc.rect(left, y, width, 19).fill(BAND);
     doc.fillColor(TEXT).font('Helvetica-Bold').fontSize(9);
     doc.text('Total', col.item, y + 5);
-    doc.text(inr(invoice.totals.total_tax), col.gst, y + 5, { width: 82, align: 'right' });
-    doc.text(inr(invoice.totals.grand_total), col.amount, y + 5, { width: 72, align: 'right' });
+    doc.text(String(quantityTotal), col.qty, y + 5, { width: 42, align: 'right' });
+    doc.text(inr(linesTotal), col.amount, y + 5, { width: 72, align: 'right' });
     y += 30;
 
     if (y > doc.page.height - 230) {

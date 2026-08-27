@@ -502,16 +502,92 @@ const superAdminApi = {
     return token ? { Authorization: `Bearer ${token}` } : {};
   },
 
-  /** The invoice URL for a business over a date range, both YYYY-MM-DD. */
-  invoicePdfUrl: (businessId: string, from: string, to: string): string =>
+  /**
+   * The invoice URL for a business over a date range, both YYYY-MM-DD.
+   *
+   * `laundryType` picks the Hotel or the Guest invoice. Omitting it asks for
+   * one covering both, which is what this endpoint has always returned.
+   */
+  invoicePdfUrl: (
+    businessId: string,
+    from: string,
+    to: string,
+    laundryType?: LaundryTypeValue | null
+  ): string =>
     `${API_BASE_URL}/api/super-admin/businesses/${businessId}/invoice.pdf` +
-    `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` +
+    (laundryType ? `&laundry_type=${encodeURIComponent(laundryType)}` : ''),
+
+  /**
+   * The day-wise item quantity sheet that accompanies the invoice.
+   *
+   * TAKES THE SAME THREE ARGUMENTS AS `invoicePdfUrl` ON PURPOSE. The screen
+   * passes the values it just generated the invoice with, so the two
+   * documents cannot be built over different windows or different types.
+   */
+  itemReportPdfUrl: (
+    businessId: string,
+    from: string,
+    to: string,
+    laundryType?: LaundryTypeValue | null
+  ): string =>
+    `${API_BASE_URL}/api/super-admin/businesses/${businessId}/item-report.pdf` +
+    `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` +
+    (laundryType ? `&laundry_type=${encodeURIComponent(laundryType)}` : ''),
+
+  /* ---- Backdated walking orders ---- */
+
+  /** The Excel template, built from this business's own priced catalogue. */
+  walkingOrderTemplateUrl: (businessId: string, laundryType: LaundryTypeValue): string =>
+    `${API_BASE_URL}/api/super-admin/business-account/${businessId}/walking-orders/template.xlsx` +
+    `?laundry_type=${encodeURIComponent(laundryType)}`,
+
+  /**
+   * Validates a filled sheet and reports what WOULD be created.
+   *
+   * Writes nothing. `fileBase64` is the .xlsx read off the device.
+   */
+  previewWalkingOrder: async (
+    businessId: string,
+    body: { order_date: string; laundry_type: LaundryTypeValue; file_base64: string }
+  ): Promise<any> => {
+    const response = await apiClient.post(
+      `/api/super-admin/business-account/${businessId}/walking-orders/preview`,
+      body
+    );
+    return (response.data as any).data;
+  },
+
+  /**
+   * Creates the backdated order. Re-validates server-side before writing, and
+   * the whole write is one transaction.
+   */
+  importWalkingOrder: async (
+    businessId: string,
+    body: {
+      order_date: string;
+      laundry_type: LaundryTypeValue;
+      file_base64: string;
+      confirm_duplicate?: boolean;
+    }
+  ): Promise<any> => {
+    const response = await apiClient.post(
+      `/api/super-admin/business-account/${businessId}/walking-orders/import`,
+      body
+    );
+    return (response.data as any).data;
+  },
 
   /** The same invoice as data, used to show the totals before downloading. */
-  getInvoice: async (businessId: string, from: string, to: string): Promise<any> => {
+  getInvoice: async (
+    businessId: string,
+    from: string,
+    to: string,
+    laundryType?: LaundryTypeValue | null
+  ): Promise<any> => {
     const response = await apiClient.get(
       `/api/super-admin/businesses/${businessId}/invoice`,
-      { params: { from, to } }
+      { params: { from, to, ...(laundryType ? { laundry_type: laundryType } : {}) } }
     );
     return (response.data as any).data;
   },

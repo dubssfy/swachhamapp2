@@ -54,10 +54,25 @@ PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 -- ---- Swap the unique key: (business, item) -> (business, item, type) ----
 -- The new key is added BEFORE the old one is dropped, so the table is
 -- never left without a uniqueness guarantee.
+--
+-- SUPERSEDED BY 042, AND THIS STEP STANDS DOWN WHEN 042 HAS RUN.
+--
+-- Migration 042 widens the key again to include the service, and drops this
+-- one. The runner replays every file in order, so on a later run this step
+-- would re-add a key that 042 has already replaced -- and once a business
+-- holds two prices for one item at one laundry type (its base rate and a
+-- Dry Clean rate, which is exactly what 042 exists to allow) re-adding a key
+-- on (business, item, type) FAILS on duplicates and aborts the whole run.
+--
+-- So it is skipped when 042's key is present. The table still has a
+-- uniqueness guarantee throughout -- 042's is simply the stronger one.
+SET @superseded = (SELECT COUNT(*) FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'business_price_list'
+    AND INDEX_NAME = 'uq_business_item_laundry_service');
 SET @x = (SELECT COUNT(*) FROM information_schema.STATISTICS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'business_price_list'
     AND INDEX_NAME = 'uq_business_item_laundry');
-SET @sql = IF(@x = 0,
+SET @sql = IF(@x = 0 AND @superseded = 0,
   'ALTER TABLE business_price_list ADD UNIQUE KEY uq_business_item_laundry (business_id, item_id, laundry_type)',
   'SELECT 1');
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;

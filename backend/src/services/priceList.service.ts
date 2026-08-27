@@ -305,9 +305,28 @@ async function itemNames(ids: string[]): Promise<string[]> {
  * worse than an order that refuses to be placed, so a missing price is
  * a 400 naming the items.
  */
+/**
+ * The key a resolved price is returned under: the ITEM AND THE SERVICE.
+ *
+ * Not the item alone. One order can legitimately carry the same item at two
+ * services — a Shirt on Wash & Fold beside a Shirt on Dry Clean — and those
+ * are two different rates. Keying by item would let whichever was resolved
+ * last overwrite the other, and both lines would then bill one price.
+ */
+function priceKey(itemId: string, serviceId?: string | null): string {
+  return `${itemId}:${serviceId ?? ''}`;
+}
+
+/** One line to be priced: the item, and the service it is ordered for. */
+export interface PriceableLine {
+  itemId: string;
+  /** null means "the item's fallback rate", which is most items. */
+  serviceId?: string | null;
+}
+
 async function resolveBusinessPrices(
   businessId: string,
-  itemIds: string[],
+  lines: PriceableLine[],
   laundryTypeInput: unknown
 ): Promise<Map<string, number>> {
   // The laundry type is not optional here: it is half of the key. An
@@ -315,23 +334,69 @@ async function resolveBusinessPrices(
   // priced at all, so this throws rather than picking one.
   const laundryType = parseLaundryType(laundryTypeInput, 'Laundry type');
 
-  const ids = Array.from(new Set(itemIds.map(String))).filter((id) => /^\d+$/.test(id));
+  // De-duplicated by item AND service, so the same pair asked for twice is
+  // one lookup while the same item at two services stays two.
+  const wanted = new Map<string, PriceableLine>();
+  for (const line of lines) {
+    const itemId = String(line.itemId);
+    if (!/^\d+$/.test(itemId)) continue;
+    const serviceId = line.serviceId ? String(line.serviceId) : null;
+    wanted.set(priceKey(itemId, serviceId), { itemId, serviceId });
+  }
+
+  const ids = Array.from(new Set(Array.from(wanted.values()).map((l) => l.itemId)));
   const prices = new Map<string, number>();
   if (ids.length === 0) return prices;
 
   const placeholders = ids.map(() => '?').join(', ');
-  const result = await query<{ item_id: string; price: string }>(
-    `SELECT item_id, price
+  /*
+   * Both candidate rows for each item come back in one query: the one for
+   * the service being ordered, and the item's fallback (service_id NULL).
+   * Choosing between them in JS rather than in SQL keeps the statement a
+   * plain indexed range scan, and makes the precedence rule visible.
+   */
+  const result = await query<{ item_id: string; service_id: string | null; price: string }>(
+    `SELECT item_id, service_id, price
        FROM business_price_list
       WHERE business_id = ? AND laundry_type = ? AND is_active = true
         AND item_id IN (${placeholders})`,
     [String(businessId), laundryType, ...ids]
   );
+
+  /*
+   * THE PRECEDENCE RULE, and the only one.
+   *
+   * A row naming the service being ordered wins. Failing that, the item's
+   * fallback row (service_id NULL) applies — that is what every price set
+   * before per-service pricing existed is, so an item with one price still
+   * bills that price for every service.
+   *
+   * A row for a DIFFERENT service is never a candidate: Dry Clean's rate
+   * must not price a Wash & Fold order just because it was the only row
+   * found.
+   */
+  // Indexed by item AND service, so a Dry Clean row is only ever a candidate
+  // for a Dry Clean line.
+  const exact = new Map<string, number>();
+  const fallback = new Map<string, number>();
   for (const row of result.rows) {
-    prices.set(String(row.item_id), Number(row.price));
+    const itemId = String(row.item_id);
+    if (row.service_id === null || row.service_id === undefined) {
+      fallback.set(itemId, Number(row.price));
+    } else {
+      exact.set(priceKey(itemId, String(row.service_id)), Number(row.price));
+    }
+  }
+  for (const line of wanted.values()) {
+    const key = priceKey(line.itemId, line.serviceId);
+    const price = exact.has(key) ? exact.get(key)! : fallback.get(line.itemId);
+    if (price !== undefined) prices.set(key, price);
   }
 
-  const missing = ids.filter((id) => !prices.has(id));
+  const missingKeys = Array.from(wanted.values()).filter(
+    (line) => !prices.has(priceKey(line.itemId, line.serviceId))
+  );
+  const missing = Array.from(new Set(missingKeys.map((line) => line.itemId)));
   if (missing.length > 0) {
     const names = await itemNames(missing);
     const label = LAUNDRY_TYPE_LABELS[laundryType];
@@ -351,14 +416,19 @@ async function resolveBusinessPrices(
   return prices;
 }
 
-/** One item's price for one business at one laundry type. */
+/** One item's price for one business, at one laundry type and one service. */
 async function resolveBusinessPrice(
   businessId: string,
   itemId: string,
-  laundryType: unknown
+  laundryType: unknown,
+  serviceId?: string | null
 ): Promise<number> {
-  const prices = await resolveBusinessPrices(businessId, [String(itemId)], laundryType);
-  return prices.get(String(itemId))!;
+  const prices = await resolveBusinessPrices(
+    businessId,
+    [{ itemId: String(itemId), serviceId: serviceId ? String(serviceId) : null }],
+    laundryType
+  );
+  return prices.get(priceKey(String(itemId), serviceId ? String(serviceId) : null))!;
 }
 
 /**
@@ -372,17 +442,32 @@ async function resolveBusinessPrice(
 async function lookupBusinessPrice(
   businessId: string,
   itemId: string,
-  laundryTypeInput: unknown
+  laundryTypeInput: unknown,
+  /** The service the line is for, when one has been chosen. */
+  serviceId?: string | null
 ): Promise<number | null> {
   // Unlike the resolver, this one tolerates a missing type: the cart may
   // not have had Hotel/Guest chosen yet.
   const laundryType = parseOptionalLaundryType(laundryTypeInput);
   if (!laundryType) return null;
 
+  /*
+   * The service's own row first, the item's fallback second — the same
+   * precedence `resolveBusinessPrices` applies, expressed here as an ORDER BY
+   * so one indexed read answers both. `LIMIT 1` then takes the winner.
+   *
+   * A row for some OTHER service is excluded outright rather than sorted
+   * last, so it can never be picked when neither of the two candidates
+   * exists: staging a Dry Clean price against a Wash & Fold line would put a
+   * figure on screen that the order would then refuse to bill.
+   */
   const result = await query<{ price: string }>(
     `SELECT price FROM business_price_list
-      WHERE business_id = ? AND item_id = ? AND laundry_type = ? AND is_active = true`,
-    [String(businessId), String(itemId), laundryType]
+      WHERE business_id = ? AND item_id = ? AND laundry_type = ? AND is_active = true
+        AND (service_id IS NULL OR service_id = ?)
+      ORDER BY (service_id IS NULL) ASC
+      LIMIT 1`,
+    [String(businessId), String(itemId), laundryType, serviceId ? String(serviceId) : null]
   );
   return result.rows[0] ? Number(result.rows[0].price) : null;
 }
@@ -397,6 +482,7 @@ const SERVICE_TYPES_SELECT = `
                JOIN services st ON st.id = m.service_id
               WHERE m.item_id = i.id AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
             ) AS service_types`;
+
 
 /**
  * ===================================================================
@@ -734,8 +820,17 @@ async function listBusinessPrices(
        FROM services i
        LEFT JOIN service_categories c ON c.id = i.category_id
        LEFT JOIN service_categories pc ON pc.id = c.parent_id
+       -- THE ITEM'S FALLBACK ROW ONLY (p.service_id IS NULL).
+       --
+       -- Since prices gained a service dimension an item can hold several
+       -- rows at one laundry type: its base rate plus a per-service
+       -- override. Joining them all would return the SAME ITEM two or three
+       -- times and the screen would list it twice, which is a listing bug
+       -- rather than a pricing one. The listing therefore stays one row per
+       -- item, showing that item's base rate.
        LEFT JOIN business_price_list p
               ON p.item_id = i.id AND p.business_id = ? AND p.laundry_type = ?
+             AND p.service_id IS NULL
        LEFT JOIN customer_price_list cp ON cp.item_id = i.id AND cp.is_active = true
       WHERE ${conditions.join(' AND ')}
       ${PRICE_LIST_ORDER}`,
@@ -781,8 +876,63 @@ export interface BusinessPriceInput {
   item_id?: unknown;
   /** HOTEL_LAUNDRY / GUEST_LAUNDRY, or the stored 'hotel' / 'guest'. */
   laundry_type?: unknown;
+  /**
+   * The laundry SERVICE this price applies to — Wash & Fold, Dry Clean.
+   *
+   * Absent, null or '' means the item's rate for EVERY service, which is
+   * what a price set without one has always meant. Naming a service creates
+   * a rate that overrides the fallback for that service alone.
+   */
+  service_id?: unknown;
   price?: unknown;
   is_active?: unknown;
+}
+
+/** A service type's display name, for a message that has to name one. */
+async function serviceTypeName(serviceId: string): Promise<string> {
+  const result = await query<{ name: string }>(
+    `SELECT name FROM services WHERE id = ?`,
+    [serviceId]
+  );
+  return result.rows[0]?.name ?? 'this service';
+}
+
+/**
+ * Validates the optional service on a business price.
+ *
+ * Returns null for "every service", which is the default and the meaning of
+ * every price that predates per-service rates.
+ *
+ * A named service must be a real SERVICE_TYPE **and one this item is actually
+ * offered for** — `item_service_types` is the mapping the catalogue, the cart
+ * and the order all resolve through, so a price for a service the item cannot
+ * be ordered for is a row nothing could ever read.
+ */
+async function assertServiceTypeForItem(
+  itemId: string,
+  serviceIdInput: unknown
+): Promise<string | null> {
+  const raw = String(serviceIdInput ?? '').trim();
+  if (raw === '' || raw === 'null' || raw === 'undefined') return null;
+  if (!/^\d+$/.test(raw)) {
+    throw new AppError('A valid service type is required.', 400);
+  }
+
+  const result = await query<{ id: string }>(
+    `SELECT st.id
+       FROM services st
+       JOIN item_service_types m ON m.service_id = st.id
+      WHERE st.id = ? AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
+        AND m.item_id = ?`,
+    [raw, itemId]
+  );
+  if (!result.rows[0]) {
+    throw new AppError(
+      'That service type is not available for this item. Price it for a service the item is offered for, or leave the service blank to set one rate for every service.',
+      400
+    );
+  }
+  return raw;
 }
 
 /**
@@ -801,30 +951,44 @@ async function createBusinessPrice(
   const laundryType = parseLaundryType(input.laundry_type);
   const price = parsePrice(input.price, 'Price');
   const isActive = parseFlag(input.is_active, true);
+  /*
+   * THE SERVICE THIS PRICE IS FOR, or null for "every service".
+   *
+   * An item offered for both Wash & Fold and Dry Clean can be priced
+   * separately for each; leaving this out sets the item's single rate, which
+   * is what every price set before per-service pricing existed means and
+   * what most items still want.
+   */
+  const serviceId = await assertServiceTypeForItem(itemId, input.service_id);
 
-  // The key is (business, item, laundry type). The SAME item at the OTHER
-  // type is a different row and is perfectly allowed -- that is the point
-  // of the type being part of the key.
+  // The key is (business, item, laundry type, service). The SAME item at the
+  // OTHER type -- or at another service -- is a different row and is
+  // perfectly allowed; that is the point of both being part of the key.
   const existing = await query<{ id: string }>(
     `SELECT id FROM business_price_list
-      WHERE business_id = ? AND item_id = ? AND laundry_type = ?`,
-    [businessId, itemId, laundryType]
+      WHERE business_id = ? AND item_id = ? AND laundry_type = ?
+        AND COALESCE(service_id, 0) = ?`,
+    [businessId, itemId, laundryType, serviceId ?? 0]
   );
   if (existing.rows[0]) {
+    const scope = serviceId
+      ? `${LAUNDRY_TYPE_LABELS[laundryType]} ${await serviceTypeName(serviceId)}`
+      : LAUNDRY_TYPE_LABELS[laundryType];
     throw new AppError(
-      `This business already has a ${LAUNDRY_TYPE_LABELS[laundryType]} price for this item. Edit the existing one instead.`,
+      `This business already has a ${scope} price for this item. Edit the existing one instead.`,
       409
     );
   }
 
   const inserted = await query(
-    `INSERT INTO business_price_list (business_id, item_id, laundry_type, price, is_active)
-     VALUES (?, ?, ?, ?, ?)`,
-    [businessId, itemId, laundryType, price, isActive]
+    `INSERT INTO business_price_list (business_id, item_id, laundry_type, service_id, price, is_active)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [businessId, itemId, laundryType, serviceId, price, isActive]
   );
 
   logger.info(
-    `[PriceList] business ${businessId} ${laundryType} price created for item ${itemId} at ${price}`
+    `[PriceList] business ${businessId} ${laundryType}` +
+      `${serviceId ? ` service ${serviceId}` : ''} price created for item ${itemId} at ${price}`
   );
   return getBusinessPriceById(businessId, inserted.insertId!);
 }
@@ -1307,6 +1471,7 @@ export {
   requireCustomerPrices,
   resolveBusinessPrice,
   resolveBusinessPrices,
+  priceKey,
   lookupBusinessPrice,
   listCustomerPrices,
   getCustomerPriceById,

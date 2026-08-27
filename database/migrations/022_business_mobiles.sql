@@ -51,10 +51,22 @@ PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
 -- ---- Backfill: every number a business already answers on ----
 -- From the business row.
+--
+-- GUARDED, BECAUSE MIGRATION 031 LATER DROPS `businesses.mobile_number`.
+-- The runner replays every file on every run, so once 031 has been applied
+-- this referenced a column that no longer exists and aborted the whole run
+-- here. On such a database the backfill has already happened (and 029 has
+-- since consolidated these rows into `business_contacts` and dropped the
+-- table), so there is nothing left to copy and skipping is correct.
+SET @has_source = (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'businesses'
+    AND COLUMN_NAME = 'mobile_number');
+SET @sql = IF(@has_source = 1, '
 INSERT IGNORE INTO business_mobiles (business_id, mobile_number, label, is_primary)
-SELECT b.id, TRIM(b.mobile_number), 'Primary', TRUE
+SELECT b.id, TRIM(b.mobile_number), ''Primary'', TRUE
   FROM businesses b
- WHERE NULLIF(TRIM(b.mobile_number), '') IS NOT NULL;
+ WHERE NULLIF(TRIM(b.mobile_number), '''') IS NOT NULL', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
 -- From each account on the business.
 INSERT IGNORE INTO business_mobiles (business_id, mobile_number, label, is_primary)

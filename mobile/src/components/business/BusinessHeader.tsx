@@ -33,7 +33,7 @@ interface Props {
  * BACK IS A LABELLED PILL, NOT A BARE CHEVRON. It is the one control on the
  * page whose meaning has to be obvious at a glance, and an unlabelled 36px
  * circle is neither obvious nor a comfortable target. Icon plus the word
- * "Back", at a 48px minimum height, and it is defined HERE so every Business
+ * "BACK", at a 48px minimum height, and it is defined HERE so every Business
  * screen gets the same one — a per-screen back button is how they drifted into
  * different sizes in the first place.
  */
@@ -84,7 +84,7 @@ export default function BusinessHeader({ title, subtitle, onBack, action }: Prop
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Ionicons name="arrow-back" size={22} color={COLORS.PrimaryDark} />
-            <Text style={styles.backText}>Back</Text>
+            <Text style={styles.backText}>BACK</Text>
           </TouchableOpacity>
         ) : null}
 

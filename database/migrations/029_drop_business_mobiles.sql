@@ -59,7 +59,14 @@ SET @has_bm = (
    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'business_mobiles'
 );
 
-SET @sql = IF(@has_bm = 1, '
+-- ALSO GUARDED ON `businesses.mobile_number`, which migration 031 drops.
+-- `@has_bm` alone is not enough: replaying 022 recreates `business_mobiles`,
+-- so on a database that has reached 031 the table is present again while the
+-- column this statement compares against is gone -- which aborted the run.
+SET @has_biz_mobile = (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'businesses'
+    AND COLUMN_NAME = 'mobile_number');
+SET @sql = IF(@has_bm = 1 AND @has_biz_mobile = 1, '
 INSERT INTO business_contacts
   (business_id, contact_type, name, designation, mobile, whatsapp, email, login_enabled)
 SELECT c.business_id, ''ALTERNATIVE'',

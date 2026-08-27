@@ -1,10 +1,20 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { sendSuccess } from '../utils/response';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { logger } from '../utils/logger';
-import { displayInvoiceNumber, invoiceNumberFor } from '../services/gstInvoice.service';
+import {
+  displayInvoiceNumber,
+  invoiceNumberFor,
+  parseLaundryType,
+} from '../services/gstInvoice.service';
+import {
+  buildWalkingOrderTemplate,
+  walkingOrderTemplateFileName,
+  previewWalkingOrderImport,
+  importWalkingOrder,
+} from '../services/walkingOrderImport.service';
 import { cycleForBusiness, periodFor } from '../services/billingCycle.service';
 import { getOrderForBusiness } from '../services/businessOrder.service';
 import { config } from '../config/env';
@@ -50,6 +60,17 @@ const router = Router();
 
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+
+/**
+ * The parser for the two walking-order uploads.
+ *
+ * A base64 spreadsheet does not fit the app-wide 100kb JSON limit, so
+ * `server.ts` skips those paths and they are parsed here instead — the same
+ * arrangement the defect-photo upload already uses. 12mb is far more than a
+ * few thousand rows of items and quantities needs, and it applies to these
+ * two routes alone.
+ */
+const walkingOrderBody = express.json({ limit: '12mb' });
 
 /* ===================================================================
  * THE BUSINESS PICKER
@@ -373,6 +394,129 @@ router.get(
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
       res.setHeader('Content-Length', String(pdf.length));
       res.end(pdf);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* ===================================================================
+ * BACKDATED WALKING ORDERS
+ *
+ * Three steps, and the middle one writes nothing: download a template,
+ * upload a filled sheet to SEE what it would do, then confirm the import.
+ * The preview is what makes "do not partially import invalid data" true by
+ * construction — the operator approves a validated result rather than
+ * discovering the errors halfway through a write.
+ * =================================================================== */
+
+/**
+ * GET /api/super-admin/business-account/:businessId/walking-orders/template.xlsx
+ *   ?laundry_type=hotel|guest
+ *
+ * The template, built from THIS business's own priced catalogue so its
+ * example rows already validate.
+ */
+router.get(
+  '/business-account/:businessId/walking-orders/template.xlsx',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const business = await assertBusiness(req.params.businessId);
+      const laundryType = parseLaundryType(req.query.laundry_type);
+      if (!laundryType) {
+        throw new AppError('A laundry type is required.', 400);
+      }
+
+      const workbook = await buildWalkingOrderTemplate(business.id, laundryType);
+      const fileName = walkingOrderTemplateFileName(business.name, laundryType);
+
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', String(workbook.length));
+      res.end(workbook);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/super-admin/business-account/:businessId/walking-orders/preview
+ *   { order_date, laundry_type, file_base64 }
+ *
+ * Validates the sheet and reports exactly what would be created. WRITES
+ * NOTHING. Row-level errors come back as a list rather than as a single
+ * failure, so every problem in the sheet can be fixed in one pass.
+ */
+router.post(
+  '/business-account/:businessId/walking-orders/preview',
+  walkingOrderBody,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const business = await assertBusiness(req.params.businessId);
+      const laundryType = parseLaundryType(req.body?.laundry_type);
+      if (!laundryType) {
+        throw new AppError('A laundry type is required.', 400);
+      }
+      const fileBase64 = asString(req.body?.file_base64);
+      if (!fileBase64) {
+        throw new AppError('An Excel file is required.', 400);
+      }
+
+      const preview = await previewWalkingOrderImport(
+        business.id,
+        req.body?.order_date,
+        laundryType,
+        fileBase64
+      );
+      sendSuccess(res, preview, 'Sheet validated');
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/super-admin/business-account/:businessId/walking-orders/import
+ *   { order_date, laundry_type, file_base64, confirm_duplicate? }
+ *
+ * Creates the backdated order. The sheet is re-validated here rather than
+ * trusting the preview, and the whole write is one transaction.
+ */
+router.post(
+  '/business-account/:businessId/walking-orders/import',
+  walkingOrderBody,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const business = await assertBusiness(req.params.businessId);
+      const laundryType = parseLaundryType(req.body?.laundry_type);
+      if (!laundryType) {
+        throw new AppError('A laundry type is required.', 400);
+      }
+      const fileBase64 = asString(req.body?.file_base64);
+      if (!fileBase64) {
+        throw new AppError('An Excel file is required.', 400);
+      }
+
+      const result = await importWalkingOrder(
+        business.id,
+        req.body?.order_date,
+        laundryType,
+        fileBase64,
+        authReq.user!.id,
+        { confirmDuplicate: req.body?.confirm_duplicate === true }
+      );
+
+      sendSuccess(
+        res,
+        result,
+        `Walking orders successfully added for ${result.order_date}.`,
+        201
+      );
     } catch (error) {
       next(error);
     }

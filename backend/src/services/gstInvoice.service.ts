@@ -26,6 +26,35 @@ import { periodForBusiness, BillingCycle } from './billingCycle.service';
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * Which laundry type an invoice covers.
+ *
+ * `null` means BOTH, and is what every existing caller gets by leaving the
+ * argument off: the payment receipts, the defective-adjustment lookup and any
+ * historical invoice keep behaving exactly as they did. Hotel and Guest are
+ * the two separate invoices the Business Account now generates.
+ */
+export type InvoiceLaundryType = 'hotel' | 'guest';
+
+export const LAUNDRY_TYPE_LABELS: Record<InvoiceLaundryType, string> = {
+  hotel: 'Hotel Laundry',
+  guest: 'Guest Laundry',
+};
+
+/**
+ * Reads a laundry type off a request, rejecting anything else.
+ *
+ * An unrecognised value is NOT quietly treated as "both": a typo in the query
+ * string would then bill Hotel and Guest together on a document headed with
+ * one of them, which is the exact mixing this feature exists to prevent.
+ */
+export function parseLaundryType(value: unknown): InvoiceLaundryType | null {
+  if (value === undefined || value === null || value === '') return null;
+  const key = String(value).trim().toLowerCase();
+  if (key === 'hotel' || key === 'guest') return key;
+  throw new AppError('Laundry type must be either "hotel" or "guest".', 400);
+}
+
 export interface InvoiceLine {
   description: string;
   /** The laundry service for the line, when the order recorded one. */
@@ -48,11 +77,25 @@ export interface InvoiceLine {
   unit: string;
   /** Price per unit, exclusive of tax — the "Price/ unit" column. */
   rate: number;
-  /** Quantity x rate, before tax. */
+  /** What the order actually charged for this line, before tax. Drives totals. */
   taxable: number;
-  /** Tax on this line, the figure the "GST" column shows. */
+  /**
+   * Tax on this line.
+   *
+   * The invoice table no longer carries a GST column, but the figure is still
+   * computed here: the tax summary block and `totals` are summed from it, and
+   * removing a COLUMN is not the same as removing the tax.
+   */
   gst_amount: number;
-  /** Taxable + tax: the "Amount" column, which is tax-inclusive. */
+  /**
+   * The "Amount" column: QUANTITY x RATE, exclusive of tax.
+   *
+   * Stated as the multiplication the reader can do in their head from the two
+   * columns beside it. It is deliberately not the tax-inclusive figure it used
+   * to be — an Amount that did not equal Quantity x Price/unit is the thing
+   * this replaces — and deliberately not `taxable`, which is what the order
+   * recorded and may differ if a line was ever adjusted.
+   */
   amount: number;
 }
 
@@ -74,8 +117,29 @@ export interface InvoiceOrderRef {
  * One definition, so the invoice, its PDF, the payment receipt and the Order
  * Detail list cannot end up spelling the same invoice differently.
  */
-export function invoiceNumberFor(businessId: string, from: string, to: string): string {
-  return `SWC/INV/${String(businessId).padStart(4, '0')}/${from.replace(/-/g, '')}-${to.replace(/-/g, '')}`;
+export function invoiceNumberFor(
+  businessId: string,
+  from: string,
+  to: string,
+  laundryType?: InvoiceLaundryType | null
+): string {
+  const base = `SWC/INV/${String(businessId).padStart(4, '0')}/${from.replace(/-/g, '')}-${to.replace(/-/g, '')}`;
+  /*
+   * THE TYPE SUFFIX, AND ONLY WHEN THERE IS A TYPE.
+   *
+   * Hotel and Guest are two different invoices over the same business and the
+   * same dates, so the number that identifies them cannot be the same string
+   * — a payment recorded against one would otherwise be indistinguishable
+   * from a payment against the other.
+   *
+   * Omitting it when no type is given is what keeps every invoice issued
+   * before this feature, and every payment receipt already stored against
+   * one, addressable by exactly the number it was issued under.
+   *
+   * The DISPLAYED number is unaffected: it is the first 12 characters, which
+   * stop at the business id, well before this suffix.
+   */
+  return laundryType ? `${base}/${laundryType.toUpperCase()}` : base;
 }
 
 /** How many characters of the invoice number are shown to people. */
@@ -120,6 +184,18 @@ export interface GstInvoice {
    */
   invoice_number_display: string;
   invoice_date: string;
+
+  /**
+   * WHICH LAUNDRY TYPE THIS INVOICE COVERS, or null when it covers both.
+   *
+   * Null is what every pre-existing caller produces, so an invoice opened the
+   * way it always was still reports honestly rather than claiming a type it
+   * was never filtered by.
+   */
+  laundry_type: InvoiceLaundryType | null;
+  /** "Hotel Laundry" / "Guest Laundry" — the Type field, ready to print. */
+  laundry_type_label: string | null;
+
   period: {
     from: string;
     to: string;
@@ -253,7 +329,12 @@ function stateKey(value: string | null | undefined): string {
 export async function buildInvoice(
   businessId: string,
   fromDate?: unknown,
-  toDate?: unknown
+  toDate?: unknown,
+  /**
+   * Restricts the invoice to ONE laundry type. Omitted (or null) bills both,
+   * which is what every caller that predates the split does.
+   */
+  laundryType?: InvoiceLaundryType | null
 ): Promise<GstInvoice> {
   /*
    * Two ways in.
@@ -300,6 +381,20 @@ export async function buildInvoice(
     throw new AppError('Business not found', 404);
   }
 
+  const typeLabel = laundryType ? LAUNDRY_TYPE_LABELS[laundryType] : null;
+
+  /*
+   * THE TYPE FILTER, APPLIED AT THE ORDER LEVEL.
+   *
+   * `orders.laundry_type` is the type the whole order was placed under, and
+   * `order_items.laundry_type` was backfilled from it (migration 026), so the
+   * two agree. Filtering here as well as on the lines below is what keeps the
+   * `orders` list, the order COUNT and the per-order amounts on the invoice
+   * from describing orders whose lines were then excluded.
+   */
+  const orderTypeClause = laundryType ? ' AND o.laundry_type = ?' : '';
+  const orderTypeValues = laundryType ? [laundryType] : [];
+
   // Orders belong to a business through its users, which is the only link
   // between the two tables. Cancelled orders are left out — nothing is billed
   // for an order that never happened.
@@ -311,14 +406,19 @@ export async function buildInvoice(
        JOIN business_users bu ON bu.id = o.business_user_id
       WHERE bu.business_id = ?
         AND o.status <> 'CANCELLED'
-        AND DATE(CONVERT_TZ(o.created_at, '+00:00', ?)) BETWEEN ? AND ?
+        AND DATE(CONVERT_TZ(o.created_at, '+00:00', ?)) BETWEEN ? AND ?${orderTypeClause}
       ORDER BY o.created_at ASC`,
-    [config.BUSINESS_TZ_OFFSET, businessId, config.BUSINESS_TZ_OFFSET, from, to]
+    [config.BUSINESS_TZ_OFFSET, businessId, config.BUSINESS_TZ_OFFSET, from, to, ...orderTypeValues]
   );
   const orders = ordersResult.rows;
 
   if (orders.length === 0) {
-    throw new AppError('This business has no orders in the selected period.', 404);
+    throw new AppError(
+      typeLabel
+        ? `This business has no ${typeLabel} orders in the selected period.`
+        : 'This business has no orders in the selected period.',
+      404
+    );
   }
 
   const orderIds = orders.map((row: any) => String(row.id));
@@ -361,35 +461,37 @@ export async function buildInvoice(
             SUM(COALESCE(oi.total_price, 0)) AS amount
        FROM order_items oi
        JOIN orders o ON o.id = oi.order_id
-      WHERE oi.order_id IN (${placeholders})
+      WHERE oi.order_id IN (${placeholders})${laundryType ? ' AND oi.laundry_type = ?' : ''}
       GROUP BY oi.service_name, oi.laundry_type, service, oi.unit, oi.unit_price
       ORDER BY oi.service_name ASC, oi.laundry_type ASC`,
-    orderIds
+    // A second guard on the LINES, not only on the orders above: an order
+    // carrying a line of the other type could otherwise slip a Guest item
+    // onto a Hotel invoice.
+    laundryType ? [...orderIds, laundryType] : orderIds
   );
 
   const gstRate = Number(config.GST_RATE_PERCENT) || 0;
 
-  const LAUNDRY_LABELS: Record<string, string> = {
-    hotel: 'Hotel Laundry',
-    guest: 'Guest Laundry',
-  };
-
   const lines: InvoiceLine[] = linesResult.rows.map((row: any) => {
     const taxable = money(row.amount);
     const gstAmount = money((taxable * gstRate) / 100);
+    const quantity = Number(row.quantity || 0);
+    const rate = money(row.rate);
     return {
       description: row.description,
       service: row.service || null,
-      laundry_type: row.laundry_type ? LAUNDRY_LABELS[row.laundry_type] || row.laundry_type : null,
-      quantity: Number(row.quantity || 0),
+      laundry_type: row.laundry_type
+        ? LAUNDRY_TYPE_LABELS[row.laundry_type as InvoiceLaundryType] || row.laundry_type
+        : null,
+      quantity,
       ordered_quantity: Number(row.ordered_quantity || row.quantity || 0),
       defective_quantity: Number(row.defective_quantity || 0),
       unit: row.unit || 'Nos',
-      rate: money(row.rate),
+      rate,
       taxable,
       gst_amount: gstAmount,
-      // Tax-inclusive, which is what the Amount column on the invoice shows.
-      amount: money(taxable + gstAmount),
+      // Quantity x price, which is what the Amount column states.
+      amount: money(quantity * rate),
     };
   });
 
@@ -423,16 +525,19 @@ export async function buildInvoice(
 
   // Readable, unique per business and period, and derivable again from the
   // same inputs — regenerating the same invoice does not mint a new number.
-  const invoiceNumber = invoiceNumberFor(String(business.id), from, to);
+  const invoiceNumber = invoiceNumberFor(String(business.id), from, to, laundryType ?? null);
 
   logger.info(
-    `[Invoice] built ${invoiceNumber}: ${orders.length} order(s), ${lines.length} line(s), taxable ${taxableValue}`
+    `[Invoice] built ${invoiceNumber}: ${orders.length} order(s), ${lines.length} line(s), ` +
+      `type ${typeLabel ?? 'all'}, taxable ${taxableValue}`
   );
 
   return {
     invoice_number: invoiceNumber,
     invoice_number_display: displayInvoiceNumber(invoiceNumber),
     invoice_date: invoiceDate,
+    laundry_type: laundryType ?? null,
+    laundry_type_label: typeLabel,
     period: { from, to, cycle, label: periodLabel },
 
     supplier: {

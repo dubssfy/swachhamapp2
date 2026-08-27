@@ -324,7 +324,7 @@ export default function OrderTypeScreen({ navigation, route }: any) {
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
           <Ionicons name="arrow-back" size={22} color={COLORS.PrimaryDark} />
-          <Text style={styles.backButtonText}>Back</Text>
+          <Text style={styles.backButtonText}>BACK</Text>
         </TouchableOpacity>
         {/* The laundry type chosen on the page before this one. It was a
             badge in the body until now; up here it costs the cards no

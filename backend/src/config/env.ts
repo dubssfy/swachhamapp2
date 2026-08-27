@@ -184,7 +184,7 @@ const config: AppConfig = {
   COMPANY_STATE: optionalEnv('COMPANY_STATE', '27-Maharashtra'),
   COMPANY_ADDRESS: optionalEnv(
     'COMPANY_ADDRESS',
-    'Nityanandnilayam, Dapoli Dabhol Road, Jalgaon, Dapoli 415712'
+    'A-17, Walane MIDC, Post : Jalgaon, Tal: Dapoli, Dist: Ratnagiri, PIN: 415712, Maharashtra'
   ),
   COMPANY_EMAIL: optionalEnv('COMPANY_EMAIL', 'info@swachham.co.in'),
 

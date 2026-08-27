@@ -34,11 +34,26 @@ SET @sql = IF(@idx_exists = 0,
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- Backfill from the registration record so existing accounts have it.
-UPDATE business_users bu
-  JOIN businesses b ON b.id = bu.business_id
-   SET bu.mobile_number = b.mobile_number
- WHERE bu.mobile_number IS NULL
-   AND b.mobile_number IS NOT NULL;
+--
+-- GUARDED, BECAUSE MIGRATION 031 LATER DROPS `businesses.mobile_number`.
+-- The runner replays every file in order on every run, so once 031 has been
+-- applied this statement referenced a column that no longer exists — it
+-- raised "Unknown column 'b.mobile_number'" and ABORTED THE WHOLE RUN here,
+-- at file 012, which silently prevented every later migration from ever
+-- being applied. The backfill has already done its work on any database that
+-- reached 031, so when the source column is gone there is nothing left to
+-- copy and this correctly becomes a no-op.
+SET @has_source = (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'businesses'
+    AND COLUMN_NAME = 'mobile_number');
+SET @sql = IF(@has_source = 1,
+  'UPDATE business_users bu
+     JOIN businesses b ON b.id = bu.business_id
+      SET bu.mobile_number = b.mobile_number
+    WHERE bu.mobile_number IS NULL
+      AND b.mobile_number IS NOT NULL',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ---- 2. Uppercase SW prefix on existing Business order numbers ----
 -- The column collation is case-insensitive, so the match is forced
