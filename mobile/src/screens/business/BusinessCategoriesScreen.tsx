@@ -20,7 +20,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import BusinessHeader from '../../components/business/BusinessHeader';
 import CategoryGridCard from '../../components/business/CategoryGridCard';
-import SectionHeading from '../../components/SectionHeading';
 import businessOrderApi, { BusinessCategory, BusinessItem } from '../../services/businessOrderApi';
 import { getCategoryImage } from '../../constants/categoryImages';
 import { filterHiddenCategories } from '../../constants/hiddenCategories';
@@ -377,18 +376,10 @@ export default function BusinessCategoriesScreen({ navigation, route }: any) {
         </View>
       ) : null}
 
-      {/* Closes off the header block the same way Order Type's own header
-          does — a hairline rule under the back button / selected-choice row,
-          before the page's own content starts. */}
-      <View style={styles.headerDivider} />
+      {/* The header's hairline rule is now drawn by BusinessHeader itself, so
+          every Business page carries the same line in the same place. */}
 
-      {/* The page's name, styled the same way Order Type's own heading is —
-          the two screens are consecutive steps of one flow and should read
-          as such. */}
-      <SectionHeading style={styles.pageHeading}>SELECT ITEMS</SectionHeading>
-
-      {/* Item search. Sits directly under the heading, above the grid, where a
-          search box is looked for. */}
+      {/* Item search, above the grid, where a search box is looked for. */}
       <View style={styles.searchWrap}>
         <View style={styles.searchBar}>
           <Ionicons name="search-outline" size={20} color={COLORS.TextSecondary} />
@@ -590,46 +581,46 @@ const styles = StyleSheet.create({
   row: { gap: GRID_GAP, marginBottom: GRID_GAP, justifyContent: 'center' },
   errorWrap: { paddingHorizontal: GRID_PADDING, paddingTop: SPACING.xs },
 
-  /* ---- Selected laundry type + order type, and the page's own heading ---- */
+  /* ---- Selected laundry type + order type ---- */
   selectedRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    flexWrap: 'wrap',
+    // Kept on one line: the two chosen values sit beside each other and shrink
+    // to fit rather than wrapping to a second row.
+    flexWrap: 'nowrap',
     gap: 6,
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.sm,
+    // A little air between the chosen values and the search bar below.
+    paddingBottom: SPACING.sm,
   },
   selectedLabel: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.sm,
     color: COLORS.TextSecondary,
+    flexShrink: 0,
   },
   selectedValue: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.sm,
     fontWeight: '800',
     color: COLORS.PrimaryDark,
+    flexShrink: 1,
+    // A subtle highlight behind the chosen value only — the app's own selected
+    // tint, the same one the Cart uses on a picked option. Text, size and
+    // weight are untouched; this is only the ground behind them.
+    backgroundColor: COLORS.Accent + '40',
+    borderRadius: BORDER_RADIUS.xs,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    overflow: 'hidden',
   },
   selectedSeparator: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.sm,
     color: COLORS.Border,
     marginHorizontal: 2,
-  },
-  // The same hairline Order Type's own header sits on, marking where the
-  // header block ends and the page's own content begins.
-  headerDivider: {
-    height: 1,
-    backgroundColor: COLORS.Border,
-    marginTop: SPACING.sm,
-  },
-  pageHeading: {
-    marginTop: SPACING.md,
-    // Was 0: with nothing between the heading and the search bar below it,
-    // the pill read as glued to the bar rather than sitting above its own
-    // section. This is what puts air back between the two.
-    marginBottom: SPACING.sm,
   },
 
   /* ---- Item search ----

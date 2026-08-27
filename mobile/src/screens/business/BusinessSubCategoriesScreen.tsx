@@ -6,13 +6,12 @@ import {
   TouchableOpacity,
   FlatList,
   ActivityIndicator,
-  useWindowDimensions,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import BusinessHeader from '../../components/business/BusinessHeader';
-import CategoryGridCard from '../../components/business/CategoryGridCard';
 import businessOrderApi, { BusinessCategory } from '../../services/businessOrderApi';
 import { getSubCategoryImage } from '../../constants/categoryImages';
 import { filterHiddenCategories } from '../../constants/hiddenCategories';
@@ -28,16 +27,20 @@ const SUB_ICONS: Array<keyof typeof Ionicons.glyphMap> = [
   'pricetags-outline',
 ];
 
-const COLUMNS = 2;
 const GRID_PADDING = 10;   // screen edge -> card
-const GRID_GAP = 10;       // between the two columns
+const GRID_GAP = 10;       // between stacked cards
+
+/** Solid card backgrounds, applied alternately (1st, 3rd… / 2nd, 4th…). */
+const CARD_BACKGROUNDS = ['#FFBD4A', '#3D6F73'];
 
 /**
  * Sub Categories for one main category.
  *
- * A FlatList rather than a ScrollView: there can be many sub-categories, and
- * FlatList both virtualises them and guarantees the list owns the remaining
- * screen height, so every row stays reachable by scrolling.
+ * One vertical column of cards, each split into a left image section and a
+ * right name section. A FlatList rather than a ScrollView: there can be many
+ * sub-categories, and FlatList both virtualises them and guarantees the list
+ * owns the remaining screen height, so every card stays reachable by
+ * scrolling.
  */
 export default function BusinessSubCategoriesScreen({ navigation, route }: any) {
   const { categoryId, categoryName } = route.params || {};
@@ -45,14 +48,6 @@ export default function BusinessSubCategoriesScreen({ navigation, route }: any) 
   const [subCategories, setSubCategories] = useState<BusinessCategory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-
-  const { width } = useWindowDimensions();
-  // Cards claim almost the whole width: tight side padding and a small
-  // gutter, so two square cards per row stay as large as the screen allows.
-  const cardSize = useMemo(
-    () => Math.floor((width - GRID_PADDING * 2 - GRID_GAP) / COLUMNS),
-    [width]
-  );
 
   const { cart, loadCart } = useBusinessOrderStore();
   const cartCount = useMemo(
@@ -88,21 +83,45 @@ export default function BusinessSubCategoriesScreen({ navigation, route }: any) 
     }
   }, [isLoading, error, subCategories.length, navigation, categoryId, categoryName]);
 
-  const renderCard = ({ item, index }: { item: BusinessCategory; index: number }) => (
-    <CategoryGridCard
-      name={item.name}
-      source={getSubCategoryImage(item.slug, item.name) ?? (item.image_url ? { uri: item.image_url } : null)}
-      fallbackIcon={SUB_ICONS[index % SUB_ICONS.length]}
-      size={cardSize}
-      onPress={() =>
-        navigation.navigate('BusinessItemsScreen', {
-          categoryId: item.id,
-          categoryName: item.name,
-          parentName: categoryName,
-        })
-      }
-    />
-  );
+  const renderCard = ({ item, index }: { item: BusinessCategory; index: number }) => {
+    const source =
+      getSubCategoryImage(item.slug, item.name) ??
+      (item.image_url ? { uri: item.image_url } : null);
+    const fallbackIcon = SUB_ICONS[index % SUB_ICONS.length];
+    const cardBackground = CARD_BACKGROUNDS[index % CARD_BACKGROUNDS.length];
+
+    return (
+      <TouchableOpacity
+        style={[styles.card, { backgroundColor: cardBackground }]}
+        activeOpacity={0.85}
+        accessibilityRole="button"
+        accessibilityLabel={item.name}
+        onPress={() =>
+          navigation.navigate('BusinessItemsScreen', {
+            categoryId: item.id,
+            categoryName: item.name,
+            parentName: categoryName,
+          })
+        }
+      >
+        {/* Left: the existing sub-category image (or its existing icon fallback). */}
+        <View style={styles.cardImageSection}>
+          {source ? (
+            <Image source={source} style={styles.cardImage} resizeMode="contain" />
+          ) : (
+            <Ionicons name={fallbackIcon} size={44} color={COLORS.Primary} />
+          )}
+        </View>
+
+        {/* Right: the existing sub-category name. */}
+        <View style={styles.cardNameSection}>
+          <Text style={styles.cardName} numberOfLines={2}>
+            {item.name}
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -138,12 +157,10 @@ export default function BusinessSubCategoriesScreen({ navigation, route }: any) 
         </View>
       ) : (
         <FlatList
-          key={`subcategories-grid-${COLUMNS}`}
+          key="subcategories-column"
           data={subCategories}
           keyExtractor={(item) => item.id}
           renderItem={renderCard}
-          numColumns={COLUMNS}
-          columnWrapperStyle={styles.row}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
         />
@@ -156,7 +173,46 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: SPACING.sm, padding: SPACING.xl },
   listContent: { padding: GRID_PADDING, paddingBottom: SPACING.xxl },
-  row: { gap: GRID_GAP, marginBottom: GRID_GAP },
+
+  // One card per row, split into a left image section and a right name
+  // section. The background colour is set per card (alternating) at render.
+  card: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.lg,
+    overflow: 'hidden',
+    marginBottom: GRID_GAP,
+    ...SHADOWS.medium,
+  },
+  cardImageSection: {
+    width: 108,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.sm,
+    borderRightWidth: 1,
+    borderRightColor: COLORS.Border,
+  },
+  cardImage: { width: 72, height: 72 },
+  cardNameSection: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.md,
+  },
+  cardName: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.lg,
+    fontWeight: '700',
+    color: COLORS.Surface,
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    // Keeps the white name legible on the lighter card background.
+    textShadowColor: 'rgba(0, 0, 0, 0.35)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
 
   cartButton: {
     width: 44,

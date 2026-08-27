@@ -22,23 +22,25 @@ import {
   ITEM_SERVICE_REQUIRED_MESSAGE,
 } from '../../store/businessOrderStore';
 
-const SERVICE_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
-  wash_iron: 'water-outline',
-  dry_clean: 'sparkles-outline',
-};
-
 /**
- * Item selection for one category.
+ * Item selection for one category — a compact five-column table.
  *
- * The cards stay horizontal — artwork on the left, everything else in the
- * column beside it: details and this item's service buttons share the top
- * row, then a typed quantity, then Add to Order.
+ *   ITEM ICON | ITEM NAME | QUANTITY | SERVICES | SELECTION
+ *
+ * Every row lines up under those headings: the existing item artwork, the
+ * catalogue name, a quantity input box, this item's own laundry
+ * services, and a selection checkbox. The user ticks the items they want,
+ * sets each one's quantity and service, then presses ADD ORDER TO BASKET at
+ * the foot of the screen to send them all to the cart in one pass.
  *
  * The service is picked per item, never once for the whole order, so Shirt
  * can go to Wash & Iron while Trousers goes to Dry Clean. An item offering a
  * single service has it selected automatically; one offering several must be
- * chosen before it can be added. There is no service filter in the search
- * area: services belong to the item cards only.
+ * chosen before that row can be added.
+ *
+ * Nothing about the cart, the order or the API changed: ADD ORDER TO BASKET
+ * simply calls the same per-item `addItem` store action once for each ticked
+ * row.
  */
 export default function BusinessItemsScreen({ navigation, route }: any) {
   const { categoryId, categoryName, parentName, initialSearch } = route.params || {};
@@ -55,13 +57,16 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [quantities, setQuantities] = useState<Record<string, string>>({});
-  const [addingItemId, setAddingItemId] = useState<string | null>(null);
-  /** The item showing its "ADDED" tick, cleared by a timer shortly after. */
-  const [addedItemId, setAddedItemId] = useState<string | null>(null);
+  /** Item ids the user has ticked in the SELECTION column. */
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /** True from the moment ADD ORDER TO BASKET is pressed until it settles. */
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  /** Drives the button's brief "ADDED" confirmation, cleared by a timer. */
+  const [justAdded, setJustAdded] = useState(false);
   const addedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** The service chosen for each item, kept per item id so lines never share one. */
   const [itemServices, setItemServices] = useState<Record<string, string>>({});
-  /** Item ids whose Add was blocked because no service was chosen. */
+  /** Item ids whose add was blocked because no service was chosen. */
   const [serviceErrors, setServiceErrors] = useState<Record<string, boolean>>({});
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -70,13 +75,13 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
   /* =================================================================
    * FLY-TO-CART
    *
-   * A copy of the item's artwork lifts off the card and arcs into the cart
+   * A copy of the item's artwork lifts off the row and arcs into the cart
    * button, shrinking and fading as it goes; the badge then bumps as the
    * count updates. The point is that the ITEM is seen to travel — a spinner
    * says "something is happening", this says "that item went into the order".
    *
    * It is decoration over a real result, never a substitute for one: the
-   * flight is started from the card's measured position at the moment of the
+   * flight is started from the row's measured position at the moment of the
    * tap and runs ALONGSIDE the request, and the count comes from the store
    * once the server answers. A failed add leaves no item in the cart no
    * matter what the animation did.
@@ -89,7 +94,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
   /** Where the cart button is, measured on layout. */
   const cartButtonRef = useRef<View>(null);
   const cartTarget = useRef<{ x: number; y: number } | null>(null);
-  /** One ref per rendered card's artwork, so the flight starts from IT. */
+  /** One ref per rendered row's artwork, so the flight starts from IT. */
   const artworkRefs = useRef<Map<string, View | null>>(new Map());
 
   /** The in-flight copy: null when nothing is travelling. */
@@ -140,7 +145,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
         Animated.timing(flightProgress, {
           toValue: 1,
           duration: 650,
-          // Eases out of the card and into the cart rather than running at a
+          // Eases out of the row and into the cart rather than running at a
           // constant speed, which is what makes it read as a throw.
           easing: Easing.bezier(0.4, 0, 0.3, 1),
           useNativeDriver: true,
@@ -172,6 +177,8 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
     () => (cart?.items || []).reduce((sum, item) => sum + item.quantity, 0),
     [cart]
   );
+
+  const selectedCount = selectedIds.size;
 
   // Service names come from the catalogue so the per-item buttons can never
   // drift from it. They label the item buttons — there is no service filter.
@@ -251,66 +258,92 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
     setServiceErrors((prev) => ({ ...prev, [itemId]: false }));
   };
 
+  /** Toggle a row's SELECTION tick. */
+  const toggleSelected = (itemId: string) => {
+    setError('');
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  };
+
   const serviceLabel = (code: string) =>
     services.find((service) => service.code === code)?.name ||
     (code === 'dry_clean' ? 'Dry Clean' : 'Wash & Iron');
 
-  const handleAddToOrder = async (item: BusinessItem) => {
-    // First line of the double-tap defence. The button is disabled while an
-    // add is in flight and the store refuses a concurrent call as well, so a
-    // tap that beats the re-render still cannot create a second line.
-    if (addingItemId) return;
+  /**
+   * ADD ORDER TO BASKET.
+   *
+   * Validates every ticked row first — a whole-number quantity of at least 1
+   * and a chosen service — then adds them one at a time through the SAME
+   * `addItem` action the screen has always used. Rows that made it in are
+   * un-ticked as they land, so a failure part-way through leaves only the
+   * un-added rows selected for a clean retry.
+   */
+  const handleAddOrderToBasket = async () => {
+    if (isSubmitting) return;
 
-    // Quantity first: it must be present and a whole number of at least 1.
-    const raw = getQuantityText(item.id).trim();
-    if (!raw) {
-      setError('Please enter a valid quantity.');
-      return;
-    }
-    const quantity = Number.parseInt(raw, 10);
-    if (!Number.isFinite(quantity)) {
-      setError('Please enter a valid quantity.');
-      return;
-    }
-    if (quantity < 1) {
-      setError('Quantity must be at least 1.');
+    const chosen = items.filter((item) => selectedIds.has(item.id));
+    if (chosen.length === 0) {
+      setError('Tick at least one item to add to your basket.');
       return;
     }
 
-    // Then the service. A single-service item already has it selected, and
-    // falls back to its only service defensively; anything with a choice to
-    // make must have been chosen. Validated BEFORE the item is added.
-    const lineService =
-      itemServices[item.id] ||
-      (item.service_types.length === 1 ? item.service_types[0] : undefined);
-    if (!lineService) {
-      setServiceErrors((prev) => ({ ...prev, [item.id]: true }));
-      setError(ITEM_SERVICE_REQUIRED_MESSAGE);
-      return;
+    const prepared: Array<{ item: BusinessItem; quantity: number; service: string }> = [];
+    for (const item of chosen) {
+      const raw = getQuantityText(item.id).trim();
+      const quantity = Number.parseInt(raw, 10);
+      if (!raw || !Number.isFinite(quantity) || quantity < 1) {
+        setError(`Enter a valid quantity for ${item.name}.`);
+        return;
+      }
+      // A single-service item already has it selected, and falls back to its
+      // only service defensively; anything with a choice must have been chosen.
+      const lineService =
+        itemServices[item.id] ||
+        (item.service_types.length === 1 ? item.service_types[0] : undefined);
+      if (!lineService) {
+        setServiceErrors((prev) => ({ ...prev, [item.id]: true }));
+        setError(ITEM_SERVICE_REQUIRED_MESSAGE);
+        return;
+      }
+      prepared.push({ item, quantity, service: lineService });
     }
 
+    const added: string[] = [];
     try {
-      setAddingItemId(item.id);
+      setIsSubmitting(true);
       setError('');
-      // Launched BEFORE the request, not after it: the feedback is for the
-      // tap, and delaying it until the server answers would leave the exact
-      // gap it exists to fill. It runs alongside the call.
-      launchFlight(item);
-      // Quantity travels to the order as entered. The catalogue still carries
-      // a standard weight per piece and the server still records it — that is
-      // what the Sorter loads machines by; it is simply not shown here.
-      await addItem(item.id, quantity, lineService);
-      setQuantities((prev) => ({ ...prev, [item.id]: '1' }));
+      for (const line of prepared) {
+        // Launched BEFORE the request, not after it: the feedback is for the
+        // tap, and it runs alongside the call.
+        launchFlight(line.item);
+        // Quantity travels to the order as entered. The catalogue still carries
+        // a standard weight per piece and the server still records it.
+        await addItem(line.item.id, line.quantity, line.service);
+        added.push(line.item.id);
+        setQuantities((prev) => ({ ...prev, [line.item.id]: '1' }));
+      }
 
-      // Confirm it landed. The tick replaces the spinner rather than following
-      // it, so the button never returns to a state that looks untouched.
+      setSelectedIds(new Set());
       if (addedTimerRef.current) clearTimeout(addedTimerRef.current);
-      setAddedItemId(item.id);
-      addedTimerRef.current = setTimeout(() => setAddedItemId(null), 1400);
+      setJustAdded(true);
+      addedTimerRef.current = setTimeout(() => setJustAdded(false), 1600);
     } catch (err: any) {
-      setError(err?.message || 'Failed to add item to your order');
+      // Drop only the rows that actually made it into the cart.
+      if (added.length) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          added.forEach((id) => next.delete(id));
+          return next;
+        });
+      }
+      setError(err?.message || 'Failed to add items to your basket');
+      loadCart().catch(() => {});
     } finally {
-      setAddingItemId(null);
+      setIsSubmitting(false);
     }
   };
 
@@ -329,108 +362,30 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
     const selectedService = itemServices[item.id];
     const showServiceError = Boolean(serviceErrors[item.id]);
     const hasNoService = item.service_types.length === 0;
-    /** One service means nothing to choose — see the selector below. */
+    /** One service means nothing to choose — shown as a plain line. */
     const hasSingleService = item.service_types.length === 1;
-    const artwork = item.image_url ? { uri: item.image_url } : null;
-    const isAdding = addingItemId === item.id;
-    const isAdded = addedItemId === item.id;
-    /** Any add in flight locks every card, so two lines cannot be posted. */
-    const isBusy = addingItemId !== null;
+    const isChecked = selectedIds.has(item.id);
 
     return (
-      // Horizontal card: artwork on the left, everything else in the column
-      // beside it — details, then the service buttons, the quantity field and
-      // Add to Order, each at full size rather than squeezed into a corner.
-      <View style={styles.itemCard}>
-        {/* The flight starts from this view's measured position, which is
-            why it carries a ref keyed by item id. */}
-        <View
-          style={styles.itemImage}
-          ref={(node) => {
-            if (node) artworkRefs.current.set(item.id, node);
-            else artworkRefs.current.delete(item.id);
-          }}
-          collapsable={false}
-        >
-          {artwork ? (
-            <Image source={artwork} style={styles.itemImageInner} resizeMode="contain" />
-          ) : (
-            <Ionicons name="shirt-outline" size={32} color={COLORS.Primary} />
-          )}
-        </View>
-
-        <View style={styles.itemInfo}>
-          <View style={styles.itemNameRow}>
-            <Text style={styles.itemName}>{item.name}</Text>
-            {/* Why this item is near the top. Shown only where it is earned,
-                so the badge stays meaningful rather than decorating the whole
-                list. */}
+      <View>
+        <View style={styles.row}>
+          {/* ---- ITEM NAME ---- */}
+          <View style={styles.nameCell}>
+            <Text style={styles.itemName} numberOfLines={3}>
+              {item.name}
+            </Text>
             {item.order_count > 0 ? (
               <View style={styles.frequentBadge}>
-                <Ionicons name="repeat" size={12} color={COLORS.PrimaryDark} />
+                <Ionicons name="repeat" size={10} color={COLORS.PrimaryDark} />
                 <Text style={styles.frequentBadgeText}>Frequent</Text>
               </View>
             ) : null}
-          </View>
-          {/* Neither size nor weight is shown: the business orders by the
-              piece, so the unit is the only measure that means anything at
-              the point of ordering. */}
-          <Text style={styles.itemMeta}>Unit: {item.unit}</Text>
-
-          {/* This item's own laundry services, from the catalogue.
-
-              ONE SERVICE IS NOT A CHOICE. When the catalogue offers the item a
-              single service it is already selected, so a picker with one
-              option would only ask the user to confirm what cannot be varied.
-              The service is stated as a plain line instead, and the selector
-              appears only where there is genuinely something to choose.
-
-              With several, the buttons get a full row rather than a narrow
-              right-hand column, so they can be full size without cramping the
-              details. Selection is per item. */}
-          {hasNoService ? (
-            <Text style={styles.serviceErrorText}>No service available for this item</Text>
-          ) : hasSingleService ? (
-            <Text style={styles.itemMeta}>Service: {serviceLabel(item.service_types[0])}</Text>
-          ) : (
-            <>
-          <Text style={styles.sectionLabel}>Select Laundry Services</Text>
-          <View style={styles.serviceRow}>
-            {item.service_types.map((code) => {
-              const isSelected = selectedService === code;
-              return (
-                <TouchableOpacity
-                  key={code}
-                  style={[styles.serviceTag, isSelected && styles.serviceTagSelected]}
-                  onPress={() => handleSelectItemService(item.id, code)}
-                  activeOpacity={0.8}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected: isSelected }}
-                >
-                  <Ionicons
-                    name={isSelected ? 'checkmark-circle' : SERVICE_ICONS[code] || 'ellipse-outline'}
-                    size={20}
-                    color={isSelected ? COLORS.Surface : COLORS.PrimaryDark}
-                  />
-                  <Text
-                    style={[styles.serviceTagText, isSelected && styles.serviceTagTextSelected]}
-                  >
-                    {serviceLabel(code)}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
+            <Text style={styles.itemMeta}>Unit: {item.unit}</Text>
           </View>
 
-          {showServiceError ? (
-            <Text style={styles.serviceErrorText}>{ITEM_SERVICE_REQUIRED_MESSAGE}</Text>
-          ) : null}
-            </>
-          )}
-
-          {/* A typed numeric field, sized to be read and tapped easily. */}
-          <View style={styles.quantityBlock}>
-            <Text style={styles.quantityLabel}>Quantity</Text>
+          {/* ---- QUANTITY ----
+              A single, roomy input the user types into directly. */}
+          <View style={styles.qtyCell}>
             <TextInput
               style={styles.quantityInput}
               value={quantityText}
@@ -443,51 +398,80 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
             />
           </View>
 
-          {/* THREE STATES, and every one of them says which it is.
+          {/* ---- SERVICES ----
+              This item's own laundry services, from the catalogue. One service
+              is not a choice, so it is stated as a line; several get a stacked
+              set of radio options, selected per item. The whole column's
+              content sits on a subtle tint so it is easy to pick out. */}
+          <View style={[styles.serviceCell, styles.serviceCellHighlight]}>
+            {hasNoService ? (
+              <Text style={styles.serviceNone}>Not available</Text>
+            ) : hasSingleService ? (
+              <View style={styles.serviceOption}>
+                <Ionicons name="radio-button-on" size={16} color={COLORS.Primary} />
+                <Text style={styles.serviceOptionText}>{serviceLabel(item.service_types[0])}</Text>
+              </View>
+            ) : (
+              item.service_types.map((code) => {
+                const isSelected = selectedService === code;
+                return (
+                  <TouchableOpacity
+                    key={code}
+                    style={styles.serviceOption}
+                    onPress={() => handleSelectItemService(item.id, code)}
+                    activeOpacity={0.7}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: isSelected }}
+                  >
+                    <Ionicons
+                      name={isSelected ? 'radio-button-on' : 'radio-button-off'}
+                      size={16}
+                      color={isSelected ? COLORS.Primary : COLORS.TextSecondary}
+                    />
+                    <Text
+                      style={[
+                        styles.serviceOptionText,
+                        isSelected && styles.serviceOptionTextSelected,
+                      ]}
+                    >
+                      {serviceLabel(code)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </View>
 
-              Idle -> ADDING (spinner, disabled) -> ADDED (tick, briefly), then
-              back to idle. The tick is what confirms the item actually landed
-              in the order: a button that simply stops spinning leaves the user
-              guessing, and guessing is what produces a second tap.
-
-              `disabled` covers the whole card while ANY item is being added,
-              matching the store's own single-flight guard, so a double tap
-              cannot post two lines. */}
-          <View style={styles.itemActions}>
+          {/* ---- SELECTION ---- */}
+          <View style={styles.selectCell}>
             <TouchableOpacity
               style={[
-                styles.addButton,
-                isAdded && styles.addButtonAdded,
-                (hasNoService || isBusy) && styles.addButtonDisabled,
+                styles.checkbox,
+                isChecked && styles.checkboxChecked,
+                hasNoService && styles.checkboxDisabled,
               ]}
-              onPress={() => handleAddToOrder(item)}
-              disabled={isBusy || hasNoService}
-              activeOpacity={0.85}
-              accessibilityRole="button"
-              accessibilityLabel={`Add ${item.name} to order`}
-              accessibilityState={{ disabled: isBusy || hasNoService, busy: isAdding }}
+              onPress={() => toggleSelected(item.id)}
+              disabled={hasNoService}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: isChecked, disabled: hasNoService }}
+              accessibilityLabel={`Select ${item.name} for the basket`}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              {isAdding ? (
-                <>
-                  <ActivityIndicator size="small" color={COLORS.Surface} />
-                  <Text style={styles.addButtonText}>ADDING…</Text>
-                </>
-              ) : isAdded ? (
-                <>
-                  <Ionicons name="checkmark-circle" size={22} color={COLORS.Surface} />
-                  <Text style={styles.addButtonText}>ADDED</Text>
-                </>
-              ) : (
-                <Text style={styles.addButtonText}>ADD TO ORDER</Text>
-              )}
+              {isChecked ? (
+                <Ionicons name="checkmark" size={22} color={COLORS.Surface} />
+              ) : null}
             </TouchableOpacity>
           </View>
         </View>
+
+        {showServiceError ? (
+          <Text style={styles.serviceErrorText}>{ITEM_SERVICE_REQUIRED_MESSAGE}</Text>
+        ) : null}
       </View>
     );
   };
 
-  const header = (
+  const listHeader = (
     <View>
       <View style={styles.searchContainer}>
         <Ionicons name="search-outline" size={20} color={COLORS.TextSecondary} />
@@ -515,6 +499,16 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
       <Text style={styles.countLine}>
         {isLoading ? 'Loading…' : `${items.length} item${items.length === 1 ? '' : 's'}`}
       </Text>
+
+      {/* Column headings — line up with every row's cells below. */}
+      {items.length > 0 ? (
+        <View style={styles.headerRow}>
+          <Text style={[styles.headerCell, styles.nameCell]}>ITEM NAME</Text>
+          <Text style={[styles.headerCell, styles.qtyCell]}>QTY</Text>
+          <Text style={[styles.headerCell, styles.serviceCell]}>SERVICES</Text>
+          <Text style={[styles.headerCell, styles.selectCell]}>SELECT</Text>
+        </View>
+      ) : null}
     </View>
   );
 
@@ -547,7 +541,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
         data={items}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
-        ListHeaderComponent={header}
+        ListHeaderComponent={listHeader}
         contentContainerStyle={styles.listContent}
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
@@ -558,6 +552,41 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
           )
         }
       />
+
+      {/* ---- ADD ORDER TO BASKET ----
+          Below the list, like the reference. Adds every ticked row to the cart
+          in one pass through the existing `addItem` action. */}
+      <View style={styles.basketBar}>
+        <TouchableOpacity
+          style={[
+            styles.basketButton,
+            justAdded && styles.basketButtonAdded,
+            (selectedCount === 0 || isSubmitting) && styles.basketButtonDisabled,
+          ]}
+          onPress={handleAddOrderToBasket}
+          disabled={selectedCount === 0 || isSubmitting}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Add order to basket"
+          accessibilityState={{ disabled: selectedCount === 0 || isSubmitting, busy: isSubmitting }}
+        >
+          {isSubmitting ? (
+            <>
+              <ActivityIndicator size="small" color={COLORS.Surface} />
+              <Text style={styles.basketButtonText}>ADDING…</Text>
+            </>
+          ) : justAdded ? (
+            <>
+              <Ionicons name="checkmark-circle" size={22} color={COLORS.Surface} />
+              <Text style={styles.basketButtonText}>ADDED TO BASKET</Text>
+            </>
+          ) : (
+            <Text style={styles.basketButtonText}>
+              ADD ORDER TO BASKET{selectedCount > 0 ? ` (${selectedCount})` : ''}
+            </Text>
+          )}
+        </TouchableOpacity>
+      </View>
 
       {/*
         THE ITEM IN FLIGHT.
@@ -635,9 +664,15 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
   );
 }
 
+/* Column widths shared by the heading row and every item row, so the five
+   columns line up. NAME takes the space the fixed columns leave. */
+const QTY_W = 60;
+const SERVICE_W = 104;
+const SELECT_W = 46;
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
-  listContent: { padding: SPACING.md, paddingBottom: SPACING.xxl },
+  listContent: { padding: SPACING.md, paddingBottom: SPACING.lg },
 
   cartButton: {
     width: 44,
@@ -689,142 +724,163 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
   },
 
-  itemCard: {
+  // ---- Column headings ----
+  headerRow: {
     flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+    paddingBottom: SPACING.xs,
+    borderBottomWidth: 2,
+    borderBottomColor: COLORS.Primary,
+    marginBottom: SPACING.xs,
+  },
+  headerCell: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    color: COLORS.PrimaryDark,
+    textTransform: 'uppercase',
+  },
+
+  // ---- Rows ----
+  row: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: SPACING.xs,
     backgroundColor: COLORS.Surface,
-    borderRadius: BORDER_RADIUS.lg,
-    padding: SPACING.md,
-    marginBottom: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.sm,
+    marginBottom: SPACING.xs,
     borderWidth: 1,
     borderColor: COLORS.Border,
     ...SHADOWS.light,
   },
-  // The artwork keeps its size as the controls grow — the card gets taller,
-  // nothing else gets squeezed.
-  itemImage: {
-    width: 68,
-    height: 68,
-    borderRadius: BORDER_RADIUS.md,
-    backgroundColor: COLORS.Accent + '30',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: SPACING.md,
-    overflow: 'hidden',
+
+  // Shared column widths (heading + row).
+  nameCell: { flex: 1, minWidth: 0 },
+  qtyCell: { width: QTY_W, alignItems: 'center' },
+  serviceCell: { width: SERVICE_W },
+  selectCell: { width: SELECT_W, alignItems: 'center' },
+
+  // A clean, subtle tint behind the Services column's content so it reads as
+  // its own block. Column width, position and text are unchanged.
+  serviceCellHighlight: {
+    backgroundColor: COLORS.Accent + '22',
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
   },
+
   itemImageInner: { width: '100%', height: '100%' },
-  itemInfo: { flex: 1, minWidth: 0 },
+
   itemName: {
     fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.lg,
+    fontSize: TYPOGRAPHY.sizes.base,
     fontWeight: '700',
     color: COLORS.TextPrimary,
   },
   itemMeta: {
     fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.sm,
+    fontSize: 11,
     color: COLORS.TextSecondary,
-    marginTop: 3,
+    marginTop: 2,
   },
-
-  // ---- "Frequent" badge ----
-  // Sits beside the name rather than above it, so the ranked items are
-  // obvious while scanning without adding a row to every card.
-  itemNameRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs, flexWrap: 'wrap' },
   frequentBadge: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
     gap: 3,
     backgroundColor: COLORS.Accent + '40',
     borderRadius: BORDER_RADIUS.sm,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    marginTop: 3,
   },
   frequentBadgeText: {
     fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '800',
     color: COLORS.PrimaryDark,
   },
 
-  // ---- Laundry service buttons ----
-  // Full-size buttons rather than pills. `flexBasis` with `flexGrow` is what
-  // makes them share a row on a wide screen and take a full row each on a
-  // narrow one, so the label always has room and the target stays large.
-  sectionLabel: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.base,
-    fontWeight: '700',
-    color: COLORS.TextPrimary,
-    marginTop: SPACING.md,
-    marginBottom: SPACING.xs,
-  },
-  serviceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
-  serviceTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: SPACING.xs,
-    flexGrow: 1,
-    flexBasis: 150,
-    minHeight: 52,
-    paddingHorizontal: SPACING.md,
-    backgroundColor: COLORS.Surface,
-    borderWidth: 2,
-    borderColor: COLORS.Border,
-    borderRadius: BORDER_RADIUS.md,
-  },
-  // Selected reads at a glance: filled in the theme green, dark border,
-  // white bold label and a checkmark, against a plain outlined button.
-  serviceTagSelected: {
-    backgroundColor: COLORS.Primary,
-    borderColor: COLORS.PrimaryDark,
-    ...SHADOWS.medium,
-  },
-  serviceTagText: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.base,
-    fontWeight: '600',
-    color: COLORS.TextPrimary,
-  },
-  serviceTagTextSelected: { color: COLORS.Surface, fontWeight: '800' },
-  serviceErrorText: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.sm,
-    color: COLORS.Error,
-    marginTop: SPACING.xs,
-  },
-
   // ---- Quantity ----
-  // A labelled numeric field, sized to be read and tapped at arm's length.
-  quantityBlock: { marginTop: SPACING.md },
-  quantityLabel: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.base,
-    fontWeight: '700',
-    color: COLORS.TextPrimary,
-    marginBottom: SPACING.xs,
-  },
+  // A single, larger input box (the +/- buttons were removed) so the value is
+  // easy to read and to type. Same column position as before.
   quantityInput: {
-    width: 130,
-    height: 58,
-    borderWidth: 2,
+    width: QTY_W,
+    height: 48,
+    borderWidth: 1.5,
     borderColor: COLORS.Primary,
-    borderRadius: BORDER_RADIUS.md,
+    borderRadius: BORDER_RADIUS.sm,
     backgroundColor: COLORS.Surface,
-    paddingHorizontal: SPACING.md,
+    paddingHorizontal: 4,
     paddingVertical: 0,
     textAlign: 'center',
     textAlignVertical: 'center',
     fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.xxl,
+    fontSize: TYPOGRAPHY.sizes.lg,
     fontWeight: '700',
     color: COLORS.TextPrimary,
   },
 
-  // ---- Add to Order ----
-  // The card's most prominent control: full width of the content column.
-  itemActions: { marginTop: SPACING.md },
-  addButton: {
+  // ---- Services ----
+  serviceOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 3,
+  },
+  serviceOptionText: {
+    flex: 1,
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.TextSecondary,
+  },
+  serviceOptionTextSelected: { color: COLORS.PrimaryDark, fontWeight: '800' },
+  serviceNone: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: 11,
+    color: COLORS.TextSecondary,
+    fontStyle: 'italic',
+  },
+  serviceErrorText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: 11,
+    color: COLORS.Error,
+    marginTop: -2,
+    marginBottom: SPACING.xs,
+    marginLeft: SPACING.sm,
+  },
+
+  // ---- Selection ----
+  checkbox: {
+    width: 32,
+    height: 32,
+    borderRadius: BORDER_RADIUS.xs,
+    borderWidth: 2,
+    borderColor: COLORS.Primary,
+    backgroundColor: COLORS.Surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  checkboxChecked: { backgroundColor: COLORS.Primary },
+  checkboxDisabled: { borderColor: COLORS.Border, opacity: 0.5 },
+
+  // ---- Add order to basket ----
+  basketBar: {
+    paddingHorizontal: SPACING.md,
+    paddingTop: SPACING.sm,
+    paddingBottom: SPACING.md,
+    backgroundColor: COLORS.Background,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.Border,
+  },
+  basketButton: {
     backgroundColor: COLORS.Primary,
     borderRadius: BORDER_RADIUS.md,
     height: 56,
@@ -834,10 +890,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     ...SHADOWS.medium,
   },
-  addButtonDisabled: { opacity: 0.5 },
-  /** The confirmed state — a darker green, so ADDED reads as a result. */
-  addButtonAdded: { backgroundColor: COLORS.PrimaryDark },
-  addButtonText: {
+  basketButtonDisabled: { opacity: 0.5 },
+  basketButtonAdded: { backgroundColor: COLORS.PrimaryDark },
+  basketButtonText: {
     color: COLORS.Surface,
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.lg,
