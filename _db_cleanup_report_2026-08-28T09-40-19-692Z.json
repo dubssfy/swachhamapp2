@@ -1,0 +1,165 @@
+{
+  "db": "defaultdb",
+  "startedAt": "2026-08-28T09:40:18.878Z",
+  "backupFile": "C:\\Users\\Dell\\swachhamapp2\\_db_backup_orders_2026-08-28T09-40-19-692Z.json",
+  "backupBytes": 968475,
+  "result": "COMMITTED",
+  "masterAfter": {
+    "service_categories": {
+      "n": "35",
+      "sum_id": "3863"
+    },
+    "services": {
+      "n": "166",
+      "sum_id": "90567"
+    },
+    "customer_price_list": {
+      "n": "0",
+      "sum_id": "0",
+      "sum_price": "0.00"
+    },
+    "business_price_list": {
+      "n": "53",
+      "sum_id": "3722",
+      "sum_price": "1243.00",
+      "crc": "125810032517"
+    },
+    "item_service_types": {
+      "n": "259",
+      "sum_item": "144900",
+      "sum_svc": "22217"
+    },
+    "coupons": {
+      "n": "0",
+      "sum_id": "0"
+    }
+  },
+  "deleted": {
+    "notifications": 33,
+    "batch_garments": 1371,
+    "garment_scans": 0,
+    "order_adjustment_notifications": 2,
+    "rider_job_offers": 2,
+    "batch_order_items": 29,
+    "order_garments": 1629,
+    "order_item_adjustments": 5,
+    "order_status_history": 110,
+    "order_defects": 1,
+    "rider_jobs": 5,
+    "pickups": 28,
+    "deliveries": 26,
+    "production_status_history": 0,
+    "production_orders": 0,
+    "reviews": 0,
+    "order_items": 68,
+    "laundry_batches": 14,
+    "orders": 29,
+    "business_payment_receipts": 1,
+    "cart_items": 1,
+    "carts": 11
+  },
+  "deletedTotal": 3365,
+  "finalClearedCounts": {
+    "notifications": 0,
+    "batch_garments": 0,
+    "garment_scans": 0,
+    "order_adjustment_notifications": 0,
+    "rider_job_offers": 0,
+    "batch_order_items": 0,
+    "order_garments": 0,
+    "order_item_adjustments": 0,
+    "order_status_history": 0,
+    "order_defects": 0,
+    "rider_jobs": 0,
+    "pickups": 0,
+    "deliveries": 0,
+    "production_status_history": 0,
+    "production_orders": 0,
+    "reviews": 0,
+    "order_items": 0,
+    "laundry_batches": 0,
+    "orders": 0,
+    "business_payment_receipts": 0,
+    "cart_items": 0,
+    "carts": 0
+  },
+  "masterFinal": {
+    "service_categories": {
+      "n": "35",
+      "sum_id": "3863"
+    },
+    "services": {
+      "n": "166",
+      "sum_id": "90567"
+    },
+    "customer_price_list": {
+      "n": "0",
+      "sum_id": "0",
+      "sum_price": "0.00"
+    },
+    "business_price_list": {
+      "n": "53",
+      "sum_id": "3722",
+      "sum_price": "1243.00",
+      "crc": "125810032517"
+    },
+    "item_service_types": {
+      "n": "259",
+      "sum_item": "144900",
+      "sum_svc": "22217"
+    },
+    "coupons": {
+      "n": "0",
+      "sum_id": "0"
+    }
+  },
+  "priceListUnchanged": true,
+  "priceListSample": [
+    {
+      "id": "34",
+      "business_id": "25",
+      "item_id": "2",
+      "laundry_type": "hotel",
+      "price": "10.00",
+      "item_name": "Hand Towel",
+      "category": "Bath Linen"
+    },
+    {
+      "id": "35",
+      "business_id": "25",
+      "item_id": "545",
+      "laundry_type": "hotel",
+      "price": "10.00",
+      "item_name": "Small carpet",
+      "category": "Carpet & Rugs"
+    },
+    {
+      "id": "36",
+      "business_id": "25",
+      "item_id": "591",
+      "laundry_type": "hotel",
+      "price": "25.00",
+      "item_name": "Chef Coat",
+      "category": "F&B Production"
+    },
+    {
+      "id": "39",
+      "business_id": "25",
+      "item_id": "490",
+      "laundry_type": "hotel",
+      "price": "15.00",
+      "item_name": "Face Towel",
+      "category": "Towels & Bath Accessories"
+    },
+    {
+      "id": "42",
+      "business_id": "44",
+      "item_id": "490",
+      "laundry_type": "hotel",
+      "price": "40.00",
+      "item_name": "Face Towel",
+      "category": "Towels & Bath Accessories"
+    }
+  ],
+  "finishedAt": "2026-08-28T09:40:22.642Z"
+}

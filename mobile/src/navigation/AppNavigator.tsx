@@ -220,6 +220,8 @@ import SuperAdminEditBusinessScreen from '../screens/superadmin/SuperAdminEditBu
 import SuperAdminPriceListScreen from '../screens/superadmin/SuperAdminPriceListScreen';
 import SuperAdminCustomerPricesScreen from '../screens/superadmin/SuperAdminCustomerPricesScreen';
 import SuperAdminBusinessPricesScreen from '../screens/superadmin/SuperAdminBusinessPricesScreen';
+import SuperAdminBusinessPriceBrowseScreen from '../screens/superadmin/SuperAdminBusinessPriceBrowseScreen';
+import SuperAdminBusinessPricesListScreen from '../screens/superadmin/SuperAdminBusinessPricesListScreen';
 import SuperAdminRequestsScreen from '../screens/superadmin/SuperAdminRequestsScreen';
 import SuperAdminManagersScreen from '../screens/superadmin/SuperAdminManagersScreen';
 
@@ -597,6 +599,8 @@ function SuperAdminStack() {
       <Stack.Screen name="SuperAdminPriceList" component={SuperAdminPriceListScreen} />
       <Stack.Screen name="SuperAdminCustomerPrices" component={SuperAdminCustomerPricesScreen} />
       <Stack.Screen name="SuperAdminBusinessPrices" component={SuperAdminBusinessPricesScreen} />
+      <Stack.Screen name="SuperAdminBusinessPriceBrowse" component={SuperAdminBusinessPriceBrowseScreen} />
+      <Stack.Screen name="SuperAdminBusinessPricesList" component={SuperAdminBusinessPricesListScreen} />
       {/* Creation requests: one screen, the kind chosen by route param. */}
       <Stack.Screen name="SuperAdminRequests" component={SuperAdminRequestsScreen} />
       <Stack.Screen name="SuperAdminManagers" component={SuperAdminManagersScreen} />

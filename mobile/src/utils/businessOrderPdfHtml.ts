@@ -217,7 +217,12 @@ export function buildBusinessOrderPdfHtml(
     return `<!DOCTYPE html><html><head><meta charset="utf-8" />
 <style>
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif; color: #1B1B1B; padding: 28px; }
+  body { font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif; color: #1B1B1B; padding: 28px; padding-top: 52px; }
+  /* The Swachham mark, pinned so the print engine repeats it at the top-left
+     of EVERY page. The extra top padding on body is what keeps page content
+     from sitting under it. The page-1 header block below is unchanged. */
+  .page-brand { position: fixed; top: 8px; left: 8px; }
+  .page-brand img { width: 34px; height: 34px; object-fit: contain; }
   .head { display: flex; align-items: center; gap: 14px; border-bottom: 3px solid #2D6A4F; padding-bottom: 14px; }
   .docbusiness { text-align: center; font-size: 20px; font-weight: 700; color: #1B4332;
                  margin: 16px 0 0; }
@@ -260,6 +265,7 @@ export function buildBusinessOrderPdfHtml(
   .adjnote { font-size: 11px; color: #6B7280; margin: 8px 0 0; line-height: 1.5; }
   footer { margin-top: 28px; border-top: 1px solid #E5E7EB; padding-top: 10px; text-align: center; color: #9AA3AE; font-size: 10px; }
 </style></head><body>
+  ${logo ? `<div class="page-brand"><img src="${logo}" /></div>` : ''}
   <div class="head">
     ${logo ? `<img class="logo" src="${logo}" />` : ''}
     <div>

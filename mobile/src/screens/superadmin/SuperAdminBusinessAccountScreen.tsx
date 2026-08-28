@@ -1,13 +1,14 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl,
-  TextInput, Alert, Modal,
+  TextInput, Alert, Modal, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as Print from 'expo-print';
 import { COLORS, SPACING, TYPOGRAPHY } from '../../constants/theme';
 import { sa, STATUS_TONE } from './styles';
 import superAdminApi, {
@@ -25,7 +26,7 @@ import WalkingOrderModal from './WalkingOrderModal';
  * That is what makes the PDF opened here the very document the business gets,
  * mobile number and establishment name included.
  */
-import { generateOrderPdf } from '../../utils/businessOrderPdf';
+import { generateOrderPdf, buildPdfBaseName } from '../../utils/businessOrderPdf';
 
 /**
  * Business Account.
@@ -252,6 +253,10 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
   const [walkingOpen, setWalkingOpen] = useState(false);
   /** The order whose PDF is being built, so only its own row shows a spinner. */
   const [pdfFor, setPdfFor] = useState<string | null>(null);
+  /** The order whose "More Options" menu is open, or null when it is closed. */
+  const [menuOrder, setMenuOrder] = useState<BusinessAccountOrder | null>(null);
+  /** True while a More Options action is generating/handing off the PDF. */
+  const [actionBusy, setActionBusy] = useState(false);
 
   const load = useCallback(async () => {
     setError('');
@@ -302,6 +307,115 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
       );
     } finally {
       setPdfFor(null);
+    }
+  };
+
+  /* ---- More Options ----
+   *
+   * Every action uses the SAME existing generator: fetch the order in the shape
+   * the app already uses, hand it to `generateOrderPdf`, then perform the
+   * native action on the resulting file. No second PDF path.
+   */
+  const buildOrderPdf = async (o: BusinessAccountOrder) => {
+    const data = await superAdminApi.getBusinessAccountOrder(business.id, o.id);
+    return generateOrderPdf(data.order);
+  };
+
+  const shareOrderPdf = async (uri: string, fileName: string) => {
+    if (!(await Sharing.isAvailableAsync())) {
+      Alert.alert('PDF ready', fileName);
+      return;
+    }
+    await Sharing.shareAsync(uri, {
+      mimeType: 'application/pdf',
+      dialogTitle: fileName,
+      UTI: 'com.adobe.pdf',
+    });
+  };
+
+  const runPdfAction = async (
+    o: BusinessAccountOrder,
+    action: 'open' | 'print' | 'share' | 'save'
+  ) => {
+    if (actionBusy) return;
+    setMenuOrder(null);
+    setActionBusy(true);
+    setError('');
+    try {
+      const { uri, fileName } = await buildOrderPdf(o);
+
+      // Print reads the file path literally. The generated URI is
+      // percent-encoded (the order number's "#" becomes "%23"), which Share and
+      // Save decode fine but the print service does not — so give it a copy
+      // under a plain ASCII name.
+      let plainUri = uri;
+      if (action === 'print') {
+        try {
+          const safe = `${FileSystem.cacheDirectory}order-pdf.pdf`;
+          await FileSystem.deleteAsync(safe, { idempotent: true });
+          await FileSystem.copyAsync({ from: uri, to: safe });
+          plainUri = safe;
+        } catch {
+          // Keep the original URI if the copy fails.
+        }
+      }
+
+      if (action === 'open') {
+        // A bare content:// view-intent (Linking.openURL) launches a viewer
+        // without read access to the file, which renders as a blank page. The
+        // system sheet hands the viewer a readable copy and is the reliable
+        // cross-platform way to open the document.
+        await shareOrderPdf(uri, fileName);
+        return;
+      }
+
+      if (action === 'print') {
+        try {
+          await Print.printAsync({ uri: plainUri });
+        } catch (e: any) {
+          // Dismissing the print dialog is a normal outcome, not a failure.
+          if (/cancel|dismiss/i.test(String(e?.message || ''))) return;
+          // No printing on this device — offer the file instead of losing it.
+          if (await Sharing.isAvailableAsync()) {
+            await shareOrderPdf(uri, fileName);
+            return;
+          }
+          throw e;
+        }
+        return;
+      }
+
+      if (action === 'share') {
+        await shareOrderPdf(uri, fileName);
+        return;
+      }
+
+      // save
+      if (Platform.OS !== 'android') {
+        // iOS has no public Downloads folder; the sheet's "Save to Files" is the
+        // platform-appropriate save.
+        await shareOrderPdf(uri, fileName);
+        return;
+      }
+      const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Not saved', 'Storage permission was declined.');
+        return;
+      }
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+      const dest = await FileSystem.StorageAccessFramework.createFileAsync(
+        perm.directoryUri,
+        buildPdfBaseName(o.order_number, business.name),
+        'application/pdf'
+      );
+      await FileSystem.writeAsStringAsync(dest, base64, { encoding: 'base64' });
+      Alert.alert('Saved', 'The order PDF was saved to the folder you chose.');
+    } catch (e: any) {
+      setError(
+        e?.response?.data?.message || e?.message || 'Could not complete that PDF action.'
+      );
+    } finally {
+      setActionBusy(false);
     }
   };
 
@@ -399,6 +513,12 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
                   onPress={() => handleViewPdf(o)}
                   accessibilityLabel={`Open the order confirmation PDF for ${o.order_number}`}
                 />
+                <ActionButton
+                  icon="ellipsis-horizontal"
+                  label="More Options"
+                  onPress={() => setMenuOrder(o)}
+                  accessibilityLabel={`More PDF options for ${o.order_number}`}
+                />
               </View>
             </View>
           </View>
@@ -414,6 +534,74 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
         onClose={() => setWalkingOpen(false)}
         onImported={load}
       />
+
+      {/* More Options — the four native actions, all on the EXISTING Order PDF.
+          Same bottom-sheet pattern as the other modals on this screen. */}
+      <Modal
+        visible={menuOrder !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !actionBusy && setMenuOrder(null)}
+      >
+        <View style={sa.modalBackdrop}>
+          <View style={sa.modalSheet}>
+            <View style={sa.header}>
+              <Text style={[sa.headerTitle, { flex: 1 }]} numberOfLines={1}>
+                {menuOrder?.order_number || 'Order PDF'}
+              </Text>
+              <TouchableOpacity
+                style={sa.iconBtn}
+                onPress={() => setMenuOrder(null)}
+                disabled={actionBusy}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={22} color={COLORS.TextPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={sa.scroll}>
+              {actionBusy ? (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: SPACING.sm,
+                    paddingVertical: SPACING.sm,
+                  }}
+                >
+                  <ActivityIndicator color={COLORS.Primary} />
+                  <Text style={sa.choiceText}>Preparing PDF…</Text>
+                </View>
+              ) : (
+                (['open', 'print', 'share', 'save'] as const).map((action) => {
+                  const meta = {
+                    open: { icon: 'open-outline', label: 'Open PDF' },
+                    print: { icon: 'print-outline', label: 'Print PDF' },
+                    share: { icon: 'share-social-outline', label: 'Share PDF' },
+                    save: { icon: 'download-outline', label: 'Save PDF to Mobile' },
+                  }[action];
+                  return (
+                    <TouchableOpacity
+                      key={action}
+                      style={sa.choice}
+                      onPress={() => menuOrder && runPdfAction(menuOrder, action)}
+                      accessibilityRole="button"
+                      accessibilityLabel={meta.label}
+                    >
+                      <Ionicons
+                        name={meta.icon as any}
+                        size={20}
+                        color={COLORS.Primary}
+                      />
+                      <Text style={sa.choiceText}>{meta.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <GstInvoiceModal
         visible={invoiceOpen}

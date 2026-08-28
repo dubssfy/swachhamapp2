@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl,
+  View, Text, ScrollView, TouchableOpacity, ActivityIndicator,
   TextInput, Modal, Alert, Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -12,8 +12,6 @@ import superAdminApi, {
   BusinessPrice, BusinessCompletenessRow, LaundryTypeValue,
 } from '../../services/superAdminApi';
 import CategoryItemPicker from './CategoryItemPicker';
-import { ActionButton } from './SuperAdminCustomerPricesScreen';
-import PriceCategoryGroups, { PriceItemRow } from './PriceCategoryGroups';
 import { printPriceListPdf } from './printPriceList';
 
 /**
@@ -52,7 +50,7 @@ import { printPriceListPdf } from './printPriceList';
  */
 
 /** The two rates a business can be priced at. Fixed by the backend enum. */
-const LAUNDRY_TYPES: Array<{ value: LaundryTypeValue; label: string }> = [
+export const LAUNDRY_TYPES: Array<{ value: LaundryTypeValue; label: string }> = [
   { value: 'hotel', label: 'Hotel Laundry' },
   { value: 'guest', label: 'Guest Laundry' },
 ];
@@ -80,21 +78,20 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
   const [addingNew, setAddingNew] = useState(false);
 
   const [rows, setRows] = useState<BusinessPrice[]>([]);
-  const [search, setSearch] = useState('');
+  /**
+   * Which of the three list buttons was last opened, so it stays highlighted
+   * when the admin comes back. The list itself now lives on its own page —
+   * SuperAdminBusinessPricesListScreen.
+   */
   const [filter, setFilter] = useState<Filter>('all');
-  /** Narrows the table to one top-level category. '' = all. */
-  const [categoryFilter, setCategoryFilter] = useState('');
-  /** Narrows further, to one sub-category of it. '' = all. Dependent. */
-  const [subcategoryFilter, setSubcategoryFilter] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
 
-  const [editing, setEditing] = useState<BusinessPrice | null>(null);
   /** True while the printable rate card is being fetched. */
   const [printing, setPrinting] = useState(false);
 
   const business = businesses.find((b) => b.business_id === businessId) || null;
+  const laundryTypeLabel =
+    LAUNDRY_TYPES.find((t) => t.value === laundryType)?.label ?? '';
 
   const loadBusinesses = useCallback(async () => {
     try {
@@ -108,89 +105,38 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
     }
   }, [businessId]);
 
-  // Re-fetched whenever the business OR the laundry type changes: the two
-  // together decide which price list is being looked at.
+  // Re-fetched whenever the business OR the laundry type changes: it feeds the
+  // three button counts, the "not set" warning, and the item picker exclusions.
   const loadPrices = useCallback(async () => {
     if (!businessId) return;
-    setLoading(true);
     setError('');
     try {
       setRows(await superAdminApi.getBusinessPrices(businessId, laundryType));
     } catch (e: any) {
       setError(e?.response?.data?.message || e.message || 'Could not load the price list');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
     }
   }, [businessId, laundryType]);
 
   useFocusEffect(useCallback(() => { loadBusinesses(); }, [loadBusinesses]));
-  React.useEffect(() => { loadPrices(); }, [loadPrices]);
+  // On focus too, so the button counts and the "not set" warning refresh after
+  // a price is changed on the list page and the admin comes back.
+  useFocusEffect(useCallback(() => { loadPrices(); }, [loadPrices]));
 
   const unsetCount = useMemo(() => rows.filter((row) => row.price === null).length, [rows]);
 
-  /** The top-level categories present in this business's list, for the chips. */
-  const categoryOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const row of rows) {
-      // Fall back to the item's own category when it has no parent — a flat
-      // category IS the top level.
-      const id = row.parent_category_id || row.category_id;
-      const name = row.parent_category_name || row.category_name;
-      if (id && name && !seen.has(id)) seen.set(id, name);
-    }
-    return Array.from(seen, ([id, name]) => ({ id, name }));
-  }, [rows]);
-
-  /** The sub-categories of the chosen category, and only those. */
-  const subcategoryOptions = useMemo(() => {
-    if (!categoryFilter) return [];
-    const seen = new Map<string, string>();
-    for (const row of rows) {
-      if (row.parent_category_id !== categoryFilter) continue;
-      if (row.category_id && row.category_name && !seen.has(row.category_id)) {
-        seen.set(row.category_id, row.category_name);
-      }
-    }
-    return Array.from(seen, ([id, name]) => ({ id, name }));
-  }, [rows, categoryFilter]);
-
-  /** Changing the category clears the sub-category below it. */
-  const chooseCategory = (id: string) => {
-    setCategoryFilter(id);
-    setSubcategoryFilter('');
-  };
-
-  /**
-   * Whether the two-step choice has been made.
-   *
-   * A category is always required. A sub-category is required as well WHENEVER
-   * the chosen category has any — a category whose items sit directly on it
-   * has none to choose, and waiting for one would leave its items unreachable.
-   */
-  const readyToList =
-    categoryFilter !== '' && (subcategoryOptions.length === 0 || subcategoryFilter !== '');
-
-  const shown = useMemo(() => {
-    // Nothing until Category -> Sub-category has been answered.
-    if (!readyToList) return [];
-    const needle = search.trim().toLowerCase();
-    return rows.filter((row) => {
-      if (filter === 'set' && row.price === null) return false;
-      if (filter === 'unset' && row.price !== null) return false;
-      if (categoryFilter) {
-        const id = row.parent_category_id || row.category_id;
-        if (id !== categoryFilter) return false;
-      }
-      if (subcategoryFilter && row.category_id !== subcategoryFilter) return false;
-      if (!needle) return true;
-      return (
-        row.item_name.toLowerCase().includes(needle) ||
-        (row.category_name || '').toLowerCase().includes(needle) ||
-        (row.parent_category_name || '').toLowerCase().includes(needle)
-      );
+  /** Open the Category page for one of the three lists, remembering which for
+   *  the button highlight on return. Category -> Sub-category -> Items follows
+   *  from there. */
+  const openList = (which: Filter) => {
+    setFilter(which);
+    navigation.navigate('SuperAdminBusinessPriceBrowse', {
+      businessId,
+      businessName: business?.business_name ?? '',
+      laundryType,
+      laundryTypeLabel,
+      filter: which,
     });
-  }, [rows, search, filter, categoryFilter, subcategoryFilter, readyToList]);
+  };
 
   /**
    * Print THIS business's rate card, at the laundry type on screen.
@@ -240,54 +186,6 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
         { text: 'Cancel', style: 'cancel' },
         { text: 'Priced items only', onPress: () => run(false) },
         { text: 'Include not set', onPress: () => run(true) },
-      ]
-    );
-  };
-
-  const toggleActive = async (row: BusinessPrice) => {
-    if (!businessId || !row.id) return;
-    try {
-      await superAdminApi.updateBusinessPrice(businessId, row.id, { is_active: !row.is_active });
-      loadPrices();
-    } catch (e: any) {
-      Alert.alert('Could not update', e?.response?.data?.message || e.message);
-    }
-  };
-
-  const confirmDelete = (row: BusinessPrice) => {
-    if (!businessId || !row.id) return;
-    Alert.alert(
-      'Remove this price?',
-      `${row.item_name} · ${row.laundry_type_label} — ${money(row.price)} for ` +
-        `${business?.business_name || 'this business'}.\n\n` +
-        'Only this laundry type is affected; the other one keeps its own price. ' +
-        'Past orders keep the price they were placed at. Without a price, this ' +
-        'business cannot order the item at this laundry type until one is set again.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Disable',
-          onPress: async () => {
-            try {
-              await superAdminApi.deleteBusinessPrice(businessId, row.id!);
-              loadPrices();
-            } catch (e: any) {
-              Alert.alert('Could not disable', e?.response?.data?.message || e.message);
-            }
-          },
-        },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await superAdminApi.deleteBusinessPrice(businessId, row.id!, true);
-              loadPrices();
-            } catch (e: any) {
-              Alert.alert('Could not delete', e?.response?.data?.message || e.message);
-            }
-          },
-        },
       ]
     );
   };
@@ -403,80 +301,28 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
             </Text>
           </TouchableOpacity>
 
-          <View style={{ paddingHorizontal: SPACING.md, paddingTop: SPACING.sm }}>
-            <TextInput
-              style={sa.input}
-              placeholder="Search items"
-              placeholderTextColor={COLORS.TextSecondary}
-              value={search}
-              onChangeText={setSearch}
-            />
-          </View>
-
-          <View style={[sa.tabs, { paddingTop: SPACING.sm }]}>
-            <FilterTab label={`All (${rows.length})`} on={filter === 'all'} onPress={() => setFilter('all')} />
+          {/* All / Priced / Not set. Each opens its own page — the item list
+              lives on SuperAdminBusinessPricesListScreen now. The tapped one
+              stays highlighted for when the admin comes back. */}
+          <View style={[sa.tabs, { paddingTop: SPACING.md }]}>
+            <FilterTab label={`All (${rows.length})`} on={filter === 'all'} onPress={() => openList('all')} />
             <FilterTab
               label={`Priced (${rows.length - unsetCount})`}
               on={filter === 'set'}
-              onPress={() => setFilter('set')}
+              onPress={() => openList('set')}
             />
             <FilterTab
               label={`Not set (${unsetCount})`}
               on={filter === 'unset'}
-              onPress={() => setFilter('unset')}
+              onPress={() => openList('unset')}
             />
           </View>
 
-          {/* STEP 1 — Category. Required: there is no "all", because showing
-              every item at once is the thing this replaces. Horizontally
-              scrolling, so any number of categories costs one row of height. */}
-          <Text style={[sa.label, { paddingHorizontal: SPACING.md }]}>CATEGORY</Text>
-          {categoryOptions.length > 0 && (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={sa.filterBar}
-            >
-              {categoryOptions.map((c) => {
-                const on = categoryFilter === c.id;
-                return (
-                  <TouchableOpacity
-                    key={c.id}
-                    style={[sa.filterChip, on && sa.filterChipOn]}
-                    onPress={() => chooseCategory(on ? '' : c.id)}
-                  >
-                    <Text style={[sa.filterChipText, on && sa.filterChipTextOn]}>{c.name}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          )}
-
-          {/* STEP 2 — Sub-category. DEPENDENT on the category above: it
-              appears only once one is chosen, and lists only that category's
-              children, so a pair that does not exist cannot be selected. */}
-          {categoryFilter && subcategoryOptions.length > 0 && (
-            <>
-            <Text style={[sa.label, { paddingHorizontal: SPACING.md }]}>SUB CATEGORY</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={sa.filterBar}
-            >
-              {subcategoryOptions.map((c) => {
-                const on = subcategoryFilter === c.id;
-                return (
-                  <TouchableOpacity
-                    key={c.id}
-                    style={[sa.filterChip, on && sa.filterChipOn]}
-                    onPress={() => setSubcategoryFilter(on ? '' : c.id)}
-                  >
-                    <Text style={[sa.filterChipText, on && sa.filterChipTextOn]}>{c.name}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-            </>
+          {!!error && (
+            <View style={[sa.errorBox, { marginHorizontal: SPACING.md }]}>
+              <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
+              <Text style={sa.errorText}>{error}</Text>
+            </View>
           )}
 
           {unsetCount > 0 && (
@@ -484,143 +330,10 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
               <Ionicons name="alert-circle-outline" size={16} color="#8A5200" />
               <Text style={sa.warnText}>
                 {unsetCount} item{unsetCount === 1 ? '' : 's'} have no{' '}
-                {LAUNDRY_TYPES.find((t) => t.value === laundryType)?.label} price for this
-                business. Orders at this laundry type containing them will be refused.
+                {laundryTypeLabel} price for this business. Orders at this laundry
+                type containing them will be refused.
               </Text>
             </View>
-          )}
-
-          {loading ? (
-            <View style={sa.centered}>
-              <ActivityIndicator size="large" color={COLORS.Primary} />
-            </View>
-          ) : (
-            <ScrollView
-              contentContainerStyle={sa.scroll}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={() => { setRefreshing(true); loadPrices(); }}
-                />
-              }
-            >
-              {!!error && (
-                <View style={sa.errorBox}>
-                  <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
-                  <Text style={sa.errorText}>{error}</Text>
-                </View>
-              )}
-
-              {!readyToList ? (
-                /* The prompt, not an error: nothing has gone wrong, a choice
-                   has simply not been made yet. It names the missing step. */
-                <Text style={sa.empty}>
-                  {categoryFilter === ''
-                    ? 'Choose a category to see its items.'
-                    : 'Choose a sub-category to see its items.'}
-                </Text>
-              ) : shown.length === 0 ? (
-                <Text style={sa.empty}>Nothing matches that filter.</Text>
-              ) : (
-                /* Main Category -> Sub-category -> Items. The category and
-                   sub-category are the headings, so each row carries only what
-                   is actually specific to it: the item, its rates, and what can
-                   be done to it. Every group opens while a search or filter is
-                   narrowing the list. */
-                <PriceCategoryGroups
-                  rows={shown}
-                  keyOf={(row) => String(row.item_id)}
-                  topIdOf={(row) => row.parent_category_id || row.category_id}
-                  topNameOf={(row) => row.parent_category_name || row.category_name}
-                  subIdOf={(row) => (row.parent_category_id ? row.category_id : null)}
-                  subNameOf={(row) => (row.parent_category_id ? row.category_name : null)}
-                  expandAll={
-                    search.trim() !== '' ||
-                    filter !== 'all' ||
-                    categoryFilter !== '' ||
-                    subcategoryFilter !== ''
-                  }
-                  renderItem={(row) => (
-                    <PriceItemRow
-                      title={row.item_name}
-                      subtitle={
-                        <View
-                          style={{
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            flexWrap: 'wrap',
-                            gap: SPACING.xs,
-                            marginTop: 2,
-                          }}
-                        >
-                          {/* The reference figure, never a fallback: the
-                              backend refuses to price an order from it. */}
-                          <Text style={sa.tdMuted}>
-                            Customer: {money(row.customer_price)}
-                          </Text>
-                          {row.price === null ? null : <StatusPill active={row.is_active} />}
-                          {!row.item_is_active ? (
-                            <Text style={[sa.tdMuted, { color: COLORS.Warning, fontSize: 10 }]}>
-                              item disabled
-                            </Text>
-                          ) : null}
-                        </View>
-                      }
-                      right={
-                        row.price === null ? (
-                          <Text style={[sa.tdPrice, { color: COLORS.Warning }]}>Not set</Text>
-                        ) : (
-                          <Text style={sa.tdPrice}>{money(row.price)}</Text>
-                        )
-                      }
-                      actions={
-                        <>
-                          <ActionButton
-                            icon={row.price === null ? 'add-circle-outline' : 'create-outline'}
-                            label={row.price === null ? 'Set' : 'Adjust'}
-                            tone="primary"
-                            onPress={() => setEditing(row)}
-                            accessibilityLabel={
-                              row.price === null
-                                ? `Set price for ${row.item_name}`
-                                : `Adjust price for ${row.item_name}`
-                            }
-                          />
-                          {/* Enable/Disable and Delete need a row to act on:
-                              an item with no price for this business has
-                              nothing to enable or remove yet. */}
-                          {row.id !== null && (
-                            <>
-                              <ActionButton
-                                icon={
-                                  row.is_active
-                                    ? 'close-circle-outline'
-                                    : 'checkmark-circle-outline'
-                                }
-                                label={row.is_active ? 'Disable' : 'Enable'}
-                                onPress={() => toggleActive(row)}
-                                accessibilityLabel={
-                                  row.is_active
-                                    ? `Disable price for ${row.item_name}`
-                                    : `Enable price for ${row.item_name}`
-                                }
-                              />
-                              <ActionButton
-                                icon="trash-outline"
-                                label="Delete"
-                                tone="danger"
-                                onPress={() => confirmDelete(row)}
-                                accessibilityLabel={`Remove price for ${row.item_name}`}
-                              />
-                            </>
-                          )}
-                        </>
-                      }
-                    />
-                  )}
-                />
-              )}
-            </ScrollView>
           )}
         </>
       )}
@@ -659,20 +372,20 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
         </View>
       </Modal>
 
+      {/* "+ Add New Entry" only. Row-level Set/Adjust now happens on the list
+         page. `row` is always null here — this sheet is the add path. */}
       <BusinessPriceModal
         businessId={businessId}
         businessName={business?.business_name || ''}
         laundryType={laundryType}
-        laundryTypeLabel={LAUNDRY_TYPES.find((t) => t.value === laundryType)?.label || ''}
-        row={editing}
-        /* "+ Add New Entry" opens the same sheet with no row, which is what
-           turns on the item picker inside it. */
+        laundryTypeLabel={laundryTypeLabel}
+        row={null}
         addingNew={addingNew}
         /* Items already priced at THIS laundry type, so the picker can leave
            them out — adding one again would only 409. */
         pricedItemIds={rows.filter((r) => r.price !== null).map((r) => r.item_id)}
-        onClose={() => { setEditing(null); setAddingNew(false); }}
-        onSaved={() => { setEditing(null); setAddingNew(false); loadPrices(); }}
+        onClose={() => setAddingNew(false)}
+        onSaved={() => { setAddingNew(false); loadPrices(); }}
       />
     </SafeAreaView>
   );
@@ -686,7 +399,7 @@ function FilterTab({ label, on, onPress }: { label: string; on: boolean; onPress
   );
 }
 
-function StatusPill({ active }: { active: boolean }) {
+export function StatusPill({ active }: { active: boolean }) {
   const tone = active ? STATUS_TONE.ACTIVE : STATUS_TONE.INACTIVE;
   return (
     <View style={[sa.pill, { backgroundColor: tone.bg }]}>
@@ -724,7 +437,7 @@ interface ModalProps {
  * shown, not chosen again — that is what stops a Guest price being saved
  * while the Hotel table is on screen.
  */
-function BusinessPriceModal({
+export function BusinessPriceModal({
   businessId,
   businessName,
   laundryType,

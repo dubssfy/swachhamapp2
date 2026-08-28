@@ -23,6 +23,12 @@ import {
 } from '../../store/businessOrderStore';
 
 /**
+ * The laundry-bag artwork that flies from the ADD ORDER TO BASKET button to
+ * the cart icon. Purely decorative — see the FLY-TO-CART block below.
+ */
+const LAUNDRY_BAG = require('../../assets/images/laundry-bag.png');
+
+/**
  * Item selection for one category — a compact five-column table.
  *
  *   ITEM ICON | ITEM NAME | QUANTITY | SERVICES | SELECTION
@@ -73,40 +79,36 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
   const { cart, loadCart, addItem } = useBusinessOrderStore();
 
   /* =================================================================
-   * FLY-TO-CART
+   * LAUNDRY BAG — FLY-TO-CART
    *
-   * A copy of the item's artwork lifts off the row and arcs into the cart
-   * button, shrinking and fading as it goes; the badge then bumps as the
-   * count updates. The point is that the ITEM is seen to travel — a spinner
-   * says "something is happening", this says "that item went into the order".
+   * When ADD ORDER TO BASKET is pressed the laundry-bag image lifts off the
+   * button and arcs slowly into the cart icon at the top-right, shrinking and
+   * fading as it goes; the badge then bumps as the count updates. It reads as
+   * ADD TO BASKET -> bag -> cart.
    *
-   * It is decoration over a real result, never a substitute for one: the
-   * flight is started from the row's measured position at the moment of the
-   * tap and runs ALONGSIDE the request, and the count comes from the store
-   * once the server answers. A failed add leaves no item in the cart no
-   * matter what the animation did.
-   *
-   * `useNativeDriver` throughout — only transform and opacity are animated,
-   * so the flight runs on the UI thread and stays smooth while the request
-   * is in flight.
+   * Purely decorative: it is launched ALONGSIDE the existing `addItem` calls
+   * and never gates or replaces them, and the count still comes from the store
+   * once the server answers. Start and end positions are MEASURED at launch
+   * from the real button and cart refs, so it lands correctly on any screen
+   * size. `useNativeDriver` throughout — only transform and opacity animate.
    * ================================================================= */
 
-  /** Where the cart button is, measured on layout. */
+  /** The cart icon (top-right) — the flight's target. Measured on layout. */
   const cartButtonRef = useRef<View>(null);
   const cartTarget = useRef<{ x: number; y: number } | null>(null);
-  /** One ref per rendered row's artwork, so the flight starts from IT. */
-  const artworkRefs = useRef<Map<string, View | null>>(new Map());
+  /** The ADD ORDER TO BASKET button — the flight's origin. */
+  const basketButtonRef = useRef<View>(null);
 
-  /** The in-flight copy: null when nothing is travelling. */
+  /** The bag in flight: null when nothing is travelling. */
   const [flight, setFlight] = useState<{
     key: number;
     x: number;
     y: number;
     size: number;
-    uri: string | null;
   } | null>(null);
   const flightProgress = useRef(new Animated.Value(0)).current;
   const flightKey = useRef(0);
+  const flightDestination = useRef<{ x: number; y: number } | null>(null);
 
   /** The badge's bump when the count lands. */
   const badgeScale = useRef(new Animated.Value(1)).current;
@@ -118,60 +120,56 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
   }, []);
 
   /**
-   * Starts the flight for one item. Resolves as soon as it is launched — the
-   * caller must not wait for the animation before sending the request, or the
-   * feedback would be delayed by exactly the thing it exists to cover.
+   * Sends the laundry bag flying from the ADD ORDER TO BASKET button to the
+   * cart icon. Resolves as soon as it is launched — the caller never waits for
+   * the animation.
    */
-  const launchFlight = useCallback(
-    (item: BusinessItem) => {
-      const source = artworkRefs.current.get(item.id);
-      const target = cartTarget.current;
-      // No measurement means no honest path to draw; the button's own
-      // ADDING/ADDED states still give feedback, so this simply does nothing.
-      if (!source || !target) return;
+  const launchBagFlight = useCallback(() => {
+    const source = basketButtonRef.current;
+    const target = cartTarget.current;
+    // No measurement means no honest path to draw; the button's own
+    // ADDING/ADDED states still give feedback, so this simply does nothing.
+    if (!source || !target) return;
 
-      source.measureInWindow((x, y, width, height) => {
-        if (!width || !height) return;
-        flightKey.current += 1;
-        flightProgress.setValue(0);
-        setFlight({
-          key: flightKey.current,
-          x,
-          y,
-          size: width,
-          uri: item.image_url || null,
-        });
-
-        Animated.timing(flightProgress, {
-          toValue: 1,
-          duration: 650,
-          // Eases out of the row and into the cart rather than running at a
-          // constant speed, which is what makes it read as a throw.
-          easing: Easing.bezier(0.4, 0, 0.3, 1),
-          useNativeDriver: true,
-        }).start(({ finished }) => {
-          if (!finished) return;
-          setFlight(null);
-          // The badge bumps as the arriving item is counted.
-          Animated.sequence([
-            Animated.spring(badgeScale, {
-              toValue: 1.45,
-              useNativeDriver: true,
-              speed: 30,
-              bounciness: 14,
-            }),
-            Animated.spring(badgeScale, { toValue: 1, useNativeDriver: true, speed: 20 }),
-          ]).start();
-        });
-
-        // Remembered so the interpolations below know where to fly TO.
-        flightDestination.current = target;
+    source.measureInWindow((x, y, width, height) => {
+      if (!width || !height) return;
+      const size = 64;
+      flightKey.current += 1;
+      flightProgress.setValue(0);
+      setFlight({
+        key: flightKey.current,
+        // Start centred on the button.
+        x: x + width / 2 - size / 2,
+        y: y + height / 2 - size / 2,
+        size,
       });
-    },
-    [badgeScale, flightProgress]
-  );
 
-  const flightDestination = useRef<{ x: number; y: number } | null>(null);
+      Animated.timing(flightProgress, {
+        toValue: 1,
+        // Slow enough to be clearly seen travelling.
+        duration: 1250,
+        // Eases in AND out, so the bag starts and finishes smoothly.
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (!finished) return;
+        setFlight(null);
+        // The badge bumps as the arriving item is counted.
+        Animated.sequence([
+          Animated.spring(badgeScale, {
+            toValue: 1.45,
+            useNativeDriver: true,
+            speed: 30,
+            bounciness: 14,
+          }),
+          Animated.spring(badgeScale, { toValue: 1, useNativeDriver: true, speed: 20 }),
+        ]).start();
+      });
+
+      // Remembered so the interpolations below know where to fly TO.
+      flightDestination.current = target;
+    });
+  }, [badgeScale, flightProgress]);
 
   const cartCount = useMemo(
     () => (cart?.items || []).reduce((sum, item) => sum + item.quantity, 0),
@@ -316,10 +314,10 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
     try {
       setIsSubmitting(true);
       setError('');
+      // The laundry bag leaves the button as the tap is registered and flies
+      // alongside the request — it never gates the add.
+      launchBagFlight();
       for (const line of prepared) {
-        // Launched BEFORE the request, not after it: the feedback is for the
-        // tap, and it runs alongside the call.
-        launchFlight(line.item);
         // Quantity travels to the order as entered. The catalogue still carries
         // a standard weight per piece and the server still records it.
         await addItem(line.item.id, line.quantity, line.service);
@@ -573,6 +571,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
           in one pass through the existing `addItem` action. */}
       <View style={styles.basketBar}>
         <TouchableOpacity
+          ref={basketButtonRef as any}
           style={[
             styles.basketButton,
             justAdded && styles.basketButtonAdded,
@@ -604,7 +603,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
       </View>
 
       {/*
-        THE ITEM IN FLIGHT.
+        THE LAUNDRY BAG IN FLIGHT.
 
         Absolutely positioned over everything and `pointerEvents="none"`, so it
         travels across the screen without ever intercepting a tap — the list
@@ -664,15 +663,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
             },
           ]}
         >
-          {flight.uri ? (
-            <Image
-              source={{ uri: flight.uri }}
-              style={styles.itemImageInner}
-              resizeMode="contain"
-            />
-          ) : (
-            <Ionicons name="shirt" size={30} color={COLORS.Primary} />
-          )}
+          <Image source={LAUNDRY_BAG} style={styles.flyingBagImage} resizeMode="contain" />
         </Animated.View>
       ) : null}
     </SafeAreaView>
@@ -848,8 +839,6 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
 
-  itemImageInner: { width: '100%', height: '100%' },
-
   itemName: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.base,
@@ -976,21 +965,18 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
 
-  /** The travelling copy. Above everything, and never a touch target. */
+  /** The travelling laundry bag. Above everything, and never a touch target. */
   flyingItem: {
     ...SHADOWS.medium,
     position: 'absolute',
     zIndex: 999,
     // Above the list on Android too, where zIndex alone is not enough.
     elevation: 12,
-    borderRadius: BORDER_RADIUS.md,
-    backgroundColor: COLORS.Surface,
     alignItems: 'center',
     justifyContent: 'center',
-    overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: COLORS.Primary,
+    backgroundColor: 'transparent',
   },
+  flyingBagImage: { width: '100%', height: '100%' },
 
   errorText: {
     fontFamily: TYPOGRAPHY.fontFamily,
