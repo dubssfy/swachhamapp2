@@ -49,7 +49,13 @@ const ORDER_FILTERS: Array<{ key: OrderFilter; label: string; statuses: string[]
 
 const LAUNDRY_LABEL: Record<string, string> = { hotel: 'Hotel Laundry', guest: 'Guest Laundry' };
 const ORDER_LABEL: Record<string, string> = { standard: 'Standard Order', quick: 'Quick Order' };
-const SERVICE_LABEL: Record<string, string> = { wash_iron: 'Wash & Iron', dry_clean: 'Dry Clean' };
+/* Wash & Fold is the TOWEL service; without it here a towel line on a past
+   order printed the bare code `wash_fold`. */
+const SERVICE_LABEL: Record<string, string> = {
+  wash_fold: 'Wash & Fold',
+  wash_iron: 'Wash & Iron',
+  dry_clean: 'Dry Clean',
+};
 
 function formatDate(value: string): string {
   const date = new Date(value);

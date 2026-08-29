@@ -56,8 +56,8 @@ export interface BusinessCartItem {
   weight_kg: number | null;
   weight_unit: string;
   total_weight_kg: number;
-  /** The service this line was added for. */
-  service_type: 'wash_iron' | 'dry_clean' | null;
+  /** The service this line was added for. Wash & Fold is the towel one. */
+  service_type: 'wash_fold' | 'wash_iron' | 'dry_clean' | null;
   service_name: string | null;
   /** The services this item supports, so the line can be switched. */
   available_service_types: string[];
@@ -71,7 +71,7 @@ export interface BusinessCart {
    * Legacy cart-wide service still returned by the API. The app no longer
    * sets or reads it: the service lives on each cart item instead.
    */
-  service_type: 'wash_iron' | 'dry_clean' | null;
+  service_type: 'wash_fold' | 'wash_iron' | 'dry_clean' | null;
   items: BusinessCartItem[];
   /** SUM(item weight x quantity) across the cart, in kg. */
   total_weight_kg: number;
@@ -148,7 +148,8 @@ export interface BusinessOrderResult {
 export interface LaundryServiceType {
   id: string;
   name: string;
-  code: 'wash_iron' | 'dry_clean';
+  /* wash_fold is TOWELS ONLY; wash_iron and dry_clean are everything else. */
+  code: 'wash_fold' | 'wash_iron' | 'dry_clean';
   category_id: string;
   category_name: string;
 }

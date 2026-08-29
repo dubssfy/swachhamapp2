@@ -9,7 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../../constants/theme';
 import { sa, STATUS_TONE } from './styles';
 import superAdminApi, {
-  BusinessPrice, BusinessCompletenessRow, LaundryTypeValue,
+  BusinessPrice, BusinessCompletenessRow, LaundryTypeValue, LaundryServiceType,
 } from '../../services/superAdminApi';
 import CategoryItemPicker from './CategoryItemPicker';
 import { printPriceListPdf } from './printPriceList';
@@ -399,6 +399,29 @@ function FilterTab({ label, on, onPress }: { label: string; on: boolean; onPress
   );
 }
 
+/** One selectable service in the price entry card. */
+function ServiceChip({
+  label,
+  on,
+  onPress,
+}: {
+  label: string;
+  on: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[sa.tab, on && sa.tabActive, { paddingHorizontal: SPACING.md }]}
+      onPress={onPress}
+      accessibilityRole="radio"
+      accessibilityState={{ selected: on }}
+      accessibilityLabel={`Price for ${label}`}
+    >
+      <Text style={[sa.tabText, on && sa.tabTextActive]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 export function StatusPill({ active }: { active: boolean }) {
   const tone = active ? STATUS_TONE.ACTIVE : STATUS_TONE.INACTIVE;
   return (
@@ -420,8 +443,15 @@ interface ModalProps {
   row: BusinessPrice | null;
   /** True when opened by "+ Add New Entry" rather than by a row's action. */
   addingNew: boolean;
-  /** Already priced at this laundry type — excluded from the picker. */
+  /** Nothing left to price at this laundry type — excluded from the picker. */
   pricedItemIds: string[];
+  /**
+   * Which services each item already has a rate for, keyed by item id. A
+   * service id per per-service rate, plus 'base' for the rate that covers
+   * every service. Used to leave those out of the Service field, so a
+   * choice offered here can always be saved.
+   */
+  pricedServicesByItem?: Record<string, string[]>;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -445,6 +475,7 @@ export function BusinessPriceModal({
   row,
   addingNew,
   pricedItemIds,
+  pricedServicesByItem,
   onClose,
   onSaved,
 }: ModalProps) {
@@ -455,8 +486,32 @@ export function BusinessPriceModal({
   /** Only used by the "+ Add New Entry" path, where no row was given. */
   const [pickedItemId, setPickedItemId] = useState<string>('');
   const [pickedItemName, setPickedItemName] = useState<string>('');
+  /**
+   * THE SERVICE THIS PRICE IS FOR. '' means the item's BASE rate — the one
+   * that applies to every service without a rate of its own, which is what a
+   * price set before per-service rates existed means and what a
+   * single-service item still wants.
+   */
+  const [serviceId, setServiceId] = useState<string>('');
+  /** The item's own services, for the dropdown. */
+  const [itemServiceCodes, setItemServiceCodes] = useState<string[]>([]);
+  /** Every service type, so a code on an item can be shown with its name. */
+  const [allServices, setAllServices] = useState<LaundryServiceType[]>([]);
 
   const visible = row !== null || addingNew;
+
+  // Fetched once per open, not per keystroke: the list is short and static.
+  React.useEffect(() => {
+    if (!visible || allServices.length > 0) return;
+    superAdminApi
+      .getPriceServiceTypes()
+      .then(setAllServices)
+      .catch(() => {
+        // A dropdown that cannot load must not block setting a base price:
+        // the field simply stays hidden and the save posts no service.
+        setAllServices([]);
+      });
+  }, [visible, allServices.length]);
 
   React.useEffect(() => {
     if (!visible) return;
@@ -466,12 +521,77 @@ export function BusinessPriceModal({
       setPrice(row.price === null ? '' : String(row.price));
       setActive(row.id === null ? true : row.is_active);
       setPickedItemId(row.item_id);
+      // An existing row keeps the service it prices; a "Not set" row starts
+      // on the base rate.
+      setServiceId(row.service_id ?? '');
+      setItemServiceCodes(row.service_types || []);
     } else {
       setPrice('');
       setActive(true);
       setPickedItemId('');
+      setServiceId('');
+      setItemServiceCodes([]);
     }
   }, [visible, row]);
+
+  /**
+   * The services THIS ITEM is offered for, as {id, name}.
+   *
+   * `service_types` carries the item's service CODES; the ids come from the
+   * service-type list. Intersecting the two is what keeps the dropdown to the
+   * services the item actually has — the server refuses any other, so
+   * offering one would only produce an error the operator cannot act on.
+   */
+  const serviceOptions = React.useMemo(
+    () => allServices.filter((s) => itemServiceCodes.includes(s.code)),
+    [allServices, itemServiceCodes]
+  );
+
+  /**
+   * The services already priced for the item in hand.
+   *
+   * Offered choices are filtered against this so every option on screen can
+   * actually be saved — the server would refuse a second rate for a service
+   * that already has one, and an option that can only fail is worse than no
+   * option. Empty while editing, where the service is fixed anyway.
+   */
+  const takenServices = React.useMemo(() => {
+    const itemId = row ? row.item_id : pickedItemId;
+    if (!itemId || row?.id) return [] as string[];
+    return pricedServicesByItem?.[itemId] ?? [];
+  }, [row, pickedItemId, pricedServicesByItem]);
+
+  const availableServiceOptions = React.useMemo(
+    () => serviceOptions.filter((s) => !takenServices.includes(s.id)),
+    [serviceOptions, takenServices]
+  );
+  const baseRateTaken = takenServices.includes('base');
+
+  /*
+   * KEEP THE SELECTION ON SOMETHING THAT CAN BE SAVED.
+   *
+   * The field defaults to the base rate, but an item that already has one
+   * does not offer it — leaving the selection on a chip that is no longer on
+   * screen, and a Save that could only be refused. This moves it to the
+   * first service still available.
+   */
+  React.useEffect(() => {
+    if (!visible || row?.id) return;
+    if (serviceId === '' && baseRateTaken) {
+      setServiceId(availableServiceOptions[0]?.id ?? '');
+    } else if (serviceId !== '' && takenServices.includes(serviceId)) {
+      setServiceId(baseRateTaken ? availableServiceOptions[0]?.id ?? '' : '');
+    }
+  }, [visible, row?.id, serviceId, baseRateTaken, takenServices, availableServiceOptions]);
+
+  /*
+   * The dropdown is shown only for an item offered for MORE THAN ONE service.
+   * An item with a single service has nothing to choose: its one rate is its
+   * base rate, and showing a one-option dropdown would imply a decision that
+   * does not exist. This is what keeps single-service items behaving exactly
+   * as they did before per-service pricing.
+   */
+  const showServicePicker = serviceOptions.length > 1;
 
   const save = async () => {
     if (!businessId) return;
@@ -487,11 +607,23 @@ export function BusinessPriceModal({
           is_active: active,
         });
       } else {
-        // The laundry type comes from the table that was open, never from a
-        // second control here, so what is saved is what was on screen.
+        /*
+         * The laundry type comes from the table that was open, never from a
+         * second control here, so what is saved is what was on screen.
+         *
+         * THE SERVICE COMES FROM THE LINE THIS SHEET WAS OPENED ON.
+         *
+         * The price list has one line per service, so "Set" on the Dry Clean
+         * line means the Dry Clean rate and nothing else — there is no
+         * service to choose again here, and choosing one would only let a
+         * rate be saved against a line other than the one that was tapped.
+         * `serviceId` is only ever picked on the "+ Add New Entry" path,
+         * where no line exists yet.
+         */
         await superAdminApi.createBusinessPrice(businessId, {
           item_id: itemId,
           laundry_type: laundryType,
+          service_id: (row ? row.service_id : serviceId === '' ? null : serviceId) ?? null,
           price,
           is_active: active,
         });
@@ -561,8 +693,70 @@ export function BusinessPriceModal({
                   onSelectItem={(id, item) => {
                     setPickedItemId(id);
                     setPickedItemName(item?.name || '');
+                    // The chosen item decides which services can be priced,
+                    // so the dropdown below is rebuilt from ITS services and
+                    // any service picked for a previous item is cleared.
+                    setItemServiceCodes(item?.service_types || []);
+                    setServiceId('');
                   }}
                 />
+              </>
+            )}
+
+            {/* ---- SERVICE ----
+                Item -> Service -> Price. Only for an item with more than one
+                service; see `showServicePicker`.
+
+                EDITING NEVER CHANGES THE SERVICE. A saved row's service is
+                part of what identifies it, so moving a Dry Clean rate onto
+                Wash & Fold by editing would silently repoint an existing
+                price rather than set one. The service is stated instead, and
+                a rate for another service is added as its own entry. */}
+            {showServicePicker && (
+              <>
+                <Text style={sa.label}>SERVICE</Text>
+                {row ? (
+                  /* STATED, NOT CHOSEN. The sheet was opened on one service's
+                     line, so that is the service being priced — whether the
+                     line already has a rate or is still "Not set". */
+                  <View style={[sa.input, { justifyContent: 'center' }]}>
+                    <Text style={{ color: COLORS.TextPrimary, fontFamily: TYPOGRAPHY.fontFamily }}>
+                      {row.service_label}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.xs }}>
+                    {/* The base rate first: it is the default and the one
+                        most items want. Left out once the item already has
+                        one, since a second would only be refused. */}
+                    {!baseRateTaken && (
+                      <ServiceChip
+                        label="All services"
+                        on={serviceId === ''}
+                        onPress={() => setServiceId('')}
+                      />
+                    )}
+                    {availableServiceOptions.map((s) => (
+                      <ServiceChip
+                        key={s.id}
+                        label={s.name}
+                        on={serviceId === s.id}
+                        onPress={() => setServiceId(s.id)}
+                      />
+                    ))}
+                  </View>
+                )}
+                <Text style={[sa.cardMeta, { marginTop: SPACING.xs }]}>
+                  {row
+                    ? row.service_id
+                      ? `This rate applies only to ${row.service_label}. The item's other services are priced on their own lines.`
+                      : 'This rate applies to every service this item is offered for.'
+                    : serviceId === ''
+                      ? 'This rate applies to every service this item is offered for, unless that service has its own rate.'
+                      : `This rate applies only to ${
+                          serviceOptions.find((s) => s.id === serviceId)?.name ?? 'the chosen service'
+                        }.`}
+                </Text>
               </>
             )}
 

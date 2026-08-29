@@ -18,7 +18,18 @@ import { addDays, getBusinessDate } from '../utils/istTime';
  * `utils/istTime`, so a period never shifts because the server is on UTC.
  */
 
+/*
+ * THE FOUR CYCLES REGISTRATION OFFERS, and the two it no longer does.
+ *
+ * Registration offers Weekly, 15 Days, Monthly and Yearly — see
+ * `REGISTRATION_BILLING_CYCLES` below. QUARTERLY and HALF_YEARLY stay in this
+ * list, and in the column's ENUM, because removing a value a stored row could
+ * hold is how an old business becomes unreadable. No business is on either
+ * (checked against the database: 4 MONTHLY, 1 FORTNIGHTLY, none else), so
+ * nothing is lost by leaving them addressable and offering neither.
+ */
 export const BILLING_CYCLES = [
+  'WEEKLY',
   'MONTHLY',
   'FORTNIGHTLY',
   'QUARTERLY',
@@ -29,12 +40,31 @@ export const BILLING_CYCLES = [
 export type BillingCycle = (typeof BILLING_CYCLES)[number];
 
 export const BILLING_CYCLE_LABELS: Record<BillingCycle, string> = {
+  WEEKLY: 'Weekly',
   MONTHLY: 'Monthly',
-  FORTNIGHTLY: 'Fortnightly',
+  // Labelled "15 Days" because that is what it is called in the business:
+  // the 1st–14th and the 15th–end-of-month. The STORED value stays
+  // FORTNIGHTLY so the business already on it, and every invoice and payment
+  // receipt raised against it, keep resolving to exactly the same cycle.
+  FORTNIGHTLY: '15 Days',
   QUARTERLY: 'Quarterly',
   HALF_YEARLY: 'Half-Yearly',
   YEARLY: 'Yearly',
 };
+
+/**
+ * The cycles a business may be REGISTERED on, in the order they are offered.
+ *
+ * A narrower list than `BILLING_CYCLES`, which is the set of values the column
+ * can hold. Editing a business that is somehow on one of the other two still
+ * works — `parseBillingCycle` accepts them — it simply cannot be chosen here.
+ */
+export const REGISTRATION_BILLING_CYCLES: readonly BillingCycle[] = [
+  'WEEKLY',
+  'FORTNIGHTLY',
+  'MONTHLY',
+  'YEARLY',
+];
 
 /** The cycle used when a business has none recorded. */
 export const DEFAULT_BILLING_CYCLE: BillingCycle = 'MONTHLY';
@@ -57,9 +87,18 @@ export function parseOptionalBillingCycle(value: unknown): BillingCycle | undefi
   return parseBillingCycle(value);
 }
 
-/** The list the UI offers, so the options cannot drift from the enum. */
-export function listBillingCycles(): Array<{ value: BillingCycle; label: string }> {
-  return BILLING_CYCLES.map((value) => ({ value, label: BILLING_CYCLE_LABELS[value] }));
+/**
+ * The list the UI offers, so the options cannot drift from the enum.
+ *
+ * The REGISTRATION set, not every value the column accepts: those are the four
+ * cycles a business is actually put on. Pass `{ all: true }` for the full set
+ * when something needs to render a cycle a legacy business already holds.
+ */
+export function listBillingCycles(
+  options: { all?: boolean } = {}
+): Array<{ value: BillingCycle; label: string }> {
+  const values = options.all ? BILLING_CYCLES : REGISTRATION_BILLING_CYCLES;
+  return values.map((value) => ({ value, label: BILLING_CYCLE_LABELS[value] }));
 }
 
 export interface BillingPeriod {
@@ -122,6 +161,38 @@ export function periodFor(cycle: BillingCycle, onDate: string): BillingPeriod {
   const { y, m, d } = parts(onDate);
 
   switch (cycle) {
+    case 'WEEKLY': {
+      /*
+       * MONDAY TO SUNDAY, anchored to the calendar week like every other
+       * cycle here is anchored to the month or the year — not a rolling seven
+       * days from whenever the business was onboarded, which would drift and
+       * make two businesses' weeks incomparable.
+       *
+       * `Date.UTC` and `getUTCDay` throughout: the date is already a calendar
+       * date in the business timezone, and going through UTC is what stops the
+       * server's own zone shifting the boundary by a day.
+       */
+      const at = new Date(Date.UTC(y, m - 1, d));
+      // getUTCDay is 0 for Sunday; treat Sunday as the 7th day, not the 1st,
+      // so the week runs Monday–Sunday rather than Sunday–Saturday.
+      const weekday = at.getUTCDay() === 0 ? 7 : at.getUTCDay();
+      const monday = new Date(at);
+      monday.setUTCDate(at.getUTCDate() - (weekday - 1));
+      const sunday = new Date(monday);
+      sunday.setUTCDate(monday.getUTCDate() + 6);
+
+      const from = key(monday.getUTCFullYear(), monday.getUTCMonth() + 1, monday.getUTCDate());
+      const to = key(sunday.getUTCFullYear(), sunday.getUTCMonth() + 1, sunday.getUTCDate());
+      const f = parts(from);
+      const t = parts(to);
+      // "1–7 Sep 2026" inside one month, "28 Sep–4 Oct 2026" across two.
+      const label =
+        f.m === t.m && f.y === t.y
+          ? `${f.d}–${t.d} ${MONTH_SHORT[f.m - 1]} ${f.y}`
+          : `${f.d} ${MONTH_SHORT[f.m - 1]}–${t.d} ${MONTH_SHORT[t.m - 1]} ${t.y}`;
+      return { cycle, from, to, label };
+    }
+
     case 'MONTHLY':
       return {
         cycle,

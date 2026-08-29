@@ -49,12 +49,25 @@ import { sa } from '../../screens/superadmin/styles';
 export const MIN_ALTERNATIVES = 0;
 export const MAX_ALTERNATIVES = 3;
 
+/*
+ * THE FOUR CYCLES REGISTRATION OFFERS: Weekly, 15 Days, Monthly, Yearly.
+ *
+ * Mirrors `REGISTRATION_BILLING_CYCLES` in the backend's
+ * `billingCycle.service`, which is the authority — the server validates the
+ * submitted value and derives each cycle's invoice period from it.
+ *
+ * "15 Days" is STORED as FORTNIGHTLY: the label is what the business calls
+ * the cycle, and the value is what every invoice and payment receipt already
+ * raised against it refers to, so the stored value is left alone.
+ *
+ * QUARTERLY and HALF_YEARLY are no longer offered. Both remain valid values
+ * on the column so no existing business becomes unreadable; neither is in use.
+ */
 export const BILLING_CYCLES: Array<{ value: string; label: string }> = [
+  { value: 'WEEKLY', label: 'Weekly' },
+  // Anchored to the month: the 1st-14th and the 15th-end.
+  { value: 'FORTNIGHTLY', label: '15 Days' },
   { value: 'MONTHLY', label: 'Monthly' },
-  // Every 14 days, anchored to the month: 1st-14th and 15th-end.
-  { value: 'FORTNIGHTLY', label: 'Fortnightly' },
-  { value: 'QUARTERLY', label: 'Quarterly' },
-  { value: 'HALF_YEARLY', label: 'Half-Yearly' },
   { value: 'YEARLY', label: 'Yearly' },
 ];
 

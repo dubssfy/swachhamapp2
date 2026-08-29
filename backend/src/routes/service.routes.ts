@@ -5,6 +5,7 @@ import {
   getServiceById,
   getCategories,
   getPopularServices,
+  getItemServiceOptions,
 } from '../services/service.service';
 import { sendSuccess, sendPaginated } from '../utils/response';
 
@@ -45,7 +46,14 @@ router.get('/search', async (req: Request, res: Response, next: NextFunction) =>
     const searchTerm = asString(req.query.q) || asString(req.query.search) || '';
     const services = await searchServices({
       search: searchTerm,
-      categoryId: asString(req.query.category_id) || asString(req.query.category),
+      // `categoryId` is accepted as well: a client that sent the camelCase
+      // name had its filter silently ignored and got the whole catalogue
+      // back instead of one category. Reading both names makes that
+      // mistake impossible rather than merely fixed once.
+      categoryId:
+        asString(req.query.category_id) ||
+        asString(req.query.categoryId) ||
+        asString(req.query.category),
       scope: asString(req.query.scope),
       limit: parseInt(req.query.limit as string, 10) || 50,
     });
@@ -62,7 +70,14 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       page: parseInt(req.query.page as string, 10) || 1,
       limit: parseInt(req.query.limit as string, 10) || 20,
       search: asString(req.query.search) || asString(req.query.q),
-      categoryId: asString(req.query.category_id) || asString(req.query.category),
+      // `categoryId` is accepted as well: a client that sent the camelCase
+      // name had its filter silently ignored and got the whole catalogue
+      // back instead of one category. Reading both names makes that
+      // mistake impossible rather than merely fixed once.
+      categoryId:
+        asString(req.query.category_id) ||
+        asString(req.query.categoryId) ||
+        asString(req.query.category),
       scope: asString(req.query.scope),
     });
 
@@ -82,6 +97,21 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /api/services/:id
+/**
+ * GET /api/services/:id/options
+ *
+ * The laundry services this item can be ordered for, each with its own
+ * customer price — what the item screen shows before the customer chooses.
+ */
+router.get('/:id/options', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    sendSuccess(res, { options: await getItemServiceOptions(req.params.id) },
+      'Item service options fetched');
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const service = await getServiceById(req.params.id, asString(req.query.scope));

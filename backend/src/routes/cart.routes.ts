@@ -19,8 +19,13 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 router.post('/items', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authReq = req as AuthenticatedRequest;
-    const { serviceId, quantity } = req.body;
-    const cart = await addItem(authReq.user!.id, serviceId, quantity);
+    /*
+     * `laundryServiceId` is the SERVICE chosen for the item — Wash & Iron or
+     * Dry Clean. Optional, so a caller that predates the choice still works
+     * and is priced from the item's fallback rate.
+     */
+    const { serviceId, quantity, laundryServiceId } = req.body;
+    const cart = await addItem(authReq.user!.id, serviceId, quantity, laundryServiceId ?? null);
     sendSuccess(res, cart, 'Item added to cart');
   } catch (error) {
     next(error);

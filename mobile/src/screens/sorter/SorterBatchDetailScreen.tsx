@@ -12,7 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
+import { openPdfInDeviceViewer } from '../../utils/openPdf';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import { extractErrorMessage } from '../../services/api';
 import sorterBatchApi, {
@@ -128,14 +128,13 @@ export default function SorterBatchDetailScreen({ navigation, route }: any) {
     setIsGeneratingPdf(true);
     try {
       const { uri, fileName } = await generateBatchDetailsPdf(batch);
-      if (!(await Sharing.isAvailableAsync())) {
-        throw new Error('Sharing is not available on this device');
+      /* Straight to the device's PDF viewer, not the share sheet — see
+         `openPdfInDeviceViewer`, which falls back to the sheet only when no
+         installed app can open a PDF. */
+      const outcome = await openPdfInDeviceViewer(uri, fileName);
+      if (outcome === 'unavailable') {
+        throw new Error('This device has no app that can open a PDF.');
       }
-      await Sharing.shareAsync(uri, {
-        mimeType: 'application/pdf',
-        dialogTitle: fileName,
-        UTI: 'com.adobe.pdf',
-      });
     } catch (err: any) {
       Alert.alert('Could not generate batch details', extractErrorMessage(err, 'Please try again.'));
     } finally {

@@ -303,22 +303,43 @@ export async function buildBusinessPriceListDocument(
   const rows = await listBusinessPrices(businessId, { laundryType });
 
   const printable = rows.filter((row) => {
-    if (!includeUnset && row.price === null) return false;
+    // "Unset" is a line that would bill NOTHING — see `effective_price`. A
+    // service billing an inherited base rate is priced, and belongs on the
+    // sheet whether or not unset lines are included.
+    if (!includeUnset && row.effective_price === null) return false;
     // A disabled rate is not a rate this business is charged.
     if (row.price !== null && !row.is_active) return false;
     return true;
   });
 
   const groups = group<BusinessPriceRow>(printable, (row) => ({
-    item_name: row.item_name,
+    /*
+     * THE SERVICE IS PART OF THE ITEM'S NAME ON THIS SHEET.
+     *
+     * The price list holds one line per service, so the lines have to say
+     * which is which — two "Bath Robe" rows at different amounts with
+     * nothing to tell them apart is a sheet nobody can act on.
+     *
+     * Only when the item HAS more than one service: an item offered for a
+     * single service prints exactly as it always has, with no suffix.
+     */
+    item_name:
+      row.service_types.length > 1 ? `${row.item_name} (${row.service_label})` : row.item_name,
     unit: row.unit,
-    amount: money(row.price),
-    note: row.price === null ? 'No rate configured — cannot be ordered' : null,
+    // What the business is actually charged, inherited rates included.
+    amount: money(row.effective_price),
+    note:
+      row.effective_price === null
+        ? 'No rate configured — cannot be ordered'
+        : row.is_inherited
+          ? "Charged at the item's rate for all services"
+          : null,
   }));
 
   const label = LAUNDRY_TYPE_LABELS[laundryType];
   const displayName = business.establishment_name || business.name;
-  const unsetCount = printable.filter((row) => row.price === null).length;
+  // Lines that would bill nothing, matching what the sheet marks "Not set".
+  const unsetCount = printable.filter((row) => row.effective_price === null).length;
 
   const meta: Array<{ label: string; value: string }> = [
     { label: 'Laundry type', value: label },

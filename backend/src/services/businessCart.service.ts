@@ -4,7 +4,7 @@ import { lookupBusinessPrice } from './priceList.service';
 
 export type LaundryType = 'hotel' | 'guest';
 export type OrderType = 'standard' | 'quick';
-export type ServiceType = 'wash_iron' | 'dry_clean';
+export type ServiceType = 'wash_fold' | 'wash_iron' | 'dry_clean';
 
 export interface BusinessCartItem {
   id: string;
@@ -39,7 +39,22 @@ export interface BusinessCart {
 
 const LAUNDRY_TYPES = ['hotel', 'guest'];
 const ORDER_TYPES = ['standard', 'quick'];
-const SERVICE_TYPES = ['wash_iron', 'dry_clean'];
+/**
+ * THE THREE BUSINESS LAUNDRY SERVICES.
+ *
+ *   wash_fold   Wash & Fold   TOWELS ONLY
+ *   wash_iron   Wash & Iron   everything that is not a towel
+ *   dry_clean   Dry Clean     everything that is not a towel
+ *
+ * Which of them an ITEM may be ordered for is NOT decided here — it is
+ * `item_service_types` in the database, and a towel is a row with
+ * `services.washing_group = 'TOWEL'`. This list only says which codes exist
+ * at all, so a request naming something else is refused rather than stored.
+ *
+ * A towel therefore never offers Dry Clean, because no such mapping row
+ * exists — not because this list forbids it.
+ */
+const SERVICE_TYPES = ['wash_fold', 'wash_iron', 'dry_clean'];
 
 type CartItemRow = Omit<BusinessCartItem, 'available_service_types'> & {
   available_service_codes: string | null;

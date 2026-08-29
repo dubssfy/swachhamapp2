@@ -148,11 +148,21 @@ export interface GstVerification {
 
 /* ---- Price List ---- */
 
-/** One row of the GLOBAL customer price list: same price for everyone. */
+/**
+ * One row of the GLOBAL customer price list: same price for everyone.
+ *
+ * ONE ROW PER (ITEM, SERVICE). An item priced for Wash and Fold and for Dry
+ * Clean is two rows, told apart by `service_label`.
+ */
 export interface CustomerPrice {
   id: string;
   item_id: string;
   item_name: string;
+  /** The service this price is for; null when it covers every service. */
+  service_id: string | null;
+  service_name: string | null;
+  /** `service_name`, or "All services". Always safe to display. */
+  service_label: string;
   category_id: string | null;
   category_name: string | null;
   parent_category_id: string | null;
@@ -193,6 +203,28 @@ export interface BusinessPrice {
   parent_category_name: string | null;
   category_id: string | null;
   category_name: string | null;
+  /**
+   * The SERVICE this line prices.
+   *
+   * The price list has ONE LINE PER SERVICE the item is offered for, so this
+   * is set on every line of a normal item. Null only for an item with no
+   * services configured at all.
+   */
+  service_id: string | null;
+  service_name: string | null;
+  /** What the Service column shows. "All services" when there is no service. */
+  service_label: string;
+  /**
+   * The item's base rate, when this service has no rate of its own — what an
+   * order for this service would fall back to. Null when nothing is
+   * inherited and the service really is unpriced.
+   */
+  inherited_price: number | null;
+  /** True when this line bills `inherited_price` rather than its own rate. */
+  is_inherited: boolean;
+  /** What an order for this item + service would ACTUALLY be charged. */
+  effective_price: number | null;
+  /** Every service the ITEM is offered for, as codes. */
   service_types: string[];
   unit: string;
   /** The global customer price, for reference only. */
@@ -347,6 +379,409 @@ export interface BusinessAccountOrder {
   invoice_number_display: string | null;
   item_count: number;
   total_quantity: number;
+}
+
+/**
+ * One row of a business's Invoice History.
+ *
+ * The amounts are SNAPSHOTS: what the invoice was issued for at the moment it
+ * was generated, not a recomputation from today's orders. `amount_paid` is
+ * summed from the payment receipts recorded against this invoice number, and
+ * `status` is derived from it — so an invoice cannot show as unpaid once money
+ * has been recorded against it.
+ */
+export interface InvoiceHistoryEntry {
+  id: string;
+  /** The full invoice number — the identifier everything keys on. */
+  invoice_number: string;
+  /** The first 12 characters, which is what is shown. */
+  invoice_number_display: string;
+  business_id: string;
+  business_name: string;
+  period_from: string;
+  period_to: string;
+  billing_cycle: string;
+  /** "Weekly", "15 Days", "Monthly", "Yearly". */
+  billing_cycle_label: string;
+  period_label: string;
+  laundry_type: 'hotel' | 'guest' | null;
+  laundry_type_label: string | null;
+  taxable_amount: number;
+  tax_amount: number;
+  total_amount: number;
+  order_count: number;
+  line_count: number;
+  status: 'ISSUED' | 'PART_PAID' | 'PAID' | 'CANCELLED';
+  amount_paid: number;
+  amount_due: number;
+  generated_at: string;
+  /** The day the invoice was generated. */
+  invoice_date: string;
+}
+
+/* ===================================================================
+ * PURCHASE, SUPPLIER AND EXPENSE
+ *
+ * Every money field here is the SERVER'S figure. The purchase form computes
+ * the same totals locally so the operator sees them update as they type, but
+ * what is saved is always recomputed from the lines by the backend — see
+ * `createPurchase`.
+ * =================================================================== */
+
+/** Cash, UPI, Bank Transfer, Card, Cheque, Other. */
+export type PurchasePaymentMethod =
+  | 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'CARD' | 'CHEQUE' | 'OTHER';
+export type PurchasePaymentStatus = 'UNPAID' | 'PARTIAL' | 'PAID';
+export type PurchaseStatusValue = 'DRAFT' | 'RECEIVED' | 'RETURNED' | 'CANCELLED';
+
+export interface PurchaseOptions {
+  payment_methods: Array<{ value: PurchasePaymentMethod; label: string }>;
+  purchase_statuses: PurchaseStatusValue[];
+  payment_statuses: PurchasePaymentStatus[];
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  business_name: string | null;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  gstin: string | null;
+  opening_balance: number;
+  notes: string | null;
+  is_active: boolean;
+  purchase_count: number;
+  total_purchased: number;
+  total_paid: number;
+  /** opening_balance + total_purchased - total_paid. */
+  outstanding: number;
+}
+
+export interface SupplierInput {
+  name?: string;
+  business_name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  gstin?: string | null;
+  opening_balance?: string | number;
+  notes?: string | null;
+  is_active?: boolean;
+}
+
+export interface SupplierPurchaseRef {
+  id: string;
+  purchase_number: string;
+  purchase_date: string;
+  invoice_number: string | null;
+  total_amount: number;
+  paid_amount: number;
+  balance_amount: number;
+  payment_status: PurchasePaymentStatus;
+  purchase_status: PurchaseStatusValue;
+}
+
+export interface PurchaseLine {
+  item_id: string | null;
+  description: string;
+  quantity: number;
+  unit: string | null;
+  rate: number;
+  discount: number;
+  tax: number;
+  /** (quantity x rate) - discount + tax, computed by the server. */
+  amount: number;
+}
+
+export interface Purchase {
+  id: string;
+  purchase_number: string;
+  supplier_id: string;
+  supplier_name: string;
+  supplier_phone: string | null;
+  supplier_gstin: string | null;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  purchase_date: string;
+  due_date: string | null;
+  subtotal: number;
+  discount: number;
+  tax: number;
+  additional_charges: number;
+  shipping_charges: number;
+  round_off: number;
+  total_amount: number;
+  paid_amount: number;
+  balance_amount: number;
+  payment_status: PurchasePaymentStatus;
+  purchase_status: PurchaseStatusValue;
+  payment_type: PurchasePaymentMethod | null;
+  notes: string | null;
+  item_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PurchasePayment {
+  id: string;
+  purchase_id: string;
+  amount: number;
+  payment_method: PurchasePaymentMethod;
+  payment_method_label: string;
+  payment_date: string;
+  reference_number: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface PurchaseDetail extends Purchase {
+  items: PurchaseLine[];
+  payments: PurchasePayment[];
+}
+
+/** What the form sends. Deliberately carries NO total — the server computes it. */
+export interface PurchaseInput {
+  supplier_id?: string;
+  invoice_number?: string | null;
+  invoice_date?: string | null;
+  purchase_date?: string;
+  due_date?: string | null;
+  payment_type?: PurchasePaymentMethod | null;
+  purchase_status?: PurchaseStatusValue;
+  notes?: string | null;
+  discount?: string | number;
+  additional_charges?: string | number;
+  shipping_charges?: string | number;
+  round_off?: string | number;
+  items?: Array<{
+    item_id?: string | null;
+    description?: string;
+    quantity?: string | number;
+    unit?: string | null;
+    rate?: string | number;
+    discount?: string | number;
+    tax?: string | number;
+  }>;
+}
+
+export interface PurchasePaymentInput {
+  amount?: string | number;
+  payment_method?: PurchasePaymentMethod;
+  payment_date?: string;
+  reference_number?: string | null;
+  notes?: string | null;
+}
+
+export interface PurchaseListParams {
+  search?: string;
+  supplier_id?: string;
+  payment_status?: PurchasePaymentStatus;
+  purchase_status?: PurchaseStatusValue;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+  sort?: string;
+}
+
+export interface PurchaseSummary {
+  total_purchases: number;
+  total_amount: number;
+  this_month_count: number;
+  this_month_amount: number;
+  today_count: number;
+  today_amount: number;
+  unpaid_count: number;
+  partial_count: number;
+  paid_count: number;
+  returned_count: number;
+  outstanding_amount: number;
+}
+
+export interface ExpenseCategory {
+  id: string;
+  name: string;
+  is_active: boolean;
+  /** How many expenses use it — what makes it undeletable. */
+  expense_count: number;
+}
+
+export interface Expense {
+  id: string;
+  expense_number: string;
+  category_id: string;
+  category_name: string;
+  expense_date: string;
+  description: string | null;
+  amount: number;
+  payment_method: PurchasePaymentMethod;
+  payment_method_label: string;
+  payment_status: 'PAID' | 'UNPAID';
+  paid_by: string | null;
+  reference_number: string | null;
+  notes: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExpenseInput {
+  category_id?: string;
+  expense_date?: string;
+  description?: string | null;
+  amount?: string | number;
+  payment_method?: PurchasePaymentMethod;
+  payment_status?: 'PAID' | 'UNPAID';
+  paid_by?: string | null;
+  reference_number?: string | null;
+  notes?: string | null;
+}
+
+export interface ExpenseListParams {
+  search?: string;
+  category_id?: string;
+  payment_method?: PurchasePaymentMethod;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+  sort?: string;
+}
+
+export interface ExpenseCategoryTotal {
+  category_id: string;
+  category_name: string;
+  amount: number;
+  count: number;
+}
+
+export interface ExpenseSummary {
+  total_count: number;
+  total_amount: number;
+  today_amount: number;
+  this_month_amount: number;
+  this_year_amount: number;
+  unpaid_count: number;
+  unpaid_amount: number;
+  category_count: number;
+  top_categories: ExpenseCategoryTotal[];
+}
+
+
+/* ===================================================================
+ * KG REPORTS
+ *
+ * Weight processed, month by month. Every figure is computed by the server
+ * from the order register — see `kgReport.service` — so nothing here sums,
+ * converts or rounds anything.
+ * =================================================================== */
+
+export interface KgMonth {
+  /** 'YYYY-MM'. */
+  month: string;
+  /** 'August 2026'. */
+  label: string;
+  orders: number;
+  items: number;
+  total_kg: number;
+  /** Only on the all-customers report. */
+  customers?: number;
+}
+
+export interface KgReport {
+  from: string;
+  to: string;
+  /** Every month in the window, including those with no orders. */
+  months: KgMonth[];
+  totals: { orders: number; items: number; total_kg: number; customers: number };
+  /** Present only on the per-customer report. */
+  business?: { id: string; name: string };
+}
+
+
+/** One line of the ITEM WISE KG report. */
+export interface ItemKgRow {
+  item_id: string;
+  item_name: string;
+  /** Total quantity of this item in the window. */
+  pieces: number;
+  total_kg: number;
+}
+
+export interface ItemKgReport {
+  from: string;
+  to: string;
+  items: ItemKgRow[];
+  totals: { item_count: number; pieces: number; total_kg: number; orders: number };
+  /** Absent when the report covers ALL BUSINESS. */
+  business?: { id: string; name: string };
+  /** The ordering the server applied, echoed back. */
+  sort: ItemKgSort;
+}
+
+export type ItemKgSort =
+  | 'kg_desc' | 'kg_asc' | 'pieces_desc' | 'pieces_asc' | 'name_asc' | 'name_desc';
+
+
+/* ---- Outstanding report ---- */
+
+export interface OutstandingRow {
+  business_id: string;
+  establishment_name: string;
+  legal_name: string | null;
+  primary_contact_name: string | null;
+  primary_contact_number: string | null;
+  email: string | null;
+  establishment_address: string | null;
+  outstanding: number;
+}
+
+export interface OutstandingReport {
+  rows: OutstandingRow[];
+  totals: {
+    /** Establishments WITH an outstanding amount. */
+    establishments: number;
+    total_outstanding: number;
+    /** Every establishment considered, owing or not. */
+    considered: number;
+  };
+  sort: OutstandingSort;
+  min_outstanding: number;
+}
+
+export type OutstandingSort =
+  | 'outstanding_desc' | 'outstanding_asc' | 'name_asc' | 'name_desc';
+
+
+/* ---- Transaction summary (home page grid) ---- */
+
+/** One card: an amount and the count behind it. */
+export interface SummaryCell { amount: number; count: number }
+
+/** One metric across the four periods. */
+export interface SummaryMetric {
+  today: SummaryCell;
+  month: SummaryCell;
+  year: SummaryCell;
+  total: SummaryCell;
+}
+
+export interface TransactionSummary {
+  sale: SummaryMetric;
+  collection: SummaryMetric;
+  product_count: SummaryMetric;
+  expense: SummaryMetric;
+  /** The day the periods were cut on, in the business timezone. */
+  as_of: string;
+}
+
+/** A business customer there is actually a report for. */
+export interface ReportableBusiness {
+  id: string;
+  name: string;
+  orders: number;
+  total_kg: number;
 }
 
 export type PaymentTypeValue = 'CASH' | 'CARD' | 'UPI' | 'NETBANKING';
@@ -852,6 +1287,15 @@ const superAdminApi = {
     payload: {
       item_id: string;
       laundry_type: LaundryTypeValue;
+      /**
+       * The service this price is for. Omitted or null sets the item's BASE
+       * rate — the one that applies to every service without its own — which
+       * is what a price set with no service has always meant.
+       *
+       * The server refuses a service the item is not offered for, and refuses
+       * a second price for an item + service that already has one.
+       */
+      service_id?: string | null;
       price: string | number;
       is_active?: boolean;
     }
@@ -1251,6 +1695,47 @@ const superAdminApi = {
     return res.data.data;
   },
 
+  /* ---- INVOICE HISTORY ----
+   *
+   * Every invoice ever generated FOR ONE BUSINESS. The business is in the
+   * path and the server filters every statement by it — there is no call that
+   * lists invoices across businesses, which is what keeps one business's
+   * invoices out of another's history.
+   *
+   * The amounts are the ones each invoice was ISSUED for, snapshot when it was
+   * generated, not a recomputation from today's orders.
+   */
+  getInvoiceHistory: async (
+    businessId: string,
+    options?: { limit?: number; offset?: number }
+  ): Promise<{ invoices: InvoiceHistoryEntry[]; total: number }> => {
+    const res = await apiClient.get<ApiResponse<{ invoices: InvoiceHistoryEntry[]; total: number }>>(
+      `/api/super-admin/business-account/${businessId}/invoices`,
+      { params: options }
+    );
+    return res.data.data;
+  },
+
+  /** One stored invoice, scoped to its business. */
+  getInvoiceFromHistory: async (
+    businessId: string,
+    invoiceId: string
+  ): Promise<InvoiceHistoryEntry> => {
+    const res = await apiClient.get<ApiResponse<{ invoice: InvoiceHistoryEntry }>>(
+      `/api/super-admin/business-account/${businessId}/invoices/${invoiceId}`
+    );
+    return res.data.data.invoice;
+  },
+
+  /**
+   * A stored invoice's PDF, as a URL.
+   *
+   * Downloaded with `FileSystem.downloadAsync` like the other documents, so
+   * `authHeader()` supplies the bearer token — see `invoicePdfUrl`.
+   */
+  historyInvoicePdfUrl: (businessId: string, invoiceId: string): string =>
+    `${API_BASE_URL}/api/super-admin/business-account/${businessId}/invoices/${invoiceId}/invoice.pdf`,
+
   /**
    * The Payment Receipt tab's starting point, and the payment history.
    *
@@ -1302,6 +1787,317 @@ const superAdminApi = {
     const res = await apiClient.get<ApiResponse<BillingPeriod[]>>(
       `/api/super-admin/businesses/${businessId}/billing-periods`,
       { params: { count } }
+    );
+    return res.data.data;
+  },
+
+  /* =================================================================
+   * PURCHASE, SUPPLIER AND EXPENSE
+   *
+   * COMPANY-WIDE. These are what Swachham spends running its own laundry —
+   * detergent, packaging, electricity, rent — so none of them takes a
+   * business. `businesses` are Swachham's CUSTOMERS, and a drum of
+   * detergent belongs to none of them.
+   *
+   * FILTERING AND PAGING HAPPEN ON THE SERVER. Every list method passes its
+   * filters as query parameters and receives one page; nothing here loads a
+   * register in full to filter it in JavaScript.
+   * ================================================================= */
+
+  /** Payment methods and statuses, so the app never hardcodes them. */
+  getPurchaseOptions: async (): Promise<PurchaseOptions> => {
+    const res = await apiClient.get<ApiResponse<PurchaseOptions>>(
+      '/api/super-admin/purchases/options'
+    );
+    return res.data.data;
+  },
+
+  /* ---- Suppliers ---- */
+
+  getSuppliers: async (params?: {
+    search?: string; include_inactive?: boolean; limit?: number; offset?: number;
+  }): Promise<{ suppliers: Supplier[]; total: number }> => {
+    const res = await apiClient.get<ApiResponse<{ suppliers: Supplier[]; total: number }>>(
+      '/api/super-admin/purchases/suppliers', { params }
+    );
+    return res.data.data;
+  },
+
+  getSupplier: async (supplierId: string): Promise<Supplier> => {
+    const res = await apiClient.get<ApiResponse<Supplier>>(
+      `/api/super-admin/purchases/suppliers/${supplierId}`
+    );
+    return res.data.data;
+  },
+
+  createSupplier: async (payload: SupplierInput): Promise<Supplier> => {
+    const res = await apiClient.post<ApiResponse<Supplier>>(
+      '/api/super-admin/purchases/suppliers', payload
+    );
+    return res.data.data;
+  },
+
+  updateSupplier: async (supplierId: string, payload: SupplierInput): Promise<Supplier> => {
+    const res = await apiClient.put<ApiResponse<Supplier>>(
+      `/api/super-admin/purchases/suppliers/${supplierId}`, payload
+    );
+    return res.data.data;
+  },
+
+  deleteSupplier: async (supplierId: string): Promise<void> => {
+    await apiClient.delete(`/api/super-admin/purchases/suppliers/${supplierId}`);
+  },
+
+  getSupplierPurchases: async (
+    supplierId: string
+  ): Promise<{ purchases: SupplierPurchaseRef[]; total: number }> => {
+    const res = await apiClient.get<ApiResponse<{ purchases: SupplierPurchaseRef[]; total: number }>>(
+      `/api/super-admin/purchases/suppliers/${supplierId}/purchases`
+    );
+    return res.data.data;
+  },
+
+  /* ---- Purchases ---- */
+
+  getPurchaseSummary: async (
+    params?: { from?: string; to?: string }
+  ): Promise<PurchaseSummary> => {
+    const res = await apiClient.get<ApiResponse<PurchaseSummary>>(
+      '/api/super-admin/purchases/summary', { params }
+    );
+    return res.data.data;
+  },
+
+  getPurchases: async (
+    params?: PurchaseListParams
+  ): Promise<{ purchases: Purchase[]; total: number }> => {
+    const res = await apiClient.get<ApiResponse<{ purchases: Purchase[]; total: number }>>(
+      '/api/super-admin/purchases', { params }
+    );
+    return res.data.data;
+  },
+
+  getPurchase: async (purchaseId: string): Promise<PurchaseDetail> => {
+    const res = await apiClient.get<ApiResponse<PurchaseDetail>>(
+      `/api/super-admin/purchases/${purchaseId}`
+    );
+    return res.data.data;
+  },
+
+  /**
+   * Creates a purchase.
+   *
+   * NO TOTAL IS SENT. The server computes the subtotal, tax, total and
+   * balance from the lines and charges below — the figures the form shows are
+   * a preview of that arithmetic, never its source.
+   */
+  createPurchase: async (payload: PurchaseInput): Promise<PurchaseDetail> => {
+    const res = await apiClient.post<ApiResponse<PurchaseDetail>>(
+      '/api/super-admin/purchases', payload
+    );
+    return res.data.data;
+  },
+
+  updatePurchase: async (
+    purchaseId: string, payload: PurchaseInput
+  ): Promise<PurchaseDetail> => {
+    const res = await apiClient.put<ApiResponse<PurchaseDetail>>(
+      `/api/super-admin/purchases/${purchaseId}`, payload
+    );
+    return res.data.data;
+  },
+
+  deletePurchase: async (purchaseId: string): Promise<void> => {
+    await apiClient.delete(`/api/super-admin/purchases/${purchaseId}`);
+  },
+
+  recordPurchasePayment: async (
+    purchaseId: string, payload: PurchasePaymentInput
+  ): Promise<PurchaseDetail> => {
+    const res = await apiClient.post<ApiResponse<PurchaseDetail>>(
+      `/api/super-admin/purchases/${purchaseId}/payments`, payload
+    );
+    return res.data.data;
+  },
+
+  deletePurchasePayment: async (
+    purchaseId: string, paymentId: string
+  ): Promise<PurchaseDetail> => {
+    const res = await apiClient.delete<ApiResponse<PurchaseDetail>>(
+      `/api/super-admin/purchases/${purchaseId}/payments/${paymentId}`
+    );
+    return res.data.data;
+  },
+
+  /* ---- Expense categories ---- */
+
+  getExpenseCategories: async (includeInactive = false): Promise<ExpenseCategory[]> => {
+    const res = await apiClient.get<ApiResponse<{ categories: ExpenseCategory[] }>>(
+      '/api/super-admin/expenses/categories',
+      { params: { include_inactive: includeInactive } }
+    );
+    return res.data.data.categories;
+  },
+
+  createExpenseCategory: async (name: string): Promise<ExpenseCategory> => {
+    const res = await apiClient.post<ApiResponse<ExpenseCategory>>(
+      '/api/super-admin/expenses/categories', { name }
+    );
+    return res.data.data;
+  },
+
+  updateExpenseCategory: async (
+    categoryId: string, payload: { name?: string; is_active?: boolean }
+  ): Promise<ExpenseCategory> => {
+    const res = await apiClient.put<ApiResponse<ExpenseCategory>>(
+      `/api/super-admin/expenses/categories/${categoryId}`, payload
+    );
+    return res.data.data;
+  },
+
+  deleteExpenseCategory: async (categoryId: string): Promise<void> => {
+    await apiClient.delete(`/api/super-admin/expenses/categories/${categoryId}`);
+  },
+
+  /* ---- Expenses ---- */
+
+  getExpenseSummary: async (
+    params?: { from?: string; to?: string }
+  ): Promise<ExpenseSummary> => {
+    const res = await apiClient.get<ApiResponse<ExpenseSummary>>(
+      '/api/super-admin/expenses/summary', { params }
+    );
+    return res.data.data;
+  },
+
+  getExpenses: async (
+    params?: ExpenseListParams
+  ): Promise<{ expenses: Expense[]; total: number; total_amount: number }> => {
+    const res = await apiClient.get<
+      ApiResponse<{ expenses: Expense[]; total: number; total_amount: number }>
+    >('/api/super-admin/expenses', { params });
+    return res.data.data;
+  },
+
+  getExpense: async (expenseId: string): Promise<Expense> => {
+    const res = await apiClient.get<ApiResponse<Expense>>(
+      `/api/super-admin/expenses/${expenseId}`
+    );
+    return res.data.data;
+  },
+
+  createExpense: async (payload: ExpenseInput): Promise<Expense> => {
+    const res = await apiClient.post<ApiResponse<Expense>>(
+      '/api/super-admin/expenses', payload
+    );
+    return res.data.data;
+  },
+
+  updateExpense: async (
+    expenseId: string, payload: ExpenseInput
+  ): Promise<Expense> => {
+    const res = await apiClient.put<ApiResponse<Expense>>(
+      `/api/super-admin/expenses/${expenseId}`, payload
+    );
+    return res.data.data;
+  },
+
+  deleteExpense: async (expenseId: string): Promise<void> => {
+    await apiClient.delete(`/api/super-admin/expenses/${expenseId}`);
+  },
+
+  /** Expenses grouped by category — the report behind the dashboard's chart. */
+  getExpensesByCategory: async (
+    params?: { from?: string; to?: string }
+  ): Promise<ExpenseCategoryTotal[]> => {
+    const res = await apiClient.get<ApiResponse<{ categories: ExpenseCategoryTotal[] }>>(
+      '/api/super-admin/expenses/by-category', { params }
+    );
+    return res.data.data.categories;
+  },
+
+  /* =================================================================
+   * KG REPORTS
+   * ================================================================= */
+
+  /** The business customers with countable orders — the dropdown's list. */
+  getReportableBusinesses: async (): Promise<ReportableBusiness[]> => {
+    const res = await apiClient.get<ApiResponse<{ businesses: ReportableBusiness[] }>>(
+      '/api/super-admin/reports/kg/businesses'
+    );
+    return res.data.data.businesses;
+  },
+
+  /**
+   * TOTAL KG — every business customer combined, month by month.
+   *
+   * The window is expressed either as `year` (+ optional `month`) or as an
+   * explicit `from`/`to`; the server resolves whichever arrives.
+   */
+  getTotalKgReport: async (params?: {
+    year?: number | string; month?: number | string; from?: string; to?: string;
+  }): Promise<KgReport> => {
+    const res = await apiClient.get<ApiResponse<KgReport>>(
+      '/api/super-admin/reports/kg/total', { params }
+    );
+    return res.data.data;
+  },
+
+  /** PER CUSTOMER KG — one business customer, month by month. */
+  getBusinessKgReport: async (
+    businessId: string,
+    params?: { year?: number | string; month?: number | string; from?: string; to?: string }
+  ): Promise<KgReport> => {
+    const res = await apiClient.get<ApiResponse<KgReport>>(
+      `/api/super-admin/reports/kg/business/${businessId}`, { params }
+    );
+    return res.data.data;
+  },
+
+  /**
+   * ITEM WISE KG — pieces and weight per item.
+   *
+   * `businessId` omitted means ALL BUSINESS: the server combines the same
+   * item across every customer into ONE row rather than repeating it.
+   */
+  getItemWiseKgReport: async (
+    businessId?: string,
+    params?: {
+      year?: number | string; month?: number | string;
+      from?: string; to?: string; sort?: ItemKgSort;
+    }
+  ): Promise<ItemKgReport> => {
+    const res = await apiClient.get<ApiResponse<ItemKgReport>>(
+      '/api/super-admin/reports/kg/items',
+      { params: { ...params, business_id: businessId || undefined } }
+    );
+    return res.data.data;
+  },
+
+  /**
+   * OUTSTANDING — what each establishment still owes.
+   *
+   * The balance comes from the same ledger the Business Account screen and
+   * the Record Payment form use, so this report can never disagree with them.
+   */
+  getOutstandingReport: async (params?: {
+    search?: string;
+    min_outstanding?: number | string;
+    include_settled?: boolean;
+    sort?: OutstandingSort;
+    limit?: number;
+    offset?: number;
+  }): Promise<OutstandingReport> => {
+    const res = await apiClient.get<ApiResponse<OutstandingReport>>(
+      '/api/super-admin/reports/outstanding', { params }
+    );
+    return res.data.data;
+  },
+
+  /** The home page's Transaction Summary grid. */
+  getTransactionSummary: async (): Promise<TransactionSummary> => {
+    const res = await apiClient.get<ApiResponse<TransactionSummary>>(
+      '/api/super-admin/transaction-summary'
     );
     return res.data.data;
   },

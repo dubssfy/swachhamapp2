@@ -4,12 +4,63 @@ import { validateCoupon } from './cart.service';
 import socketService from './socket.service';
 import { createNotification } from './notification.service';
 import { notifyNearbyRidersOfNewOrder } from './dispatch.service';
-import { requireCustomerPrices } from './priceList.service';
+import { requireCustomerPrices, priceKey } from './priceList.service';
 import { normaliseMobileOrNull } from './businessContact.service';
+import { config } from '../config/env';
+import { quoteForAddress } from './deliveryFee.service';
 
-const DELIVERY_CHARGE = 40;
-const FREE_DELIVERY_THRESHOLD = 399;
+/* Delivery is quoted by distance -- see `deliveryFee.service`. The flat
+   40.00-above-399.00 rule that used to live here is gone. */
 const CANCELLABLE_STATUSES = ['ORDER_PLACED', 'CONFIRMED', 'RECEIVED_AT_FACILITY'];
+
+/**
+ * CUSTOMER ORDER NUMBER: SWC#DDMMYYYY + a 6-digit daily sequence,
+ * e.g. SWC#29082026000001.
+ *
+ * THE SAME SHAPE AS A BUSINESS ORDER, with C where a business number carries
+ * H (hotel) or G (guest) -- see `generateBusinessOrderNumber`. SW is always
+ * uppercase.
+ *
+ * The sequence restarts at 000001 every calendar day, and the day comes from
+ * the DATABASE clock shifted into the business timezone, never from the
+ * device: a phone with the wrong date must not be able to file an order under
+ * the wrong day.
+ *
+ * ITS OWN COUNTER, not the business one. Hotel and Guest share
+ * `business_order_daily_sequence` so that the first BUSINESS order of a day
+ * ends in 000001; drawing customer orders from it too would make a day's
+ * first business order 000007 because six customers ordered first. See
+ * migration 050.
+ *
+ * Concurrency: one atomic upsert on a table keyed by the date. The primary
+ * key serialises concurrent inserts and LAST_INSERT_ID(expr) publishes the new
+ * value on THIS connection only, so two orders placed in the same instant can
+ * never read the same number. No MAX()+1, no randomness.
+ */
+export async function generateCustomerOrderNumber(connection: any): Promise<string> {
+  const tz = config.BUSINESS_TZ_OFFSET;
+
+  // One instant formats both the counter key and the printed DDMMYYYY, so
+  // they cannot disagree across midnight.
+  const [dateRows]: any = await connection.execute(
+    `SELECT DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?)) AS ymd,
+            DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?), '%d%m%Y') AS ddmmyyyy`,
+    [tz, tz]
+  );
+  const { ymd, ddmmyyyy } = dateRows[0];
+
+  await connection.execute(
+    `INSERT INTO customer_order_daily_sequence (sequence_date, last_number)
+     VALUES (?, LAST_INSERT_ID(1))
+     ON DUPLICATE KEY UPDATE last_number = LAST_INSERT_ID(last_number + 1)`,
+    [ymd]
+  );
+
+  const [seqRows]: any = await connection.execute(`SELECT LAST_INSERT_ID() AS seq`);
+  const sequence = String(seqRows[0].seq).padStart(6, '0');
+
+  return `SWC#${ddmmyyyy}${sequence}`;
+}
 
 export interface CreateOrderInput {
   address_id: string;
@@ -22,6 +73,48 @@ export interface CreateOrderInput {
   payment_method: string;
   coupon_code?: string;
   notes?: string;
+  /*
+   * THE DEVICE'S OWN FIX, as `requireServiceArea` already required and
+   * checked. It is the FALLBACK the delivery charge is measured from when
+   * the chosen address has no coordinates of its own -- every address saved
+   * before the app began capturing them.
+   *
+   * It is never preferred over the address: the charge is about where the
+   * laundry is collected, which is the address, not where the phone happened
+   * to be when the order was placed.
+   */
+  latitude?: unknown;
+  longitude?: unknown;
+}
+
+/**
+ * The payment methods a customer order may carry.
+ *
+ * These are exactly the values `orders.payment_method` accepts — the column
+ * is an ENUM, so anything else is either rejected or silently truncated to ''
+ * depending on the server's strict mode. Validating here turns that into a
+ * clear 400 instead.
+ *
+ * The customer-facing subset is narrower than the column: CASH_ON_DELIVERY
+ * and UPI are what the app offers, because those are the two the business
+ * actually settles in. The rest stay accepted so an order created by another
+ * path is not rejected by this one.
+ */
+export const CUSTOMER_PAYMENT_METHODS = [
+  'CASH_ON_DELIVERY', 'UPI', 'CARD', 'NET_BANKING', 'WALLET', 'ONLINE',
+] as const;
+
+export type CustomerPaymentMethod = (typeof CUSTOMER_PAYMENT_METHODS)[number];
+
+/** Normalises and checks a payment method, or throws. */
+export function parsePaymentMethod(value: unknown): CustomerPaymentMethod {
+  const raw = String(value ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if ((CUSTOMER_PAYMENT_METHODS as readonly string[]).includes(raw)) {
+    return raw as CustomerPaymentMethod;
+  }
+  throw new Error(
+    `Payment method must be one of: ${CUSTOMER_PAYMENT_METHODS.join(', ')}.`
+  );
 }
 
 export interface OrderRow {
@@ -44,8 +137,8 @@ export interface OrderRow {
  * (the original body was unported Postgres — `$n` placeholders, RETURNING and
  * a generate_order_number() function that does not exist on MySQL).
  *
- * The order number is derived from the row's own AUTO_INCREMENT id, so it is
- * unique without a MAX()+1 read and safe under concurrency.
+ * The order number is SWC#DDMMYYYY###### -- the business format with C in
+ * place of H/G. See `generateCustomerOrderNumber`.
  */
 async function createOrder(
   userId: string,
@@ -66,6 +159,12 @@ async function createOrder(
    */
   placedByMobile?: string
 ): Promise<OrderRow> {
+  /*
+   * The payment method is checked BEFORE the transaction opens: it needs no
+   * database access, and failing here means nothing has to be rolled back.
+   */
+  const paymentMethod = parsePaymentMethod(input.payment_method);
+
   const connection = await getClient();
   try {
     await connection.beginTransaction();
@@ -85,7 +184,8 @@ async function createOrder(
     // resolved from the price list below, so a tampered request cannot
     // change what the order costs.
     const [cartItems]: any = await connection.execute(
-      `SELECT ci.service_id, s.name AS service_name, s.unit, ci.quantity
+      `SELECT ci.service_id, s.name AS service_name, s.unit, ci.quantity,
+              ci.laundry_service_id
        FROM cart_items ci
        JOIN services s ON s.id = ci.service_id
        WHERE ci.cart_id = ?`,
@@ -93,21 +193,48 @@ async function createOrder(
     );
     if (cartItems.length === 0) throw new Error('Cart is empty');
 
-    // 3) Prices, from the GLOBAL customer price list. Every customer
-    //    pays the same figure for the same item; nothing here is
-    //    per-customer, and business_price_list is never consulted.
-    const customerPrices = await requireCustomerPrices(
-      cartItems.map((item: any) => String(item.service_id))
-    );
+    /*
+     * 3) Prices, from the GLOBAL customer price list, PER ITEM AND SERVICE.
+     *
+     * Every customer pays the same figure for the same item at the same
+     * service; nothing here is per-customer and `business_price_list` is
+     * never consulted.
+     *
+     * The service comes from the CART LINE, so a basket holding both
+     * Shirt/Wash & Iron and Shirt/Dry Clean bills each at its own rate.
+     * `requireCustomerPrices` throws if any pair has no price, which is what
+     * stops an unpriced line being billed at zero.
+     */
+    const priceLines = cartItems.map((item: any) => ({
+      itemId: String(item.service_id),
+      serviceId: item.laundry_service_id === null || item.laundry_service_id === undefined
+        ? null
+        : String(item.laundry_service_id),
+    }));
+    const customerPrices = await requireCustomerPrices(priceLines);
     for (const item of cartItems) {
-      item.price = customerPrices.get(String(item.service_id))!;
+      const serviceId = item.laundry_service_id === null || item.laundry_service_id === undefined
+        ? null
+        : String(item.laundry_service_id);
+      item.price = customerPrices.get(priceKey(String(item.service_id), serviceId))!;
     }
 
     const subtotal = cartItems.reduce(
       (sum: number, item: any) => sum + Number(item.price) * Number(item.quantity),
       0
     );
-    const delivery_charge = subtotal >= FREE_DELIVERY_THRESHOLD ? 0 : DELIVERY_CHARGE;
+    /*
+     * DELIVERY, MEASURED FROM THE ADDRESS THE ORDER IS FOR.
+     *
+     * Recomputed here rather than trusted from the client, exactly as the
+     * item prices are: a request that named its own delivery charge could
+     * otherwise set it to zero.
+     */
+    const deliveryQuote = await quoteForAddress(userId, input.address_id, {
+      latitude: input.latitude,
+      longitude: input.longitude,
+    });
+    const delivery_charge = deliveryQuote.charge;
 
     // 4) Validate coupon if provided
     let discountAmount = 0;
@@ -124,43 +251,46 @@ async function createOrder(
 
     const totalAmount = subtotal + delivery_charge - discountAmount;
 
-    // 5) INSERT order, then stamp its number from the generated id.
+    /*
+     * 5) INSERT the order, WITH its number.
+     *
+     * The number is generated first rather than stamped by an UPDATE
+     * afterwards. `orders.order_number` is UNIQUE and NOT NULL, so the old
+     * approach -- insert '' and rewrite it -- meant two orders placed in the
+     * same instant both inserted '' and one died on the unique key, reporting
+     * a duplicate order number for an order that had none yet.
+     */
+    const orderNumber = await generateCustomerOrderNumber(connection);
+
     const [orderInsert]: any = await connection.execute(
       `INSERT INTO orders (
          user_id, address_id, placed_by_mobile, order_number, status, subtotal,
-         delivery_charge, coupon_discount, coupon_id, total,
+         delivery_charge, delivery_distance_km, delivery_store_id,
+         coupon_discount, coupon_id, total,
          payment_method, payment_status, special_notes
        )
-       VALUES (?, ?, ?, '', 'ORDER_PLACED', ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
+       VALUES (?, ?, ?, ?, 'ORDER_PLACED', ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
       // `placed_by_mobile` is written ONCE, here, and never updated: changing
       // the profile number later must not rewrite what an order already says.
       [
         userId,
         input.address_id,
         normaliseMobileOrNull(placedByMobile),
+        orderNumber,
         subtotal,
         delivery_charge,
+        // NULL, not 0, when nothing was measured: 0 would read as "measured,
+        // and it was zero km away".
+        deliveryQuote.distance_km,
+        deliveryQuote.store_id,
         discountAmount,
         couponId,
         totalAmount,
-        input.payment_method,
+        paymentMethod,
         input.notes || null,
       ]
     );
     const orderId = String(orderInsert.insertId);
-
-    await connection.execute(
-      `UPDATE orders
-          SET order_number = CONCAT('ORD#', DATE_FORMAT(created_at, '%d%m%Y'), LPAD(id, 6, '0'))
-        WHERE id = ?`,
-      [orderId]
-    );
-
-    const [numberRows]: any = await connection.execute(
-      `SELECT order_number FROM orders WHERE id = ?`,
-      [orderId]
-    );
-    const orderNumber = numberRows[0].order_number as string;
 
     // 6) INSERT order_items
     for (const item of cartItems) {
@@ -168,11 +298,15 @@ async function createOrder(
         // `original_quantity` equals `quantity` at placement — nothing has been
         // found defective yet. Written explicitly so the pieces the order was
         // placed for are on the row from the start.
-        `INSERT INTO order_items (order_id, service_id, service_name, unit, quantity, original_quantity, defective_quantity, unit_price, total_price)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        /* `laundry_service_id` is carried onto the order line, so the
+           invoice, the PDF and the sorter all know which service was
+           bought — and the line's price is explained by it. */
+        `INSERT INTO order_items (order_id, service_id, laundry_service_id, service_name, unit, quantity, original_quantity, defective_quantity, unit_price, total_price)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
         [
           orderId,
           item.service_id,
+          item.laundry_service_id ?? null,
           item.service_name,
           item.unit,
           item.quantity,
@@ -233,7 +367,7 @@ async function createOrder(
       delivery_charge,
       discount_amount: discountAmount,
       total_amount: totalAmount,
-      payment_method: input.payment_method,
+      payment_method: paymentMethod,
       payment_status: 'PENDING',
       notes: input.notes,
       created_at: new Date(),
@@ -287,12 +421,13 @@ async function getOrders(
   limit: number = 10
 ): Promise<{ orders: OrderRow[]; total: number }> {
   const offset = (page - 1) * limit;
-  const conditions: string[] = ['o.user_id = $1'];
+  // MySQL placeholders are positional `?`, so there is no index to track:
+  // the order of `values` is the order they bind in.
+  const conditions: string[] = ['o.user_id = ?'];
   const values: unknown[] = [userId];
-  let paramIndex = 2;
 
   if (status) {
-    conditions.push(`o.status = $${paramIndex++}`);
+    conditions.push('o.status = ?');
     values.push(status);
   }
 
@@ -304,7 +439,14 @@ async function getOrders(
   );
   const total = parseInt(countResult.rows[0]?.count || '0', 10);
 
-  const dataValues = [...values, limit, offset];
+  /*
+   * LIMIT/OFFSET are interpolated, not bound: this MySQL driver refuses
+   * placeholders there. Both are clamped integers derived from the caller's
+   * page numbers, never strings, so nothing from the request reaches the SQL
+   * text.
+   */
+  const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
   const ordersResult = await query<OrderRow & { item_count: string }>(
     `SELECT o.*, COUNT(oi.id) AS item_count
      FROM orders o
@@ -312,42 +454,64 @@ async function getOrders(
      ${whereClause}
      GROUP BY o.id
      ORDER BY o.created_at DESC
-     LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
-    dataValues
+     LIMIT ${safeLimit} OFFSET ${safeOffset}`,
+    values
   );
 
   return { orders: ordersResult.rows, total };
 }
 
+/**
+ * One order, in full, for the customer who placed it.
+ *
+ * ASSEMBLED IN JS, NOT IN SQL. The original built the whole thing with
+ * `json_agg` / `json_build_object` / `row_to_json` / `FILTER (WHERE ...)` —
+ * all PostgreSQL, none of which MySQL has, so it could never have run here.
+ *
+ * Four plain queries are also easier to read than one nested aggregation,
+ * and they avoid the GROUP BY over every joined table that the single
+ * statement needed. `user_id` is in the WHERE clause of the first, so another
+ * customer's order is a null rather than a disclosure.
+ */
 async function getOrderById(userId: string, orderId: string): Promise<OrderRow | null> {
-  const result = await query<OrderRow>(
-    `SELECT o.*,
-            json_agg(
-              json_build_object(
-                'id', oi.id,
-                'service_id', oi.service_id,
-                'service_name', s.name,
-                'quantity', oi.quantity,
-                'unit_price', oi.unit_price,
-                'total_price', oi.total_price,
-                'unit', s.unit
-              )
-            ) FILTER (WHERE oi.id IS NOT NULL) AS items,
-            row_to_json(pk.*) AS pickup,
-            row_to_json(dl.*) AS delivery,
-            row_to_json(a.*) AS address
-     FROM orders o
-     LEFT JOIN order_items oi ON oi.order_id = o.id
-     LEFT JOIN services s ON s.id = oi.service_id
-     LEFT JOIN pickups pk ON pk.order_id = o.id
-     LEFT JOIN deliveries dl ON dl.order_id = o.id
-     LEFT JOIN addresses a ON a.id = o.address_id
-     WHERE o.id = $1 AND o.user_id = $2
-     GROUP BY o.id, pk.id, dl.id, a.id`,
+  const orderResult = await query<OrderRow>(
+    `SELECT * FROM orders WHERE id = ? AND user_id = ?`,
     [orderId, userId]
   );
-  return result.rows[0] || null;
+  const order = orderResult.rows[0];
+  if (!order) return null;
+
+  const items = await query<any>(
+    `SELECT oi.id, oi.service_id, s.name AS service_name, oi.quantity,
+            oi.unit_price, oi.total_price, s.unit
+       FROM order_items oi
+       LEFT JOIN services s ON s.id = oi.service_id
+      WHERE oi.order_id = ?
+      ORDER BY oi.id ASC`,
+    [orderId]
+  );
+  const pickup = await query<any>(
+    `SELECT * FROM pickups WHERE order_id = ? LIMIT 1`, [orderId]
+  );
+  const delivery = await query<any>(
+    `SELECT * FROM deliveries WHERE order_id = ? LIMIT 1`, [orderId]
+  );
+  const addressId = (order as any).address_id;
+  const address = addressId
+    ? await query<any>(
+      `SELECT * FROM customer_addresses WHERE id = ? LIMIT 1`, [addressId]
+    )
+    : { rows: [] as any[] };
+
+  return {
+    ...order,
+    items: items.rows,
+    pickup: pickup.rows[0] ?? null,
+    delivery: delivery.rows[0] ?? null,
+    address: address.rows[0] ?? null,
+  } as OrderRow;
 }
+
 
 async function cancelOrder(
   userId: string,
@@ -355,7 +519,7 @@ async function cancelOrder(
   reason?: string
 ): Promise<OrderRow> {
   const orderResult = await query<{ id: string; status: string }>(
-    `SELECT id, status FROM orders WHERE id = $1 AND user_id = $2`,
+    `SELECT id, status FROM orders WHERE id = ? AND user_id = ?`,
     [orderId, userId]
   );
 
@@ -369,18 +533,22 @@ async function cancelOrder(
     );
   }
 
-  const updatedResult = await query<OrderRow>(
-    `UPDATE orders
-     SET status = 'CANCELLED', updated_at = NOW()
-     WHERE id = $1
-     RETURNING *`,
+  await query(
+    `UPDATE orders SET status = 'CANCELLED', updated_at = NOW() WHERE id = ?`,
     [orderId]
   );
 
   await query(
     `INSERT INTO order_status_history (order_id, status, changed_by, notes)
-     VALUES ($1, 'CANCELLED', $2, $3)`,
+     VALUES (?, 'CANCELLED', ?, ?)`,
     [orderId, userId, reason || 'Cancelled by customer']
+  );
+
+  // MySQL has no RETURNING, so the cancelled row is read back after the
+  // update rather than returned by it.
+  const updatedResult = await query<OrderRow>(
+    `SELECT * FROM orders WHERE id = ?`,
+    [orderId]
   );
 
   logger.info(`[OrderService] Order ${orderId} cancelled by user ${userId}`);
@@ -395,7 +563,7 @@ async function getOrderTracking(orderId: string): Promise<object | null> {
      FROM orders o
      LEFT JOIN pickups pk ON pk.order_id = o.id
      LEFT JOIN deliveries dl ON dl.order_id = o.id
-     WHERE o.id = $1
+     WHERE o.id = ?
      GROUP BY o.id, pk.id, dl.id`,
     [orderId]
   );
@@ -406,7 +574,7 @@ async function getOrderTracking(orderId: string): Promise<object | null> {
   const statusHistoryResult = await query(
     `SELECT status, notes, changed_by, created_at
      FROM order_status_history
-     WHERE order_id = $1
+     WHERE order_id = ?
      ORDER BY created_at ASC`,
     [orderId]
   );
@@ -422,7 +590,7 @@ async function getOrderTracking(orderId: string): Promise<object | null> {
             ) FILTER (WHERE psh.id IS NOT NULL) AS history
      FROM production_orders po
      LEFT JOIN production_status_history psh ON psh.production_order_id = po.id
-     WHERE po.order_id = $1
+     WHERE po.order_id = ?
      GROUP BY po.id`,
     [orderId]
   );

@@ -12,8 +12,16 @@ import { normaliseMobileOrNull } from './businessContact.service';
 
 const LAUNDRY_TYPE_CODE: Record<string, string> = { hotel: 'H', guest: 'G' };
 
-/** Exactly two Business services. Wash + Iron is one combined service. */
-const VALID_SERVICE_TYPES = ['wash_iron', 'dry_clean'];
+/**
+ * THE THREE BUSINESS LAUNDRY SERVICES: Wash & Fold for towels, Wash & Iron
+ * and Dry Clean for everything else. Wash + Iron is one combined service.
+ *
+ * This gate is what puts the chosen service ON THE ORDER: a cart line whose
+ * code is not here is refused before the order is created, so `wash_fold` had
+ * to be added or a towel could be added to a basket and never checked out.
+ * Which service each ITEM may use is `item_service_types`, not this list.
+ */
+const VALID_SERVICE_TYPES = ['wash_fold', 'wash_iron', 'dry_clean'];
 
 /**
  * What a Quick Order costs: DOUBLE the business's standard rate.

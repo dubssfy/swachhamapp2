@@ -8,7 +8,13 @@ import {
   displayInvoiceNumber,
   invoiceNumberFor,
   parseLaundryType,
+  buildInvoice,
 } from '../services/gstInvoice.service';
+import {
+  listInvoicesForBusiness,
+  getInvoiceForBusiness,
+} from '../services/invoiceHistory.service';
+import { renderInvoicePdf, invoiceFileName } from '../services/invoicePdf.service';
 import {
   buildWalkingOrderTemplate,
   walkingOrderTemplateFileName,
@@ -544,6 +550,99 @@ router.get(
         { invoice_number: full, invoice_number_display: displayInvoiceNumber(full) },
         'Invoice number fetched'
       );
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* ===================================================================
+ * INVOICE HISTORY  (per business, isolated by construction)
+ * =================================================================== */
+
+/**
+ * GET /api/super-admin/business-account/:businessId/invoices?limit=&offset=
+ *
+ * EVERY INVOICE EVER GENERATED FOR THIS BUSINESS, newest first.
+ *
+ * The business comes from the PATH and goes straight into the WHERE clause —
+ * there is no endpoint here that lists invoices across businesses and no query
+ * parameter that widens the scope, so one business's invoices cannot appear in
+ * another's history.
+ *
+ * The amounts are the SNAPSHOT ones taken when each invoice was issued, not a
+ * recomputation: see `invoiceHistory.service`.
+ */
+router.get(
+  '/business-account/:businessId/invoices',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const business = await assertBusiness(req.params.businessId);
+      const data = await listInvoicesForBusiness(String(business.id), {
+        limit: Number(req.query.limit) || undefined,
+        offset: Number(req.query.offset) || undefined,
+      });
+      sendSuccess(res, data, 'Invoice history fetched');
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /api/super-admin/business-account/:businessId/invoices/:invoiceId
+ *
+ * One stored invoice. Both ids are in the WHERE clause, so asking for another
+ * business's invoice id under this business is a 404 rather than a disclosure.
+ */
+router.get(
+  '/business-account/:businessId/invoices/:invoiceId',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const business = await assertBusiness(req.params.businessId);
+      const invoice = await getInvoiceForBusiness(String(business.id), req.params.invoiceId);
+      sendSuccess(res, { invoice }, 'Invoice fetched');
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /api/super-admin/business-account/:businessId/invoices/:invoiceId/invoice.pdf
+ *
+ * The stored invoice, as the PDF.
+ *
+ * RE-RENDERED, NOT RETRIEVED. The bytes are not kept; the document is drawn
+ * again from the period and laundry type held on the row, through the SAME
+ * `buildInvoice` + `renderInvoicePdf` pair that issued it. That is what keeps
+ * one invoice template in the app instead of two that drift.
+ */
+router.get(
+  '/business-account/:businessId/invoices/:invoiceId/invoice.pdf',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const business = await assertBusiness(req.params.businessId);
+      const stored = await getInvoiceForBusiness(String(business.id), req.params.invoiceId);
+
+      const invoice = await buildInvoice(
+        String(business.id),
+        stored.period_from,
+        stored.period_to,
+        stored.laundry_type
+      );
+      const pdf = await renderInvoicePdf(invoice);
+      const fileName = invoiceFileName(invoice);
+
+      logger.info(
+        `[Invoice] ${stored.invoice_number} reopened from history by super admin ${authReq.user!.id}`
+      );
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', String(pdf.length));
+      res.end(pdf);
     } catch (error) {
       next(error);
     }

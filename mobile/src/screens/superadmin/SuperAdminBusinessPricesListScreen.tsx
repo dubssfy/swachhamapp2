@@ -86,7 +86,63 @@ export default function SuperAdminBusinessPricesListScreen({ navigation, route }
 
   React.useEffect(() => { loadPrices(); }, [loadPrices]);
 
-  const unsetCount = useMemo(() => rows.filter((row) => row.price === null).length, [rows]);
+  /*
+   * "Not set" means NOTHING WOULD BE BILLED for this item + service — an
+   * order for it is refused. A service with no rate of its own but an
+   * inherited base rate is not counted: it bills that rate, so listing it as
+   * needing attention would send the operator after a price that already
+   * works. This is the same test the row's own "Not set" label uses.
+   */
+  const unsetCount = useMemo(
+    () => rows.filter((row) => row.effective_price === null).length,
+    [rows]
+  );
+
+  /**
+   * Which SERVICES each item is already priced for, at this laundry type.
+   *
+   * Keyed by item id; the set holds a service id per per-service rate, plus
+   * the literal 'base' when the item has a rate that covers every service.
+   * The Add sheet uses it to leave out services that would only 409.
+   */
+  const pricedServicesByItem = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const row of rows) {
+      if (row.price === null) continue;
+      const key = row.service_id ?? 'base';
+      (map[row.item_id] ??= []).push(key);
+    }
+    return map;
+  }, [rows]);
+
+  /**
+   * Items with NOTHING LEFT TO PRICE — the ones the item picker leaves out.
+   *
+   * An item is exhausted when every slot it has is filled: its base rate and
+   * one rate per service it is offered for. A single-service item keeps its
+   * old behaviour — one price retires it — because a per-service rate on an
+   * item with a single service would only restate the base rate.
+   */
+  const exhaustedItemIds = useMemo(() => {
+    const seen = new Map<string, { used: Set<string>; services: number }>();
+    for (const row of rows) {
+      const entry = seen.get(row.item_id) ?? {
+        used: new Set<string>(),
+        services: row.service_types.length,
+      };
+      if (row.price !== null) entry.used.add(row.service_id ?? 'base');
+      seen.set(row.item_id, entry);
+    }
+    const out: string[] = [];
+    for (const [itemId, { used, services }] of seen) {
+      if (used.size === 0) continue;
+      // Single-service (or unclassified) items: any price retires them.
+      if (services <= 1) { out.push(itemId); continue; }
+      // Multi-service: the base slot plus one per service.
+      if (used.size >= services + 1) out.push(itemId);
+    }
+    return out;
+  }, [rows]);
 
   // The category and sub-category are chosen on the pages before this one and
   // arrive as route params, so the list is narrowed to exactly them plus the
@@ -94,8 +150,10 @@ export default function SuperAdminBusinessPricesListScreen({ navigation, route }
   const shown = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return rows.filter((row) => {
-      if (filter === 'set' && row.price === null) return false;
-      if (filter === 'unset' && row.price !== null) return false;
+      // Set / Not set on what would ACTUALLY be billed, matching the label
+      // the row itself shows — see `unsetCount`.
+      if (filter === 'set' && row.effective_price === null) return false;
+      if (filter === 'unset' && row.effective_price !== null) return false;
       if (categoryId) {
         const id = row.parent_category_id || row.category_id;
         if (id !== categoryId) return false;
@@ -109,6 +167,34 @@ export default function SuperAdminBusinessPricesListScreen({ navigation, route }
       );
     });
   }, [rows, search, filter, categoryId, subcategoryId]);
+
+  /**
+   * The visible rows, gathered into ONE GROUP PER ITEM.
+   *
+   * The API returns a line per item PER SERVICE, which is the right shape for
+   * pricing but the wrong one to read: the item's name would repeat down the
+   * list once for every service it is offered for. Grouping puts the name
+   * once at the head of a card and its services underneath, so the Super
+   * Admin sees each item and chooses which of its services to price.
+   *
+   * Order is preserved exactly as the server sent it — the categories are
+   * already sorted, and re-sorting here could only disagree with the
+   * headings the list is grouped under.
+   */
+  const itemGroups = useMemo(() => {
+    const groups: Array<{ item_id: string; head: BusinessPrice; lines: BusinessPrice[] }> = [];
+    const index = new Map<string, number>();
+    for (const row of shown) {
+      const at = index.get(row.item_id);
+      if (at === undefined) {
+        index.set(row.item_id, groups.length);
+        groups.push({ item_id: row.item_id, head: row, lines: [row] });
+      } else {
+        groups[at].lines.push(row);
+      }
+    }
+    return groups;
+  }, [shown]);
 
   const toggleActive = async (row: BusinessPrice) => {
     if (!businessId || !row.id) return;
@@ -124,11 +210,13 @@ export default function SuperAdminBusinessPricesListScreen({ navigation, route }
     if (!businessId || !row.id) return;
     Alert.alert(
       'Remove this price?',
-      `${row.item_name} · ${row.laundry_type_label} — ${money(row.price)} for ` +
-        `${businessName || 'this business'}.\n\n` +
-        'Only this laundry type is affected; the other one keeps its own price. ' +
-        'Past orders keep the price they were placed at. Without a price, this ' +
-        'business cannot order the item at this laundry type until one is set again.',
+      `${row.item_name} · ${row.service_label} · ${row.laundry_type_label} — ` +
+        `${money(row.price)} for ${businessName || 'this business'}.\n\n` +
+        'Only this service at this laundry type is affected; the other service ' +
+        'and the other laundry type keep their own prices. Past orders keep the ' +
+        'price they were placed at. Without a price, this business cannot order ' +
+        'the item for this service until one is set again — unless the item has ' +
+        'a rate covering every service, which this service would then fall back to.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -200,9 +288,12 @@ export default function SuperAdminBusinessPricesListScreen({ navigation, route }
             <View style={[sa.warnBox, { marginHorizontal: SPACING.md }]}>
               <Ionicons name="alert-circle-outline" size={16} color="#8A5200" />
               <Text style={sa.warnText}>
-                {unsetCount} item{unsetCount === 1 ? '' : 's'} have no{' '}
+                {/* Lines, and they are named as such: the list holds one line
+                    per item PER SERVICE, so "12 items" would overstate a
+                    count that is really 12 item-and-service combinations. */}
+                {unsetCount} item/service line{unsetCount === 1 ? '' : 's'} have no{' '}
                 {laundryTypeLabel} price for this business. Orders at this laundry
-                type containing them will be refused.
+                type for those services will be refused.
               </Text>
             </View>
           )}
@@ -244,88 +335,60 @@ export default function SuperAdminBusinessPricesListScreen({ navigation, route }
                    is actually specific to it: the item, its rates, and what can
                    be done to it. */
                 <PriceCategoryGroups
-                  rows={shown}
-                  keyOf={(row) => String(row.item_id)}
-                  topIdOf={(row) => row.parent_category_id || row.category_id}
-                  topNameOf={(row) => row.parent_category_name || row.category_name}
-                  subIdOf={(row) => (row.parent_category_id ? row.category_id : null)}
-                  subNameOf={(row) => (row.parent_category_id ? row.category_name : null)}
+                  /* ONE CARD PER ITEM, with the item's services inside it.
+                     The item is named ONCE; each service it is offered for
+                     gets its own line and its own price beneath that name,
+                     rather than the item repeating down the list once per
+                     service. See `itemGroups`. */
+                  rows={itemGroups}
+                  keyOf={(group) => group.item_id}
+                  topIdOf={(group) => group.head.parent_category_id || group.head.category_id}
+                  topNameOf={(group) => group.head.parent_category_name || group.head.category_name}
+                  subIdOf={(group) =>
+                    group.head.parent_category_id ? group.head.category_id : null}
+                  subNameOf={(group) =>
+                    group.head.parent_category_id ? group.head.category_name : null}
                   expandAll
-                  renderItem={(row) => (
+                  renderItem={(group) => (
                     <PriceItemRow
-                      title={row.item_name}
+                      title={group.head.item_name}
                       subtitle={
-                        <View
-                          style={{
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            flexWrap: 'wrap',
-                            gap: SPACING.xs,
-                            marginTop: 2,
-                          }}
-                        >
-                          {/* The reference figure, never a fallback: the
-                              backend refuses to price an order from it. */}
-                          <Text style={sa.tdMuted}>
-                            Customer: {money(row.customer_price)}
-                          </Text>
-                          {row.price === null ? null : <StatusPill active={row.is_active} />}
-                          {!row.item_is_active ? (
-                            <Text style={[sa.tdMuted, { color: COLORS.Warning, fontSize: 10 }]}>
-                              item disabled
+                        <View style={{ marginTop: 2 }}>
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              flexWrap: 'wrap',
+                              gap: SPACING.xs,
+                            }}
+                          >
+                            {/* The reference figure, never a fallback: the
+                                backend refuses to price an order from it. */}
+                            <Text style={sa.tdMuted}>
+                              Customer: {money(group.head.customer_price)}
                             </Text>
-                          ) : null}
+                            {!group.head.item_is_active ? (
+                              <Text style={[sa.tdMuted, { color: COLORS.Warning, fontSize: 10 }]}>
+                                item disabled
+                              </Text>
+                            ) : null}
+                          </View>
+
+                          {/* ---- ONE LINE PER SERVICE ----
+                              Each is set independently: the price shown is
+                              what an order for THAT service is billed, and
+                              the button beside it acts on that service
+                              alone. */}
+                          {group.lines.map((line) => (
+                            <ServicePriceLine
+                              key={line.service_id ?? 'base'}
+                              line={line}
+                              onSet={() => setEditing(line)}
+                              onToggle={() => toggleActive(line)}
+                              onDelete={() => confirmDelete(line)}
+                            />
+                          ))}
                         </View>
-                      }
-                      right={
-                        row.price === null ? (
-                          <Text style={[sa.tdPrice, { color: COLORS.Warning }]}>Not set</Text>
-                        ) : (
-                          <Text style={sa.tdPrice}>{money(row.price)}</Text>
-                        )
-                      }
-                      actions={
-                        <>
-                          <ActionButton
-                            icon={row.price === null ? 'add-circle-outline' : 'create-outline'}
-                            label={row.price === null ? 'Set' : 'Adjust'}
-                            tone="primary"
-                            onPress={() => setEditing(row)}
-                            accessibilityLabel={
-                              row.price === null
-                                ? `Set price for ${row.item_name}`
-                                : `Adjust price for ${row.item_name}`
-                            }
-                          />
-                          {/* Enable/Disable and Delete need a row to act on:
-                              an item with no price for this business has
-                              nothing to enable or remove yet. */}
-                          {row.id !== null && (
-                            <>
-                              <ActionButton
-                                icon={
-                                  row.is_active
-                                    ? 'close-circle-outline'
-                                    : 'checkmark-circle-outline'
-                                }
-                                label={row.is_active ? 'Disable' : 'Enable'}
-                                onPress={() => toggleActive(row)}
-                                accessibilityLabel={
-                                  row.is_active
-                                    ? `Disable price for ${row.item_name}`
-                                    : `Enable price for ${row.item_name}`
-                                }
-                              />
-                              <ActionButton
-                                icon="trash-outline"
-                                label="Delete"
-                                tone="danger"
-                                onPress={() => confirmDelete(row)}
-                                accessibilityLabel={`Remove price for ${row.item_name}`}
-                              />
-                            </>
-                          )}
-                        </>
                       }
                     />
                   )}
@@ -343,12 +406,124 @@ export default function SuperAdminBusinessPricesListScreen({ navigation, route }
         laundryTypeLabel={laundryTypeLabel}
         row={editing}
         addingNew={false}
-        /* Items already priced at THIS laundry type, so the picker can leave
-           them out — adding one again would only 409. */
-        pricedItemIds={rows.filter((r) => r.price !== null).map((r) => r.item_id)}
+        /* Items with NOTHING LEFT TO PRICE at this laundry type, so the
+           picker can leave them out — adding one again would only 409.
+
+           "Nothing left" is per SERVICE, not per item. An item offered for
+           Wash & Iron and Dry Clean can hold a base rate plus a rate for
+           each service, so it stays offerable until every one of those
+           exists. Excluding it the moment it had any price — which is what
+           this did before per-service rates — made a Dry Clean override
+           impossible to add through this sheet, because the item it belonged
+           to had vanished from the picker.
+
+           A single-service item is unchanged: its base rate is its only
+           meaningful rate, so one price still retires it. */
+        pricedItemIds={exhaustedItemIds}
+        /* Which services each item has already been priced for, so the
+           dropdown can leave those out too. */
+        pricedServicesByItem={pricedServicesByItem}
         onClose={() => setEditing(null)}
         onSaved={() => { setEditing(null); loadPrices(); }}
       />
     </SafeAreaView>
+  );
+}
+
+/**
+ * ONE SERVICE OF ONE ITEM, and the price set against it.
+ *
+ *   Wash & Iron    55.00    [Adjust] [Disable] [Delete]
+ *   Dry Clean      Not set  [Set]
+ *
+ * Everything here acts on THIS SERVICE ALONE — the buttons carry the line's
+ * own price row, so adjusting Dry Clean cannot touch Wash & Iron.
+ *
+ * The figure shown is `effective_price`: what an order for this service is
+ * actually billed. A service with no rate of its own but an item-wide rate
+ * behind it shows that rate, marked inherited, because printing "Not set"
+ * beside a service the system charges 45.00 for would be false. "Not set" is
+ * kept for a service that genuinely has no price — one an order is refused
+ * for rather than guessed at.
+ */
+function ServicePriceLine({
+  line,
+  onSet,
+  onToggle,
+  onDelete,
+}: {
+  line: BusinessPrice;
+  onSet: () => void;
+  onToggle: () => void;
+  onDelete: () => void;
+}) {
+  const unpriced = line.effective_price === null;
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: SPACING.xs,
+        marginTop: SPACING.xs,
+        paddingTop: SPACING.xs,
+        borderTopWidth: 1,
+        borderTopColor: COLORS.Border,
+      }}
+    >
+      <View style={[sa.pill, { backgroundColor: COLORS.PrimaryLight }]}>
+        <Text style={[sa.pillText, { color: COLORS.Primary }]}>{line.service_label}</Text>
+      </View>
+
+      <Text
+        style={[
+          sa.tdPrice,
+          unpriced && { color: COLORS.Warning },
+          line.is_inherited && { color: COLORS.TextSecondary },
+        ]}
+      >
+        {unpriced ? 'Not set' : money(line.effective_price)}
+      </Text>
+
+      {line.is_inherited ? (
+        <Text style={[sa.tdMuted, { fontSize: 10 }]}>inherited</Text>
+      ) : null}
+      {line.price !== null ? <StatusPill active={line.is_active} /> : null}
+
+      <View style={{ flexDirection: 'row', gap: SPACING.xs, marginLeft: 'auto' }}>
+        {/* "Set" until this SERVICE has a rate of its own — an inherited
+            figure belongs to the item, not to this service. */}
+        <ActionButton
+          icon={line.price === null ? 'add-circle-outline' : 'create-outline'}
+          label={line.price === null ? 'Set' : 'Adjust'}
+          tone="primary"
+          onPress={onSet}
+          accessibilityLabel={`${line.price === null ? 'Set' : 'Adjust'} the ${
+            line.service_label
+          } price for ${line.item_name}`}
+        />
+        {/* Enable/Disable and Delete need a row of this service's own: an
+            inherited figure has no row here to enable or remove. */}
+        {line.id !== null && line.price !== null && (
+          <>
+            <ActionButton
+              icon={line.is_active ? 'close-circle-outline' : 'checkmark-circle-outline'}
+              label={line.is_active ? 'Disable' : 'Enable'}
+              onPress={onToggle}
+              accessibilityLabel={`${line.is_active ? 'Disable' : 'Enable'} the ${
+                line.service_label
+              } price for ${line.item_name}`}
+            />
+            <ActionButton
+              icon="trash-outline"
+              label="Delete"
+              tone="danger"
+              onPress={onDelete}
+              accessibilityLabel={`Remove the ${line.service_label} price for ${line.item_name}`}
+            />
+          </>
+        )}
+      </View>
+    </View>
   );
 }

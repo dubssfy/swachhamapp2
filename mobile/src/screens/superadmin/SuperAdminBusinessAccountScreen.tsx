@@ -13,7 +13,7 @@ import { COLORS, SPACING, TYPOGRAPHY } from '../../constants/theme';
 import { sa, STATUS_TONE } from './styles';
 import superAdminApi, {
   BusinessAccountSummary, BusinessAccountOrder, PaymentContext,
-  PaymentReceipt, PaymentTypeValue,
+  PaymentReceipt, PaymentTypeValue, InvoiceHistoryEntry,
 } from '../../services/superAdminApi';
 import { ActionButton } from './SuperAdminCustomerPricesScreen';
 import GstInvoiceModal from './GstInvoiceModal';
@@ -27,6 +27,12 @@ import WalkingOrderModal from './WalkingOrderModal';
  * mobile number and establishment name included.
  */
 import { generateOrderPdf, buildPdfBaseName } from '../../utils/businessOrderPdf';
+/*
+ * "Open PDF" hands the document to the PHONE, not to this app — see
+ * `openPdf.ts`. One helper, so every Open PDF in the Super Admin behaves the
+ * same way on the same device.
+ */
+import { openPdfInDeviceViewer } from '../../utils/openPdf';
 
 /**
  * Business Account.
@@ -38,7 +44,8 @@ import { generateOrderPdf, buildPdfBaseName } from '../../utils/businessOrderPdf
  * server scopes every call by the business in the path, so this screen cannot
  * show one business's figures under another's name even if it tried.
  *
- * GENERATE INVOICE IS THE EXISTING ONE. `GstInvoiceModal` is the same
+ * GENERATE INVOICE IS THE EXISTING ONE, now in the Invoices tab.
+ * `GstInvoiceModal` is the same
  * component and the same endpoints the business list used to open; only the
  * button moved here, into Order Detail, where an order is on screen.
  *
@@ -77,7 +84,7 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const [tab, setTab] = useState<'orders' | 'payments'>('orders');
+  const [tab, setTab] = useState<'orders' | 'invoices' | 'payments'>('orders');
 
   const loadBusinesses = useCallback(async () => {
     setError('');
@@ -146,7 +153,7 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
             </Text>
           ) : (
             <>
-              {/* ---- The two sections ---- */}
+              {/* ---- The three sections ---- */}
               <View style={sa.tabs}>
                 <TabButton
                   label="Order Detail"
@@ -154,16 +161,26 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
                   onPress={() => setTab('orders')}
                 />
                 <TabButton
-                  label="Payment Receipt"
+                  label="Invoices"
+                  on={tab === 'invoices'}
+                  onPress={() => setTab('invoices')}
+                />
+                <TabButton
+                  label="Payments"
                   on={tab === 'payments'}
                   onPress={() => setTab('payments')}
                 />
               </View>
 
+              {/* `key` on the business id remounts each tab when the business
+                  changes, so a tab can never briefly show the previous
+                  business's rows while its own load is in flight. */}
               {tab === 'orders' ? (
-                <OrderDetailTab business={selected} />
+                <OrderDetailTab key={selected.id} business={selected} />
+              ) : tab === 'invoices' ? (
+                <InvoiceHistoryTab key={selected.id} business={selected} />
               ) : (
-                <PaymentReceiptTab business={selected} />
+                <PaymentReceiptTab key={selected.id} business={selected} />
               )}
             </>
           )}
@@ -238,18 +255,18 @@ function TabButton({ label, on, onPress }: { label: string; on: boolean; onPress
  * =================================================================== */
 
 /**
- * This business's orders, and the two things that can be done from here:
- * open an order, and generate its invoice.
+ * This business's orders.
  *
- * GENERATE INVOICE opens the EXISTING `GstInvoiceModal` against this business
- * — the same component and endpoints as before; it simply lives here now.
+ * GENERATE INVOICE IS NOT HERE. It lives in the Invoices tab, beside the
+ * invoices it produces — it used to sit here, one tab away from its own
+ * output. Backdating a walking order stays, because it creates an ORDER and
+ * this is the order section.
  */
 function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
   const [orders, setOrders] = useState<BusinessAccountOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
-  const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [walkingOpen, setWalkingOpen] = useState(false);
   /** The order whose PDF is being built, so only its own row shows a spinner. */
   const [pdfFor, setPdfFor] = useState<string | null>(null);
@@ -292,15 +309,11 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
     try {
       const data = await superAdminApi.getBusinessAccountOrder(business.id, order.id);
       const { uri, fileName } = await generateOrderPdf(data.order);
-      if (!(await Sharing.isAvailableAsync())) {
-        Alert.alert('PDF ready', fileName);
-        return;
-      }
-      await Sharing.shareAsync(uri, {
-        mimeType: 'application/pdf',
-        dialogTitle: fileName,
-        UTI: 'com.adobe.pdf',
-      });
+      // Opens in the DEVICE's PDF viewer, exactly as More Options -> Open PDF
+      // does: the two buttons open the same document, so they open it the
+      // same way rather than one going to a viewer and the other to a sheet.
+      const outcome = await openPdfInDeviceViewer(uri, fileName);
+      if (outcome === 'unavailable') Alert.alert('PDF ready', fileName);
     } catch (e: any) {
       setError(
         e?.response?.data?.message || e.message || 'Could not open the order confirmation PDF'
@@ -361,11 +374,17 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
       }
 
       if (action === 'open') {
-        // A bare content:// view-intent (Linking.openURL) launches a viewer
-        // without read access to the file, which renders as a blank page. The
-        // system sheet hands the viewer a readable copy and is the reliable
-        // cross-platform way to open the document.
-        await shareOrderPdf(uri, fileName);
+        /*
+         * THE DEVICE'S OWN PDF VIEWER, not this app.
+         *
+         * `openPdfInDeviceViewer` fires a real ACTION_VIEW intent on Android
+         * with a FileProvider content URI and a read grant, so the OS shows
+         * whichever PDF apps are installed and the chosen one can actually
+         * read the file. iOS has no "default PDF app" to open into, so it
+         * gets the share sheet, which is that platform's document handoff.
+         */
+        const outcome = await openPdfInDeviceViewer(uri, fileName);
+        if (outcome === 'unavailable') Alert.alert('PDF ready', fileName);
         return;
       }
 
@@ -441,22 +460,14 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
         </View>
       )}
 
-      {/* The existing Generate Invoice, now reached from here. */}
-      <TouchableOpacity
-        style={sa.addEntryBtn}
-        onPress={() => setInvoiceOpen(true)}
-        accessibilityRole="button"
-        accessibilityLabel={`Generate an invoice for ${business.name}`}
-      >
-        <Ionicons name="document-text-outline" size={18} color={COLORS.Surface} />
-        <Text style={sa.addEntryText}>Generate Invoice</Text>
-      </TouchableOpacity>
+      {/* GENERATE INVOICE IS NOT HERE ANY MORE.
+          It lives in the Invoices tab, beside the invoices it produces —
+          one button, in the section it belongs to. */}
 
       {/* Counter laundry from a past date, entered as a real order on that
-          date. Available for every business, beside Generate Invoice because
-          the two are the same kind of action on the same account. */}
+          date. Available for every business. */}
       <TouchableOpacity
-        style={[sa.addEntryBtn, { backgroundColor: COLORS.PrimaryDark, marginTop: SPACING.xs }]}
+        style={[sa.addEntryBtn, { backgroundColor: COLORS.PrimaryDark }]}
         onPress={() => setWalkingOpen(true)}
         accessibilityRole="button"
         accessibilityLabel={`Add a backdated walking order for ${business.name}`}
@@ -603,13 +614,273 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
         </View>
       </Modal>
 
+
+    </ScrollView>
+  );
+}
+
+/* ===================================================================
+ * INVOICE HISTORY
+ * =================================================================== */
+
+/** The colour each invoice status is shown in. */
+const INVOICE_STATUS_TONE: Record<
+  InvoiceHistoryEntry['status'],
+  { bg: string; fg: string; label: string }
+> = {
+  ISSUED: { bg: '#EEF2F7', fg: '#42526E', label: 'Issued' },
+  PART_PAID: { bg: '#FFF4E5', fg: '#8A5200', label: 'Part paid' },
+  PAID: { bg: '#E8F3EC', fg: '#1B4332', label: 'Paid' },
+  CANCELLED: { bg: '#FDECEC', fg: '#B42318', label: 'Cancelled' },
+};
+
+/**
+ * EVERY INVOICE EVER GENERATED FOR THIS BUSINESS, newest first.
+ *
+ * ONE BUSINESS'S INVOICES, AND ONLY ITS OWN. The business id is in the path of
+ * every call and the server filters each statement by it, so this list cannot
+ * show another business's invoice even if the component asked for one. The
+ * parent remounts this tab when the business changes, so a stale list is never
+ * shown under a new name either.
+ *
+ * THE AMOUNTS ARE NOT RECOMPUTED HERE, and not recomputed on the server when
+ * the list is read: they are the figures each invoice was ISSUED for, stored
+ * when it was generated. An order adjusted or a price corrected afterwards
+ * cannot restate an invoice that has already been sent.
+ *
+ * NOTHING IS CALCULATED IN THIS COMPONENT. Every figure below — the total, the
+ * amount paid, the outstanding balance and the status — is read from the
+ * server's response as it arrives.
+ */
+function InvoiceHistoryTab({ business }: { business: BusinessAccountSummary }) {
+  /*
+   * GENERATE INVOICE LIVES HERE, in the section its output appears in — it
+   * used to sit in Order Detail, one tab away from every invoice it created.
+   * It is the SAME `GstInvoiceModal` and the same API; only the placement
+   * changed, so nothing about how an invoice is generated is different.
+   */
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const [invoices, setInvoices] = useState<InvoiceHistoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState('');
+  /** The invoice whose PDF is being fetched, so only its row shows a spinner. */
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      const data = await superAdminApi.getInvoiceHistory(business.id);
+      setInvoices(data.invoices);
+    } catch (e: any) {
+      setError(e?.response?.data?.message || e.message || 'Could not load the invoice history');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [business.id]);
+
+  useFocusEffect(useCallback(() => { setLoading(true); load(); }, [load]));
+
+  /**
+   * Download one stored invoice and hand it to the device.
+   *
+   * The PDF is fetched from the server, which re-renders it from the stored
+   * period through the SAME invoice template that issued it — there is no
+   * second invoice document. `FileSystem.downloadAsync` makes its own request,
+   * so the bearer token is attached explicitly, exactly as GstInvoiceModal
+   * does for the invoice it generates.
+   */
+  const openInvoicePdf = async (invoice: InvoiceHistoryEntry, share: boolean) => {
+    if (busyId) return;
+    setBusyId(invoice.id);
+    setError('');
+    try {
+      const headers = await superAdminApi.authHeader();
+      const url = superAdminApi.historyInvoicePdfUrl(business.id, invoice.id);
+
+      // Named for the business and the invoice, so a folder of downloaded
+      // invoices reads by business. The full invoice number carries slashes,
+      // which a file name cannot, so the shown 12-character form is used and
+      // the period is what distinguishes one invoice from the next.
+      const safeName = `${business.name} ${invoice.period_from} to ${invoice.period_to}`
+        .replace(/[<>:"/\\|?* -]/g, '')
+        .trim();
+      const target = `${FileSystem.cacheDirectory}${encodeURIComponent(`${safeName}.pdf`)}`;
+
+      const result = await FileSystem.downloadAsync(url, target, { headers });
+      if (result.status !== 200) throw new Error('That invoice could not be downloaded.');
+
+      if (share) {
+        if (!(await Sharing.isAvailableAsync())) {
+          Alert.alert('Invoice ready', `${safeName}.pdf`);
+          return;
+        }
+        await Sharing.shareAsync(result.uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: `${invoice.invoice_number_display} — ${business.name}`,
+          UTI: 'com.adobe.pdf',
+        });
+        return;
+      }
+
+      // Opens in the DEVICE's own PDF viewer, the same helper the order PDFs
+      // use, so every "open a PDF" in the Super Admin behaves identically.
+      const outcome = await openPdfInDeviceViewer(result.uri, `${safeName}.pdf`);
+      if (outcome === 'unavailable') Alert.alert('Invoice ready', `${safeName}.pdf`);
+    } catch (e: any) {
+      setError(e?.response?.data?.message || e?.message || 'Could not open that invoice.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <View style={sa.centered}>
+        <ActivityIndicator size="large" color={COLORS.Primary} />
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView
+      contentContainerStyle={sa.scroll}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />
+      }
+    >
+      {!!error && (
+        <View style={sa.errorBox}>
+          <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
+          <Text style={sa.errorText}>{error}</Text>
+        </View>
+      )}
+
+      {/* The one Generate Invoice in the app, at the head of the section
+          whose list it adds to. */}
+      <TouchableOpacity
+        style={sa.addEntryBtn}
+        onPress={() => setInvoiceOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel={`Generate an invoice for ${business.name}`}
+      >
+        <Ionicons name="document-text-outline" size={18} color={COLORS.Surface} />
+        <Text style={sa.addEntryText}>Generate Invoice</Text>
+      </TouchableOpacity>
+
+      {invoices.length === 0 ? (
+        <Text style={[sa.empty, { marginTop: SPACING.md }]}>
+          No invoice has been generated for {business.name} yet. Use Generate Invoice above and it
+          will appear here.
+        </Text>
+      ) : (
+        invoices.map((inv) => {
+          const tone = INVOICE_STATUS_TONE[inv.status];
+          const busy = busyId === inv.id;
+          return (
+            <View key={inv.id} style={sa.card}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.sm }}>
+                <View style={sa.flex}>
+                  {/* The SHOWN invoice number is the 12-character form; the
+                      full one is the identifier and is not a label. */}
+                  <Text style={sa.cardTitle}>{inv.invoice_number_display}</Text>
+                  <Text style={sa.cardMeta}>{inv.business_name}</Text>
+                  <Text style={sa.cardMeta}>
+                    {dmy(inv.period_from)} – {dmy(inv.period_to)} · {inv.billing_cycle_label}
+                    {inv.laundry_type_label ? ` · ${inv.laundry_type_label}` : ''}
+                  </Text>
+                  <Text style={sa.cardMeta}>
+                    Invoice date: {dmy(inv.invoice_date)} · {inv.order_count} order
+                    {inv.order_count === 1 ? '' : 's'}
+                  </Text>
+                </View>
+                <View
+                  style={{
+                    backgroundColor: tone.bg,
+                    borderRadius: 10,
+                    paddingHorizontal: 10,
+                    paddingVertical: 3,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: tone.fg,
+                      fontSize: 11,
+                      fontWeight: '700',
+                      fontFamily: TYPOGRAPHY.fontFamily,
+                    }}
+                  >
+                    {tone.label}
+                  </Text>
+                </View>
+              </View>
+
+              {/* THE FIGURES, exactly as the server sent them. */}
+              <View
+                style={{
+                  flexDirection: 'row',
+                  flexWrap: 'wrap',
+                  marginTop: SPACING.sm,
+                  borderTopWidth: 1,
+                  borderTopColor: COLORS.Border,
+                  paddingTop: SPACING.sm,
+                }}
+              >
+                <Amount label="Total" value={inv.total_amount} strong />
+                <Amount label="Paid" value={inv.amount_paid} />
+                <Amount label="Outstanding" value={inv.amount_due} />
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: SPACING.xs, marginTop: SPACING.sm }}>
+                <ActionButton
+                  icon={busy ? 'hourglass-outline' : 'open-outline'}
+                  label={busy ? '…' : 'View PDF'}
+                  tone="primary"
+                  onPress={() => openInvoicePdf(inv, false)}
+                  accessibilityLabel={`Open invoice ${inv.invoice_number_display} in the device PDF viewer`}
+                />
+                <ActionButton
+                  icon="share-outline"
+                  label="Share"
+                  onPress={() => openInvoicePdf(inv, true)}
+                  accessibilityLabel={`Share or save invoice ${inv.invoice_number_display}`}
+                />
+              </View>
+            </View>
+          );
+        })
+      )}
+
+      {/* The SAME GstInvoiceModal the Order Detail tab used to open — same
+          props, same API, same document. Closing it reloads the list, so an
+          invoice just generated appears without a manual refresh. */}
       <GstInvoiceModal
         visible={invoiceOpen}
         businessId={business.id}
         businessName={business.name}
-        onClose={() => setInvoiceOpen(false)}
+        onClose={() => { setInvoiceOpen(false); load(); }}
       />
     </ScrollView>
+  );
+}
+
+/** One labelled figure in an invoice card. Displays; never computes. */
+function Amount({ label, value, strong }: { label: string; value: number; strong?: boolean }) {
+  return (
+    <View style={{ width: '33.33%' }}>
+      <Text style={[sa.cardMeta, { fontSize: 11 }]}>{label}</Text>
+      <Text
+        style={{
+          color: COLORS.TextPrimary,
+          fontWeight: strong ? '700' : '600',
+          fontFamily: TYPOGRAPHY.fontFamily,
+          fontSize: strong ? 15 : 13,
+        }}
+      >
+        {money(value)}
+      </Text>
+    </View>
   );
 }
 

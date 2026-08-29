@@ -8,7 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../../constants/theme';
 import { sa, STATUS_TONE } from './styles';
-import superAdminApi, { CustomerPrice } from '../../services/superAdminApi';
+import superAdminApi, { CustomerPrice, LaundryServiceType } from '../../services/superAdminApi';
 import CategoryItemPicker from './CategoryItemPicker';
 import PriceCategoryGroups, { PriceItemRow } from './PriceCategoryGroups';
 import { printPriceListPdf } from './printPriceList';
@@ -150,11 +150,27 @@ export default function SuperAdminCustomerPricesScreen({ navigation }: any) {
       if (!needle) return true;
       return (
         row.item_name.toLowerCase().includes(needle) ||
+        (row.service_label || '').toLowerCase().includes(needle) ||
         (row.category_name || '').toLowerCase().includes(needle) ||
         (row.parent_category_name || '').toLowerCase().includes(needle)
       );
     });
   }, [rows, search, categoryFilter, subcategoryFilter, statusFilter, readyToList]);
+
+  /**
+   * Item id -> the services it already has a price for.
+   *
+   * Built from the loaded rows rather than fetched: the list is already the
+   * complete customer price list, so it is the same answer without a request.
+   */
+  const pricedServicesByItem = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const row of rows) {
+      const key = String(row.item_id);
+      (map[key] ||= []).push(row.service_id ? String(row.service_id) : 'base');
+    }
+    return map;
+  }, [rows]);
 
   const toggleActive = async (row: CustomerPrice) => {
     try {
@@ -213,7 +229,7 @@ export default function SuperAdminCustomerPricesScreen({ navigation }: any) {
   const confirmDelete = (row: CustomerPrice) => {
     Alert.alert(
       'Delete this price?',
-      `${row.item_name} — ${money(row.customer_price)}\n\n` +
+      `${row.item_name} · ${row.service_label} — ${money(row.customer_price)}\n\n` +
         'Past orders keep the price they were placed at either way. ' +
         'Disabling keeps the row so it can be switched back on.',
       [
@@ -420,7 +436,19 @@ export default function SuperAdminCustomerPricesScreen({ navigation }: any) {
                 <PriceItemRow
                   title={row.item_name}
                   subtitle={
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.xs, marginTop: 2 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: SPACING.xs, marginTop: 2 }}>
+                      {/* WHICH SERVICE THIS PRICE IS FOR.
+                          An item priced for Wash and Fold and for Dry Clean is
+                          two rows under the same name; without this they read
+                          as the same line twice at two different prices. */}
+                      <Text
+                        style={[
+                          sa.tdMuted,
+                          { fontSize: 10, fontWeight: '700', color: COLORS.PrimaryDark },
+                        ]}
+                      >
+                        {row.service_label}
+                      </Text>
                       {/* The word is always present: status is never colour alone. */}
                       <StatusPill active={row.is_active} />
                       {/* A zero price is not a price: the backend hides the
@@ -460,22 +488,22 @@ export default function SuperAdminCustomerPricesScreen({ navigation }: any) {
                         label="Edit"
                         tone="primary"
                         onPress={() => setEditing(row)}
-                        accessibilityLabel={`Edit ${row.item_name}`}
+                        accessibilityLabel={`Edit the ${row.service_label} price for ${row.item_name}`}
                       />
                       <ActionButton
                         icon={row.is_active ? 'close-circle-outline' : 'checkmark-circle-outline'}
                         label={row.is_active ? 'Disable' : 'Enable'}
                         onPress={() => toggleActive(row)}
-                        accessibilityLabel={
-                          row.is_active ? `Disable ${row.item_name}` : `Enable ${row.item_name}`
-                        }
+                        accessibilityLabel={`${
+                          row.is_active ? 'Disable' : 'Enable'
+                        } the ${row.service_label} price for ${row.item_name}`}
                       />
                       <ActionButton
                         icon="trash-outline"
                         label="Delete"
                         tone="danger"
                         onPress={() => confirmDelete(row)}
-                        accessibilityLabel={`Delete ${row.item_name}`}
+                        accessibilityLabel={`Delete the ${row.service_label} price for ${row.item_name}`}
                       />
                     </>
                   }
@@ -495,6 +523,16 @@ export default function SuperAdminCustomerPricesScreen({ navigation }: any) {
       )}
 
       <CustomerPriceModal
+        /*
+         * WHICH SERVICES EACH ITEM IS ALREADY PRICED FOR.
+         *
+         * The sheet leaves those out of its Service field, so every choice it
+         * offers can actually be saved -- the server refuses a second price
+         * for a service that already has one, and an option that can only
+         * fail is worse than no option. 'base' stands for the all-services
+         * rate, which has no service id of its own.
+         */
+        pricedServicesByItem={pricedServicesByItem}
         target={editing}
         onClose={() => setEditing(null)}
         onSaved={() => { setEditing(null); load(); }}
@@ -561,12 +599,40 @@ function StatusPill({ active }: { active: boolean }) {
   );
 }
 
+/** One selectable service on the Add sheet. */
+function ServiceChip({
+  label,
+  on,
+  onPress,
+}: {
+  label: string;
+  on: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[sa.tab, on && sa.tabActive, { paddingHorizontal: SPACING.md }]}
+      onPress={onPress}
+      accessibilityRole="radio"
+      accessibilityState={{ selected: on }}
+      accessibilityLabel={`Price for ${label}`}
+    >
+      <Text style={[sa.tabText, on && sa.tabTextActive]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 /* ===================================================================
  * ADD / EDIT
  * =================================================================== */
 
 interface ModalProps {
   target: CustomerPrice | 'new' | null;
+  /**
+   * Item id -> the services it is already priced for; 'base' for the
+   * all-services rate. Those are left out of the Service field.
+   */
+  pricedServicesByItem: Record<string, string[]>;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -583,7 +649,12 @@ interface ModalProps {
  * EDITING only changes the price and the status — the item itself belongs to
  * the catalogue, not to the price list.
  */
-function CustomerPriceModal({ target, onClose, onSaved }: ModalProps) {
+function CustomerPriceModal({
+  target,
+  pricedServicesByItem,
+  onClose,
+  onSaved,
+}: ModalProps) {
   const row = target && target !== 'new' ? target : null;
 
   const [itemId, setItemId] = useState<string>('');
@@ -592,8 +663,28 @@ function CustomerPriceModal({ target, onClose, onSaved }: ModalProps) {
   const [original, setOriginal] = useState('');
   const [active, setActive] = useState(true);
 
+  /** '' is the all-services rate; anything else is one service's own. */
+  const [serviceId, setServiceId] = useState<string>('');
+  /** The picked item's service CODES, from the picker. */
+  const [itemServiceCodes, setItemServiceCodes] = useState<string[]>([]);
+  /** Every service type, so a code can be shown with its name. */
+  const [allServices, setAllServices] = useState<LaundryServiceType[]>([]);
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  // Fetched once per open; the list is short and static.
+  React.useEffect(() => {
+    if (!target || allServices.length > 0) return;
+    superAdminApi
+      .getPriceServiceTypes()
+      .then(setAllServices)
+      .catch(() => {
+        // A field that cannot load must not block setting an all-services
+        // price: it simply stays hidden and the save posts no service.
+        setAllServices([]);
+      });
+  }, [target, allServices.length]);
 
   // Reset every time the sheet opens, so the previous row's values can
   // never leak into the next edit.
@@ -606,14 +697,69 @@ function CustomerPriceModal({ target, onClose, onSaved }: ModalProps) {
       setPrice(String(row.customer_price));
       setOriginal(row.original_price === null ? '' : String(row.original_price));
       setActive(row.is_active);
+      // An existing row prices the service it prices. Editing never moves a
+      // price from one service to another -- that is a delete and an add.
+      setServiceId(row.service_id ?? '');
+      setItemServiceCodes(row.service_types || []);
     } else {
       setItemId('');
       setItemName('');
       setPrice('');
       setOriginal('');
       setActive(true);
+      setServiceId('');
+      setItemServiceCodes([]);
     }
   }, [target]);
+
+  /**
+   * The services THIS ITEM is offered for, as {id, name}.
+   *
+   * The item carries service CODES; the ids come from the service-type list.
+   * Intersecting the two keeps the field to services the item actually has --
+   * the server refuses any other, so offering one could only produce an error
+   * the operator cannot act on.
+   */
+  const serviceOptions = React.useMemo(
+    () => allServices.filter((s) => itemServiceCodes.includes(s.code)),
+    [allServices, itemServiceCodes]
+  );
+
+  /** What is already priced for the item in hand. Empty while editing. */
+  const takenServices = React.useMemo(() => {
+    if (row || !itemId) return [] as string[];
+    return pricedServicesByItem[String(itemId)] ?? [];
+  }, [row, itemId, pricedServicesByItem]);
+
+  const availableServiceOptions = React.useMemo(
+    () => serviceOptions.filter((s) => !takenServices.includes(s.id)),
+    [serviceOptions, takenServices]
+  );
+  const baseRateTaken = takenServices.includes('base');
+
+  /*
+   * KEEP THE SELECTION ON SOMETHING THAT CAN BE SAVED.
+   *
+   * The field defaults to the all-services rate, but an item that already has
+   * one does not offer it -- which would leave the selection on a chip that
+   * is not on screen and a Save that could only be refused.
+   */
+  React.useEffect(() => {
+    if (!target || row) return;
+    if (serviceId === '' && baseRateTaken) {
+      setServiceId(availableServiceOptions[0]?.id ?? '');
+    } else if (serviceId !== '' && takenServices.includes(serviceId)) {
+      setServiceId(baseRateTaken ? availableServiceOptions[0]?.id ?? '' : '');
+    }
+  }, [target, row, serviceId, baseRateTaken, takenServices, availableServiceOptions]);
+
+  /*
+   * Shown only for an item offered for MORE THAN ONE service. An item with a
+   * single service has nothing to choose: its one rate covers everything it
+   * is offered for, and a one-option field would imply a decision that does
+   * not exist. Single-service items therefore behave exactly as before.
+   */
+  const showServicePicker = serviceOptions.length > 1;
 
   const save = async () => {
     setBusy(true);
@@ -628,6 +774,9 @@ function CustomerPriceModal({ target, onClose, onSaved }: ModalProps) {
       } else {
         await superAdminApi.createCustomerPrice({
           item_id: itemId,
+          // Null is "every service", which is what a single-service item and
+          // the default both mean.
+          service_id: serviceId === '' ? null : serviceId,
           customer_price: price,
           original_price: original === '' ? null : original,
           is_active: active,
@@ -680,12 +829,17 @@ function CustomerPriceModal({ target, onClose, onSaved }: ModalProps) {
                     no customer price yet are offered, so a selection here can
                     never collide with an existing row — and "+ Create New
                     Item" covers the case where the item does not exist. */}
+                {/* EVERY item, not only unpriced ones. An item priced for
+                    Wash and Fold still needs its Dry Clean rate, and filtering
+                    it out was what made that impossible to enter. A service
+                    already priced is left out of the Service field below
+                    instead, which is the narrower and correct guard. */}
                 <CategoryItemPicker
-                  unpricedOnly
                   selectedItemId={itemId}
                   onSelectItem={(id, item) => {
                     setItemId(id);
                     setItemName(item?.name || '');
+                    setItemServiceCodes(item?.service_types || []);
                   }}
                 />
                 {itemName ? (
@@ -693,6 +847,55 @@ function CustomerPriceModal({ target, onClose, onSaved }: ModalProps) {
                     Pricing: {itemName}
                   </Text>
                 ) : null}
+              </>
+            )}
+
+            {/* ---- WHICH SERVICE THIS PRICE IS FOR ---- */}
+            {(row ? Boolean(row.service_id) || showServicePicker : showServicePicker) && (
+              <>
+                <Text style={sa.label}>SERVICE</Text>
+                {row ? (
+                  /* Fixed while editing: the row prices one service, and
+                     changing which one is a delete and an add, not an edit. */
+                  <View style={[sa.input, { justifyContent: 'center' }]}>
+                    <Text style={{ color: COLORS.TextPrimary, fontFamily: TYPOGRAPHY.fontFamily }}>
+                      {row.service_label}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.xs }}>
+                    {/* The all-services rate first: it is the default and what
+                        most items want. Left out once the item has one, since
+                        a second would only be refused. */}
+                    {!baseRateTaken && (
+                      <ServiceChip
+                        label="All services"
+                        on={serviceId === ''}
+                        onPress={() => setServiceId('')}
+                      />
+                    )}
+                    {availableServiceOptions.map((service) => (
+                      <ServiceChip
+                        key={service.id}
+                        label={service.name}
+                        on={serviceId === service.id}
+                        onPress={() => setServiceId(service.id)}
+                      />
+                    ))}
+                  </View>
+                )}
+                <Text style={[sa.cardMeta, { marginTop: SPACING.xs }]}>
+                  {row
+                    ? row.service_id
+                      ? `This price applies only to ${row.service_label}. The item's other services are priced on their own rows.`
+                      : 'This price applies to every service this item is offered for.'
+                    : serviceId === ''
+                      ? 'This price applies to every service this item is offered for, unless that service has its own.'
+                      : `This price applies only to ${
+                          serviceOptions.find((service) => service.id === serviceId)?.name ??
+                          'the chosen service'
+                        }.`}
+                </Text>
               </>
             )}
 

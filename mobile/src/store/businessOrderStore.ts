@@ -10,15 +10,27 @@ export type LaundryType = 'hotel' | 'guest';
 export type OrderType = 'standard' | 'quick';
 
 /**
- * Exactly two Business services. Wash + Iron is ONE combined service — there
- * is no standalone Wash and no standalone Iron.
+ * THE THREE BUSINESS SERVICES.
+ *
+ *   Wash & Fold   TOWELS ONLY — Bath, Hand, Face, Pool, Spa, Kitchen,
+ *                 Cleaning. A towel is never dry cleaned.
+ *   Wash & Iron   everything that is not a towel. ONE combined service —
+ *                 there is no standalone Wash and no standalone Iron.
+ *   Dry Clean     everything that is not a towel.
+ *
+ * WHICH OF THESE AN ITEM OFFERS IS THE SERVER'S ANSWER, from
+ * `item_service_types` — it arrives on each item as `service_types`. This
+ * list is only how a code is turned into a label, so a screen never prints a
+ * bare "wash_fold" when the catalogue call has not answered yet.
  *
  * A service is never chosen for the order as a whole: it belongs to each cart
- * line, so a Shirt on Wash & Iron can sit next to Trousers on Dry Clean.
+ * line, so a Shirt on Wash & Iron can sit next to Trousers on Dry Clean and a
+ * Bath Towel on Wash & Fold.
  */
-export type ServiceType = 'wash_iron' | 'dry_clean';
+export type ServiceType = 'wash_fold' | 'wash_iron' | 'dry_clean';
 
 export const SERVICE_OPTIONS: Array<{ value: ServiceType; label: string }> = [
+  { value: 'wash_fold', label: 'Wash & Fold' },
   { value: 'wash_iron', label: 'Wash & Iron' },
   { value: 'dry_clean', label: 'Dry Clean' },
 ];

@@ -152,9 +152,21 @@ async function main() {
       WHERE i.kind = 'ITEM' AND i.is_active = true
         AND c.is_active = true AND (c.parent_id IS NULL OR pc.is_active = true)`
   );
-  check('the row count matches the live catalogue exactly',
-    bizRows.length === Number(expected.rows[0].n),
-    `${bizRows.length} returned, ${expected.rows[0].n} live`);
+  /*
+   * ONE LINE PER ITEM *PER SERVICE*, not one per item.
+   *
+   * The business price list is now driven by each item's services so a rate
+   * can be set for each separately, so an item offered for two services
+   * contributes two lines (plus one more if it still holds a base rate that
+   * covers every service). The count is therefore at least the number of
+   * live items, and every live item must still be represented.
+   */
+  const liveItems = Number(expected.rows[0].n);
+  const distinctItems = new Set(bizRows.map((r: any) => String(r.item_id))).size;
+  check('every live catalogue item is represented',
+    distinctItems === liveItems, `${distinctItems} items over ${bizRows.length} lines, ${liveItems} live`);
+  check('and an item offered for several services contributes several lines',
+    bizRows.length >= liveItems, `${bizRows.length} lines for ${liveItems} items`);
 
   const stillThere = await query<{ n: number }>(
     `SELECT COUNT(*) AS n FROM services i
@@ -361,10 +373,21 @@ async function main() {
 
   const afterAdjust = await api(
     `/api/super-admin/prices/businesses/${businessId}?laundry_type=hotel`);
+  /*
+   * The price was set WITHOUT a service, so it is the item's base rate — and
+   * the base rate has its own line, identified by `service_id === null`.
+   * Matching on the item alone would now find whichever of the item's
+   * service lines came first, whose own `price` is null because the rate it
+   * shows is inherited.
+   */
   const adjustedRow = (afterAdjust.json?.data || [])
-    .find((r: any) => String(r.item_id) === itemId);
+    .find((r: any) => String(r.item_id) === itemId && r.service_id === null);
   check('the adjusted business price survives a reload',
     Number(adjustedRow?.price) === 65, String(adjustedRow?.price));
+  check('and every service line inherits it',
+    (afterAdjust.json?.data || [])
+      .filter((r: any) => String(r.item_id) === itemId && r.service_id !== null)
+      .every((r: any) => Number(r.effective_price) === 65));
 
   // The two lists are independent: adjusting one must not move the other.
   const custAfterBiz = await api('/api/super-admin/prices/customers');

@@ -81,6 +81,23 @@ export default function SuperAdminBusinessPriceBrowseScreen({ navigation, route 
     const topId = (row: BusinessPrice) => row.parent_category_id || row.category_id;
     const topName = (row: BusinessPrice) => row.parent_category_name || row.category_name;
 
+    /*
+     * COUNT DISTINCT ITEMS, NOT ROWS.
+     *
+     * The price list returns one row per item PER SERVICE, so an item
+     * offered for Wash & Iron and Dry Clean contributes two rows and a
+     * legacy base rate adds a third. Counting rows would report "Room Linen
+     * · 72 items" for a category holding 30 — the label says items, so the
+     * count has to be items.
+     */
+    const seen = new Map<string, Set<string>>();
+    const count = (key: string, itemId: string) => {
+      const set = seen.get(key) ?? new Set<string>();
+      set.add(itemId);
+      seen.set(key, set);
+      return set.size;
+    };
+
     if (level === 'category') {
       // Distinct top-level categories, de-duped by id, with an item count.
       const map = new Map<string, Entry>();
@@ -88,15 +105,16 @@ export default function SuperAdminBusinessPriceBrowseScreen({ navigation, route 
         const id = topId(row);
         const name = topName(row);
         if (!id || !name) continue;
+        const itemCount = count(id, row.item_id);
         const current = map.get(id);
         if (current) {
-          current.itemCount += 1;
+          current.itemCount = itemCount;
           if (row.parent_category_id === id) current.hasSubs = true;
         } else {
           map.set(id, {
             id,
             name,
-            itemCount: 1,
+            itemCount,
             hasSubs: row.parent_category_id === id,
           });
         }
@@ -109,9 +127,12 @@ export default function SuperAdminBusinessPriceBrowseScreen({ navigation, route 
     for (const row of rows) {
       if (row.parent_category_id !== categoryId) continue;
       if (!row.category_id || !row.category_name) continue;
+      const itemCount = count(row.category_id, row.item_id);
       const current = map.get(row.category_id);
-      if (current) current.itemCount += 1;
-      else map.set(row.category_id, { id: row.category_id, name: row.category_name, itemCount: 1, hasSubs: false });
+      if (current) current.itemCount = itemCount;
+      else map.set(row.category_id, {
+        id: row.category_id, name: row.category_name, itemCount, hasSubs: false,
+      });
     }
     return Array.from(map.values());
   }, [rows, level, categoryId]);

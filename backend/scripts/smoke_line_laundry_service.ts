@@ -171,31 +171,46 @@ async function main() {
       !detail.service_type,
       `order.service_type = ${detail.service_type ?? 'null'}`);
 
-    // ---- And through the PDF the customer actually receives ----
+    /* ---- AND THROUGH THE PDF ----
+     *
+     * THE DOCUMENT NO LONGER PRINTS THE SERVICE, deliberately: the Service
+     * column was removed from every Order Detail PDF. So what is asserted
+     * here is the opposite of what it once was — that the column is gone,
+     * and that removing it did not disturb the rows themselves.
+     *
+     * The per-line service is still resolved and still correct; the checks
+     * above prove that against the API, which is where the value lives and
+     * where a regression in it would actually show. Dropping those checks
+     * along with the column would have left the resolution untested.
+     */
     const html = buildBusinessOrderPdfHtml(detail, null);
 
-    // The document is HTML, so a service name is compared in its ESCAPED
-    // form: "Wash & Iron" is written "Wash &amp; Iron" on the page, and
-    // matching the raw string would fail on a correctly escaped document.
+    // Service names are compared in their ESCAPED form: "Wash & Iron" is
+    // written "Wash &amp; Iron" on the page, so matching the raw string
+    // would find nothing on a correctly escaped document and pass by
+    // accident.
     const esc = (value: string) =>
       value.replace(/[&<>"']/g, (ch) =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] as string));
     const washIronHtml = esc(washIron.name);
     const dryCleanHtml = esc(dryClean.name);
 
-    check('the PDF names Wash & Iron', html.includes(washIronHtml), washIronHtml);
-    check('the PDF names Dry Clean', html.includes(dryCleanHtml), dryCleanHtml);
+    const thead = html.slice(html.indexOf('<thead>'), html.indexOf('</thead>'));
+    check('the PDF has no Service column', !/>\s*Service\s*</.test(thead),
+      thead.replace(/\s+/g, ' ').slice(0, 140));
+    check('and prints neither service name anywhere on the document',
+      !html.includes(washIronHtml) && !html.includes(dryCleanHtml),
+      `${washIronHtml} / ${dryCleanHtml}`);
 
-    // Each service appears in its OWN row, not merely somewhere on the page —
-    // a document naming both services but pairing them with the wrong items
-    // would pass the two checks above.
+    // The rows must still be intact and still carry the right items — a
+    // column removal that dropped a cell would show up here.
     const bodyRows = (html.match(/<tr>[\s\S]*?<\/tr>/g) || []);
     const rowA = bodyRows.find((r) => r.includes(esc(String(lineA?.service_name))));
     const rowB = bodyRows.find((r) => r.includes(esc(String(lineB?.service_name))));
-    check('the PDF row for item A carries ITS service and not the other',
-      Boolean(rowA && rowA.includes(washIronHtml) && !rowA.includes(dryCleanHtml)));
-    check('the PDF row for item B carries ITS service and not the other',
-      Boolean(rowB && rowB.includes(dryCleanHtml) && !rowB.includes(washIronHtml)));
+    check('both item rows are still on the document', Boolean(rowA) && Boolean(rowB));
+    check('each row still carries five cells',
+      (rowA?.match(/<td/g) || []).length === 5 && (rowB?.match(/<td/g) || []).length === 5,
+      `A=${(rowA?.match(/<td/g) || []).length} B=${(rowB?.match(/<td/g) || []).length}`);
   } finally {
     // Everything this test created, removed — including after a failure.
     const connection = await getClient();

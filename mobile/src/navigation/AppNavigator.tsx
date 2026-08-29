@@ -71,6 +71,8 @@ import CustomerOrdersScreen
 
 import CheckoutScreen
   from '../screens/cart/CheckoutScreen';
+import OrderPlacedScreen
+  from '../screens/cart/OrderPlacedScreen';
 
 import AddressListScreen
   from '../screens/addresses/AddressListScreen';
@@ -193,6 +195,11 @@ import { useChatStore } from '../store/chatStore';
 
 import SignInPasswordScreen from '../screens/auth/SignInPasswordScreen';
 import ServiceCategoryScreen from '../screens/home/ServiceCategoryScreen';
+/* The CUSTOMER app's own screens. Separate from the shared HomeScreen, which
+   the business stack also uses — see CustomerHomeScreen for why. */
+import CustomerHomeScreen from '../screens/customer/CustomerHomeScreen';
+import CustomerCategoriesScreen from '../screens/customer/CustomerCategoriesScreen';
+import CustomerItemsScreen from '../screens/customer/CustomerItemsScreen';
 import OrderTypeScreen from '../screens/home/OrderTypeScreen';
 
 // One screen renders both legal documents; which one is a route param, so
@@ -222,6 +229,21 @@ import SuperAdminCustomerPricesScreen from '../screens/superadmin/SuperAdminCust
 import SuperAdminBusinessPricesScreen from '../screens/superadmin/SuperAdminBusinessPricesScreen';
 import SuperAdminBusinessPriceBrowseScreen from '../screens/superadmin/SuperAdminBusinessPriceBrowseScreen';
 import SuperAdminBusinessPricesListScreen from '../screens/superadmin/SuperAdminBusinessPricesListScreen';
+/* Purchase and Expense — the two finance modules. */
+import SuperAdminPurchaseScreen from '../screens/superadmin/SuperAdminPurchaseScreen';
+import SuperAdminPurchaseFormScreen from '../screens/superadmin/SuperAdminPurchaseFormScreen';
+import SuperAdminPurchaseDetailScreen from '../screens/superadmin/SuperAdminPurchaseDetailScreen';
+import SuperAdminSuppliersScreen from '../screens/superadmin/SuperAdminSuppliersScreen';
+import SuperAdminExpenseScreen from '../screens/superadmin/SuperAdminExpenseScreen';
+import SuperAdminExpenseFormScreen from '../screens/superadmin/SuperAdminExpenseFormScreen';
+import SuperAdminExpenseDetailScreen from '../screens/superadmin/SuperAdminExpenseDetailScreen';
+import SuperAdminExpenseCategoriesScreen from '../screens/superadmin/SuperAdminExpenseCategoriesScreen';
+/* Reports. */
+import SuperAdminReportsScreen from '../screens/superadmin/SuperAdminReportsScreen';
+import SuperAdminKgReportHubScreen from '../screens/superadmin/SuperAdminKgReportHubScreen';
+import SuperAdminKgReportScreen from '../screens/superadmin/SuperAdminKgReportScreen';
+import SuperAdminItemKgReportScreen from '../screens/superadmin/SuperAdminItemKgReportScreen';
+import SuperAdminOutstandingReportScreen from '../screens/superadmin/SuperAdminOutstandingReportScreen';
 import SuperAdminRequestsScreen from '../screens/superadmin/SuperAdminRequestsScreen';
 import SuperAdminManagersScreen from '../screens/superadmin/SuperAdminManagersScreen';
 
@@ -272,6 +294,15 @@ function CartStack() {
         component={CheckoutScreen}
       />
 
+      {/* The end of the booking flow. Checkout REPLACES onto this rather
+          than pushing, so Back cannot return to a checkout for an order that
+          has already been placed. It stays inside the Cart tab's stack so
+          the tab bar is still there to leave by. */}
+      <Stack.Screen
+        name="OrderPlaced"
+        component={OrderPlacedScreen}
+      />
+
     </Stack.Navigator>
   );
 }
@@ -289,6 +320,27 @@ const CUSTOMER_TAB_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   Cart: 'cart-outline',
   Profile: 'person-outline',
 };
+
+/**
+ * The Home tab's own stack.
+ *
+ * Select Item and its item list live HERE rather than on the root stack,
+ * and that is the whole point: a screen pushed on the root stack covers the
+ * tab navigator, so the bottom bar vanishes. Inside the tab's stack it
+ * stays put, which is what "visible on all customer pages" requires.
+ *
+ * Every one of these screens leaves room at the bottom of its scroll for
+ * the bar, so nothing is hidden behind it.
+ */
+function CustomerHomeStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="CustomerHome" component={CustomerHomeScreen} />
+      <Stack.Screen name="CustomerCategories" component={CustomerCategoriesScreen} />
+      <Stack.Screen name="CustomerItems" component={CustomerItemsScreen} />
+    </Stack.Navigator>
+  );
+}
 
 function MainTab() {
   const isChatOpen = useChatStore((state) => state.isOpen);
@@ -312,9 +364,13 @@ function MainTab() {
           tabBarInactiveTintColor: 'gray',
         })}
       >
+        {/* The customer's own home, NOT the shared `HomeScreen`: that one
+            opens with the Hotel / Guest laundry-type choice, which is a
+            business concept and is the "first page" the customer flow no
+            longer has. The business stack still uses it, untouched. */}
         <Tab.Screen
           name="Home"
-          component={HomeScreen}
+          component={CustomerHomeStack}
         />
 
         <Tab.Screen
@@ -601,6 +657,28 @@ function SuperAdminStack() {
       <Stack.Screen name="SuperAdminBusinessPrices" component={SuperAdminBusinessPricesScreen} />
       <Stack.Screen name="SuperAdminBusinessPriceBrowse" component={SuperAdminBusinessPriceBrowseScreen} />
       <Stack.Screen name="SuperAdminBusinessPricesList" component={SuperAdminBusinessPricesListScreen} />
+
+      {/* ---- Reports ---- */}
+      <Stack.Screen name="SuperAdminReports" component={SuperAdminReportsScreen} />
+      <Stack.Screen name="SuperAdminKgReportHub" component={SuperAdminKgReportHubScreen} />
+      <Stack.Screen name="SuperAdminKgReport" component={SuperAdminKgReportScreen} />
+      <Stack.Screen name="SuperAdminItemKgReport" component={SuperAdminItemKgReportScreen} />
+      <Stack.Screen
+        name="SuperAdminOutstandingReport"
+        component={SuperAdminOutstandingReportScreen}
+      />
+
+      {/* ---- Purchase ---- */}
+      <Stack.Screen name="SuperAdminPurchase" component={SuperAdminPurchaseScreen} />
+      <Stack.Screen name="SuperAdminPurchaseForm" component={SuperAdminPurchaseFormScreen} />
+      <Stack.Screen name="SuperAdminPurchaseDetail" component={SuperAdminPurchaseDetailScreen} />
+      <Stack.Screen name="SuperAdminSuppliers" component={SuperAdminSuppliersScreen} />
+
+      {/* ---- Expense ---- */}
+      <Stack.Screen name="SuperAdminExpense" component={SuperAdminExpenseScreen} />
+      <Stack.Screen name="SuperAdminExpenseForm" component={SuperAdminExpenseFormScreen} />
+      <Stack.Screen name="SuperAdminExpenseDetail" component={SuperAdminExpenseDetailScreen} />
+      <Stack.Screen name="SuperAdminExpenseCategories" component={SuperAdminExpenseCategoriesScreen} />
       {/* Creation requests: one screen, the kind chosen by route param. */}
       <Stack.Screen name="SuperAdminRequests" component={SuperAdminRequestsScreen} />
       <Stack.Screen name="SuperAdminManagers" component={SuperAdminManagersScreen} />

@@ -12,7 +12,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
+import { openPdfInDeviceViewer } from '../../utils/openPdf';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import sorterApi, {
   SorterOrderDetail,
@@ -77,6 +78,18 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
   const [isUpdating, setIsUpdating] = useState(false);
   const [isBuildingPdf, setIsBuildingPdf] = useState(false);
   const [error, setError] = useState('');
+  /*
+   * ONCE ACCEPTED, DEFECTIVE PIECES ARE LOCKED.
+   *
+   * Read from the ORDER'S OWN RECORD (`accepted_at`), not from which screen
+   * this is or what the sorter last tapped — so the button matches what the
+   * API will actually allow. The server refuses an adjustment after
+   * acceptance regardless; this stops the sorter being offered an action
+   * that can only fail.
+   *
+   * Defects recorded BEFORE acceptance stay visible either way: this hides
+   * the action, never the data.
+   */
   /** The line whose Mark Defective form is open, or null. */
   const [defectiveFor, setDefectiveFor] = useState<SorterOrderItem | null>(null);
   const [savingAdjustment, setSavingAdjustment] = useState(false);
@@ -280,21 +293,38 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
       setError('');
 
       const response = await sorterApi.getConfirmationPdf(String(orderId));
+
+      /*
+       * THE FILE IS ON THE DEVICE BEFORE ANYTHING IS OPENED.
+       *
+       * A stored URL is DOWNLOADED first rather than handed to
+       * `Linking.openURL`, which gives the address to a browser — the
+       * browser then renders or re-downloads it, which is the "opens as a
+       * webpage" behaviour rather than the phone's PDF viewer. With the file
+       * local, `openPdfInDeviceViewer` can hand the OS a real content:// URI
+       * and let it choose a viewer.
+       */
+      let uri: string;
+      let fileName: string;
+
       if (response.data.url) {
-        await Linking.openURL(response.data.url);
-        return;
+        fileName = `order-${orderId}.pdf`;
+        const target = `${FileSystem.cacheDirectory}${fileName}`;
+        const downloaded = await FileSystem.downloadAsync(response.data.url, target);
+        uri = downloaded.uri;
+      } else {
+        const generated = await generateOrderPdf(toPdfShape(response.data.order));
+        uri = generated.uri;
+        fileName = generated.fileName;
       }
 
-      const { uri, fileName } = await generateOrderPdf(toPdfShape(response.data.order));
-      if (!(await Sharing.isAvailableAsync())) {
-        Alert.alert('PDF ready', fileName);
-        return;
+      const outcome = await openPdfInDeviceViewer(uri, fileName);
+      if (outcome === 'unavailable') {
+        Alert.alert(
+          'No PDF viewer',
+          `This device has no app that can open a PDF. The file is saved as ${fileName}.`
+        );
       }
-      await Sharing.shareAsync(uri, {
-        mimeType: 'application/pdf',
-        dialogTitle: fileName,
-        UTI: 'com.adobe.pdf',
-      });
     } catch (err: any) {
       if (__DEV__) console.error('[Sorter] PDF failed', err);
       setError('Unable to open the confirmation PDF. Please try again.');
@@ -428,6 +458,19 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
   const meta = order.stage ? STAGE_META[order.stage] : null;
   const action = order.stage ? NEXT_ACTION[order.stage] : null;
 
+  /*
+   * ONCE ACCEPTED, DEFECTIVE PIECES ARE LOCKED.
+   *
+   * From the ORDER'S OWN RECORD (`accepted_at`), not from which screen this
+   * is — so the button matches what the API will allow. The server refuses an
+   * adjustment after acceptance regardless; this stops the sorter being
+   * offered an action that can only fail.
+   *
+   * Defects recorded BEFORE acceptance stay visible: this hides the action,
+   * never the data.
+   */
+  const defectsLocked = Boolean(order.accepted_at);
+
   // Which scan session this stage needs, and whether it is complete.
   const scanStage = action?.scan ?? null;
   const scanScanned = scanStage === 'delivery' ? scan?.delivery_scanned ?? 0 : scan?.acceptance_scanned ?? 0;
@@ -560,17 +603,29 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
                   </View>
                 ) : null}
 
-                <TouchableOpacity
-                  style={styles.markDefectiveButton}
-                  onPress={() => setDefectiveFor(item)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Mark defective pieces for ${item.item_name}`}
-                >
-                  <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
-                  <Text style={styles.markDefectiveText}>
-                    {isAdjusted ? 'EDIT DEFECTIVE' : 'MARK DEFECTIVE'}
-                  </Text>
-                </TouchableOpacity>
+                {defectsLocked ? (
+                  /* Accepted: the action is gone, the figure stays. */
+                  isAdjusted ? (
+                    <View style={styles.markDefectiveButton}>
+                      <Ionicons name="lock-closed-outline" size={14} color={COLORS.TextSecondary} />
+                      <Text style={[styles.markDefectiveText, { color: COLORS.TextSecondary }]}>
+                        DEFECTIVE LOCKED
+                      </Text>
+                    </View>
+                  ) : null
+                ) : (
+                  <TouchableOpacity
+                    style={styles.markDefectiveButton}
+                    onPress={() => setDefectiveFor(item)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Mark defective pieces for ${item.item_name}`}
+                  >
+                    <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
+                    <Text style={styles.markDefectiveText}>
+                      {isAdjusted ? 'EDIT DEFECTIVE' : 'MARK DEFECTIVE'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
             );
           })}

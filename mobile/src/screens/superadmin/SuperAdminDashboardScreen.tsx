@@ -10,6 +10,7 @@ import {
   CHANNEL_COLORS, CHANNEL_ORDER, CHANNEL_LABELS, formatCurrency,
 } from '../../constants/chartTheme';
 import RevenueLineChart from '../../components/charts/RevenueLineChart';
+import TransactionSummarySection from './TransactionSummarySection';
 import superAdminApi, {
   SalesSummary, SalesTimeseries, BusinessCompletenessRow,
 } from '../../services/superAdminApi';
@@ -131,6 +132,15 @@ export default function SuperAdminDashboardScreen({ navigation }: any) {
           </View>
         )}
 
+        {/* TRANSACTION SUMMARY — the grid of Sale / Collection / Product
+            Count / Expense across today, this month, this year and all
+            time. Placed under the hero figure and above the trend, so the
+            page reads headline -> breakdown -> history.
+
+            It fetches its own data and shares the page's refresh, so pulling
+            to refresh updates it along with everything else. */}
+        <TransactionSummarySection refreshKey={refreshing ? 1 : 0} />
+
         {/* The trend. Legend is always present for two series, so identity
             never rests on colour alone. */}
         <View style={styles.card}>
@@ -237,6 +247,18 @@ export default function SuperAdminDashboardScreen({ navigation }: any) {
 
         <Text style={styles.sectionTitle}>Manage</Text>
 
+        {/* REPORT: the KG reports, and wherever reporting grows next.
+            First in the section because a report is read far more often
+            than a master record is edited. */}
+        <TouchableOpacity
+          style={[styles.wideAction, { marginBottom: SPACING.sm }]}
+          onPress={() => navigation.navigate('SuperAdminReports')}
+        >
+          <Ionicons name="bar-chart-outline" size={18} color={COLORS.Primary} />
+          <Text style={styles.wideActionText}>Report</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.TextSecondary} />
+        </TouchableOpacity>
+
         {/* One business's orders, invoices and payments, in one place. */}
         <TouchableOpacity
           style={[styles.wideAction, { marginBottom: SPACING.sm }]}
@@ -255,6 +277,29 @@ export default function SuperAdminDashboardScreen({ navigation }: any) {
         >
           <Ionicons name="pricetags-outline" size={18} color={COLORS.Primary} />
           <Text style={styles.wideActionText}>Price List</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.TextSecondary} />
+        </TouchableOpacity>
+
+        {/* Purchase: the bills Swachham receives for running its own
+            laundry, their payments and the supplier master. Company-wide —
+            these are not a customer's costs. */}
+        <TouchableOpacity
+          style={[styles.wideAction, { marginBottom: SPACING.sm }]}
+          onPress={() => navigation.navigate('SuperAdminPurchase')}
+        >
+          <Ionicons name="cart-outline" size={18} color={COLORS.Primary} />
+          <Text style={styles.wideActionText}>Purchase</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.TextSecondary} />
+        </TouchableOpacity>
+
+        {/* Expense: everything that goes out that is not a purchase of stock.
+            Deliberately its own entry — the two registers are independent. */}
+        <TouchableOpacity
+          style={[styles.wideAction, { marginBottom: SPACING.sm }]}
+          onPress={() => navigation.navigate('SuperAdminExpense')}
+        >
+          <Ionicons name="receipt-outline" size={18} color={COLORS.Primary} />
+          <Text style={styles.wideActionText}>Expense</Text>
           <Ionicons name="chevron-forward" size={18} color={COLORS.TextSecondary} />
         </TouchableOpacity>
 

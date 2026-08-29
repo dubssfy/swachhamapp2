@@ -48,6 +48,17 @@ const LAUNDRY_BAG = require('../../assets/images/laundry-bag.png');
  * simply calls the same per-item `addItem` store action once for each ticked
  * row.
  */
+/**
+ * Code -> label, used ONLY until the server's service-type list arrives.
+ * The names themselves live in `services.name`; this exists so a screen never
+ * prints a bare `wash_fold` while that call is in flight.
+ */
+const FALLBACK_SERVICE_LABEL: Record<string, string> = {
+  wash_fold: 'Wash & Fold',
+  wash_iron: 'Wash & Iron',
+  dry_clean: 'Dry Clean',
+};
+
 export default function BusinessItemsScreen({ navigation, route }: any) {
   const { categoryId, categoryName, parentName, initialSearch } = route.params || {};
 
@@ -133,7 +144,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
 
     source.measureInWindow((x, y, width, height) => {
       if (!width || !height) return;
-      const size = 64;
+      const size = 82;
       flightKey.current += 1;
       flightProgress.setValue(0);
       setFlight({
@@ -147,7 +158,7 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
       Animated.timing(flightProgress, {
         toValue: 1,
         // Slow enough to be clearly seen travelling.
-        duration: 1250,
+        duration: 5000,
         // Eases in AND out, so the bag starts and finishes smoothly.
         easing: Easing.inOut(Easing.cubic),
         useNativeDriver: true,
@@ -267,9 +278,18 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
     });
   };
 
+  /*
+   * THE SERVER'S NAME FOR THE SERVICE, from the service-type list.
+   *
+   * The fallback only runs when that call has not answered. It used to read
+   * "anything that is not dry_clean is Wash & Iron", which now mislabels
+   * every towel — `wash_fold` is a third code and Wash & Fold is what a towel
+   * is actually sold as.
+   */
   const serviceLabel = (code: string) =>
     services.find((service) => service.code === code)?.name ||
-    (code === 'dry_clean' ? 'Dry Clean' : 'Wash & Iron');
+    FALLBACK_SERVICE_LABEL[code] ||
+    code;
 
   /**
    * ADD ORDER TO BASKET.
@@ -632,31 +652,35 @@ export default function BusinessItemsScreen({ navigation, route }: any) {
               }),
               transform: [
                 {
+                  // The bag physically reaches the midpoint between the
+                  // basket button and cart before continuing to the cart.
                   translateX: flightProgress.interpolate({
-                    inputRange: [0, 1],
+                    inputRange: [0, 0.5, 1],
                     outputRange: [
                       0,
+                      ((flightDestination.current?.x ?? flight.x) - flight.x - flight.size / 2) * 0.5,
                       (flightDestination.current?.x ?? flight.x) - flight.x - flight.size / 2,
                     ],
                   }),
                 },
                 {
+                  // The midpoint is also lifted slightly to create a smooth
+                  // arc. It is the actual halfway point of the flight path.
                   translateY: flightProgress.interpolate({
-                    // Three points, not two: it rises before it crosses, which
-                    // is the arc that makes it read as thrown rather than
-                    // dragged in a straight line.
-                    inputRange: [0, 0.45, 1],
+                    inputRange: [0, 0.5, 1],
                     outputRange: [
                       0,
-                      ((flightDestination.current?.y ?? flight.y) - flight.y) * 0.25 - 60,
+                      ((flightDestination.current?.y ?? flight.y) - flight.y - flight.size / 2) * 0.5 - 80,
                       (flightDestination.current?.y ?? flight.y) - flight.y - flight.size / 2,
                     ],
                   }),
                 },
                 {
+                  // Normal size at the button -> BIG at the midpoint ->
+                  // small as it enters the cart.
                   scale: flightProgress.interpolate({
-                    inputRange: [0, 0.3, 1],
-                    outputRange: [1, 0.85, 0.3],
+                    inputRange: [0, 0.5, 1],
+                    outputRange: [1, 5.00, 0.32],
                   }),
                 },
               ],

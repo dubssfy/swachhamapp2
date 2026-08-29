@@ -15,12 +15,26 @@ import { ApiResponse } from '../types';
 export type RequestType = 'BUSINESS' | 'RIDER' | 'SORTER';
 export type RequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
+/*
+ * THE FOUR CYCLES A BUSINESS IS REGISTERED ON.
+ *
+ * Mirrors `REGISTRATION_BILLING_CYCLES` in the backend's
+ * `billingCycle.service`, which is the authority — the server validates
+ * against it and computes each cycle's invoice period from it.
+ *
+ * "15 Days" is STORED as FORTNIGHTLY. The label is what the business calls
+ * the cycle; the value is what every invoice and payment receipt already
+ * raised against it refers to, so it is left alone.
+ *
+ * QUARTERLY and HALF_YEARLY are no longer offered. They remain valid values
+ * on the column so no existing business becomes unreadable — they simply
+ * cannot be chosen here.
+ */
 export const BILLING_CYCLES: Array<{ value: string; label: string }> = [
+  { value: 'WEEKLY', label: 'Weekly' },
+  // Anchored to the month: the 1st-14th and the 15th-end.
+  { value: 'FORTNIGHTLY', label: '15 Days' },
   { value: 'MONTHLY', label: 'Monthly' },
-  // Every 14 days, anchored to the month: 1st-14th and 15th-end.
-  { value: 'FORTNIGHTLY', label: 'Fortnightly' },
-  { value: 'QUARTERLY', label: 'Quarterly' },
-  { value: 'HALF_YEARLY', label: 'Half-Yearly' },
   { value: 'YEARLY', label: 'Yearly' },
 ];
 

@@ -91,6 +91,17 @@ export interface CustomerPriceRow {
   /** The laundry services this item supports, e.g. ['wash_iron']. */
   service_types: string[];
   unit: string;
+  /**
+   * THE LAUNDRY SERVICE THIS PRICE IS FOR.
+   *
+   * Null means the item's rate for every service — the meaning of every price
+   * set before migration 046 added the column, and still the right answer for
+   * an item charged the same either way.
+   */
+  service_id: string | null;
+  service_name: string | null;
+  /** `service_name`, or "All services" when the price covers every one. */
+  service_label: string;
   customer_price: number;
   original_price: number | null;
   is_active: boolean;
@@ -114,6 +125,40 @@ export interface BusinessPriceRow {
   item_name: string;
   category_id: string | null;
   category_name: string | null;
+  /**
+   * The SERVICE this line prices.
+   *
+   * The listing has ONE LINE PER SERVICE the item is offered for, so this is
+   * set on every line of a normal item. It is null only for an item that has
+   * no services configured at all, whose single line is its base rate.
+   */
+  service_id: string | null;
+  /** "Wash & Iron" / "Dry Clean". Null only when the item has no services. */
+  service_name: string | null;
+  /**
+   * The item's base-rate row id, carried so `expandBaseRateLines` can give
+   * that rate a line of its own. Internal; the line it produces has this as
+   * its `id`.
+   */
+  base_price_id?: string | number | null;
+  base_is_active?: unknown;
+  /** What the Service column shows. "All services" when there is no service. */
+  service_label: string;
+  /**
+   * The item's BASE rate, when this service has no rate of its own.
+   *
+   * A service with no own price is still billed the base rate if the item
+   * has one, so the line shows that figure rather than "Not set" — which
+   * would state the opposite of what an order would actually charge. Null
+   * when there is no base rate to inherit, and the service really is
+   * unpriced.
+   */
+  inherited_price: number | null;
+  /** True when this line is billing `inherited_price` rather than its own. */
+  is_inherited: boolean;
+  /** What an order for this item + service would ACTUALLY be charged. */
+  effective_price: number | null;
+  /** Every service the ITEM is offered for. */
   service_types: string[];
   unit: string;
   /** The global customer price, shown to the super admin for reference. */
@@ -239,37 +284,109 @@ async function assertBusinessExists(businessId: unknown): Promise<string> {
  * error, because the catalogue may legitimately show "price on request"
  * while an order may not.
  */
-async function resolveCustomerPrices(itemIds: string[]): Promise<Map<string, number>> {
-  const ids = Array.from(new Set(itemIds.map(String))).filter((id) => /^\d+$/.test(id));
+/**
+ * The customer prices for a set of ITEM + SERVICE pairs.
+ *
+ * Keyed by `priceKey(itemId, serviceId)` — the same key the business
+ * resolver uses — so a caller that asks for one item at two services gets
+ * two answers.
+ *
+ * THE PRECEDENCE RULE, and the only one:
+ *
+ *   A row naming the service being ordered wins. Failing that, the item's
+ *   fallback row (service_id NULL) applies — that is what every price set
+ *   before per-service rates existed means, so an item with one price still
+ *   bills that price for every service.
+ *
+ *   A row for a DIFFERENT service is never a candidate. Dry Clean's rate
+ *   must not price a Wash & Iron order just because it was the only row
+ *   found — which is the single most expensive way to get this wrong.
+ */
+async function resolveCustomerPrices(
+  lines: Array<{ itemId: string; serviceId?: string | null }> | string[]
+): Promise<Map<string, number>> {
+  /*
+   * Accepts either the pair form or a bare list of item ids, because most
+   * callers have no service to offer and should not have to invent one. A
+   * bare id is read as "this item, any service", which resolves to the
+   * fallback row.
+   */
+  const wanted = new Map<string, { itemId: string; serviceId: string | null }>();
+  for (const entry of lines as Array<any>) {
+    const itemId = String(typeof entry === 'object' ? entry.itemId : entry);
+    if (!/^\d+$/.test(itemId)) continue;
+    const rawService = typeof entry === 'object' ? entry.serviceId : null;
+    const serviceId = rawService === null || rawService === undefined || String(rawService) === ''
+      ? null
+      : String(rawService);
+    wanted.set(priceKey(itemId, serviceId), { itemId, serviceId });
+  }
+
   const prices = new Map<string, number>();
+  const ids = Array.from(new Set(Array.from(wanted.values()).map((l) => l.itemId)));
   if (ids.length === 0) return prices;
 
+  /*
+   * Both candidate rows for each item come back in one query: the one for
+   * the service being asked about, and the item's fallback. Choosing between
+   * them in JS rather than in SQL keeps the statement a plain indexed scan
+   * and makes the precedence rule visible.
+   */
   const placeholders = ids.map(() => '?').join(', ');
-  const result = await query<{ item_id: string; customer_price: string }>(
-    `SELECT item_id, customer_price
+  const result = await query<{ item_id: string; service_id: string | null; customer_price: string }>(
+    `SELECT item_id, service_id, customer_price
        FROM customer_price_list
       WHERE is_active = true AND item_id IN (${placeholders})`,
     ids
   );
+
+  const exact = new Map<string, number>();
+  const fallback = new Map<string, number>();
   for (const row of result.rows) {
-    prices.set(String(row.item_id), Number(row.customer_price));
+    const itemId = String(row.item_id);
+    if (row.service_id === null || row.service_id === undefined) {
+      fallback.set(itemId, Number(row.customer_price));
+    } else {
+      exact.set(priceKey(itemId, String(row.service_id)), Number(row.customer_price));
+    }
+  }
+
+  for (const line of wanted.values()) {
+    const key = priceKey(line.itemId, line.serviceId);
+    const price = exact.has(key) ? exact.get(key)! : fallback.get(line.itemId);
+    if (price !== undefined) prices.set(key, price);
   }
   return prices;
 }
+
 
 /**
  * The customer prices for a set of items, with every item required.
  *
  * Used at order time, where an unpriced line cannot be billed.
  */
-async function requireCustomerPrices(itemIds: string[]): Promise<Map<string, number>> {
-  const ids = Array.from(new Set(itemIds.map(String)));
-  const prices = await resolveCustomerPrices(ids);
+async function requireCustomerPrices(
+  lines: Array<{ itemId: string; serviceId?: string | null }> | string[]
+): Promise<Map<string, number>> {
+  const normalised = (lines as Array<any>).map((entry) => {
+    const itemId = String(typeof entry === 'object' ? entry.itemId : entry);
+    const rawService = typeof entry === 'object' ? entry.serviceId : null;
+    return {
+      itemId,
+      serviceId: rawService === null || rawService === undefined || String(rawService) === ''
+        ? null
+        : String(rawService),
+    };
+  });
 
-  const missing = ids.filter((id) => !prices.has(id));
+  const prices = await resolveCustomerPrices(normalised);
+
+  const missing = normalised.filter((l) => !prices.has(priceKey(l.itemId, l.serviceId)));
   if (missing.length > 0) {
-    const names = await itemNames(missing);
-    logger.warn(`[PriceList] no customer price for item(s): ${missing.join(', ')}`);
+    const names = await itemNames(Array.from(new Set(missing.map((l) => l.itemId))));
+    logger.warn(
+      `[PriceList] no customer price for: ${missing.map((l) => `${l.itemId}/${l.serviceId ?? 'any'}`).join(', ')}`
+    );
     throw new AppError(
       names.length > 0
         ? `No customer price configured for this item: ${names.join(', ')}.`
@@ -280,10 +397,15 @@ async function requireCustomerPrices(itemIds: string[]): Promise<Map<string, num
   return prices;
 }
 
-/** One item's global customer price. Throws when it has none. */
-async function resolveCustomerPrice(itemId: string): Promise<number> {
-  const prices = await requireCustomerPrices([String(itemId)]);
-  return prices.get(String(itemId))!;
+
+/** One item's customer price, for a service or for any. Throws when none. */
+async function resolveCustomerPrice(
+  itemId: string,
+  serviceId?: string | null
+): Promise<number> {
+  const line = { itemId: String(itemId), serviceId: serviceId ?? null };
+  const prices = await requireCustomerPrices([line]);
+  return prices.get(priceKey(line.itemId, line.serviceId))!;
 }
 
 /** Item names for an error message, so the reader knows what to configure. */
@@ -546,6 +668,7 @@ const CUSTOMER_PRICE_SELECT = `
             c.parent_id AS parent_category_id, pc.name AS parent_category_name,
             i.unit, p.customer_price, p.original_price, p.is_active,
             i.is_active AS item_is_active,
+            p.service_id, st.name AS service_name,
             ${SERVICE_TYPES_SELECT},
             p.created_at, p.updated_at
        FROM customer_price_list p
@@ -553,7 +676,9 @@ const CUSTOMER_PRICE_SELECT = `
        LEFT JOIN service_categories c ON c.id = i.category_id
        -- The item hangs off the SUB-category; its parent is the top-level
        -- one. A flat category has no parent and is itself the category.
-       LEFT JOIN service_categories pc ON pc.id = c.parent_id`;
+       LEFT JOIN service_categories pc ON pc.id = c.parent_id
+       -- The service this row prices; null on a rate that covers all of them.
+       LEFT JOIN services st ON st.id = p.service_id`;
 
 interface CustomerPriceQueryRow extends Omit<CustomerPriceRow, 'service_types'> {
   service_types: string | null;
@@ -562,6 +687,12 @@ interface CustomerPriceQueryRow extends Omit<CustomerPriceRow, 'service_types'> 
 function toCustomerPriceRow(row: CustomerPriceQueryRow): CustomerPriceRow {
   return {
     ...row,
+    service_id:
+      row.service_id === null || row.service_id === undefined ? null : String(row.service_id),
+    service_name: row.service_name ?? null,
+    // Same wording as the business list, so one item priced two ways reads
+    // the same way on both screens.
+    service_label: row.service_name ?? 'All services',
     customer_price: Number(row.customer_price),
     original_price: toNullableNumber(row.original_price),
     is_active: Boolean(row.is_active),
@@ -596,7 +727,12 @@ async function listCustomerPrices(
   const result = await query<CustomerPriceQueryRow>(
     `${CUSTOMER_PRICE_SELECT}
      ${where}
-     ${PRICE_LIST_ORDER}`,
+     ${PRICE_LIST_ORDER},
+              /* An item priced for two services is two lines; they sit
+                 together, in catalogue order, with the all-services rate
+                 first. Without this they could land either way round from
+                 one request to the next. */
+              p.service_id IS NULL DESC, st.display_order ASC, st.name ASC`,
     values
   );
   return result.rows.map(toCustomerPriceRow);
@@ -615,6 +751,14 @@ async function getCustomerPriceById(id: string): Promise<CustomerPriceRow> {
 
 export interface CustomerPriceInput {
   item_id?: unknown;
+  /**
+   * The laundry SERVICE this price is for — Wash and Fold, Dry Clean.
+   *
+   * Absent, null or '' prices the item for EVERY service, which is what a
+   * price carried no service has always meant. Naming one prices that
+   * service alone, and the item can then hold a separate rate for the other.
+   */
+  service_id?: unknown;
   customer_price?: unknown;
   original_price?: unknown;
   is_active?: unknown;
@@ -623,34 +767,47 @@ export interface CustomerPriceInput {
 /**
  * Adds a customer price for an existing catalogue item.
  *
- * The UNIQUE(item_id) key is what "global customer price" means in the
- * schema: an item can only be priced once. Asking twice is a 409
- * pointing at the existing row, never a second price.
+ * ONE PRICE PER (ITEM, SERVICE), which is what the schema's
+ * UNIQUE(item_id, service_key) says since migration 046. An item can hold a
+ * Wash and Fold rate and a Dry Clean rate, and an all-services rate that
+ * either of them overrides. Asking twice for the SAME service is a 409
+ * pointing at the row that already exists.
  */
 async function createCustomerPrice(input: CustomerPriceInput): Promise<CustomerPriceRow> {
   const itemId = await assertItemExists(input.item_id);
+  // Null for "every service". Rejects a service the item is not offered for,
+  // which would be a row the cart and the order could never read.
+  const serviceId = await assertServiceTypeForItem(itemId, input.service_id);
   const price = parsePrice(input.customer_price, 'Customer price');
   const original = parseOptionalPrice(input.original_price, 'Original price');
   const isActive = parseFlag(input.is_active, true);
 
   const existing = await query<{ id: string }>(
-    `SELECT id FROM customer_price_list WHERE item_id = ?`,
-    [itemId]
+    `SELECT id FROM customer_price_list
+      WHERE item_id = ? AND COALESCE(service_id, 0) = COALESCE(?, 0)`,
+    [itemId, serviceId]
   );
   if (existing.rows[0]) {
+    const scope = serviceId
+      ? `a ${await serviceTypeName(serviceId)} price`
+      : 'an all-services price';
     throw new AppError(
-      'This item already has a customer price. Edit the existing one instead.',
+      `This item already has ${scope}. Edit the existing one instead.`,
       409
     );
   }
 
   const inserted = await query(
-    `INSERT INTO customer_price_list (item_id, customer_price, original_price, is_active)
-     VALUES (?, ?, ?, ?)`,
-    [itemId, price, original, isActive]
+    `INSERT INTO customer_price_list
+       (item_id, service_id, customer_price, original_price, is_active)
+     VALUES (?, ?, ?, ?, ?)`,
+    [itemId, serviceId, price, original, isActive]
   );
 
-  logger.info(`[PriceList] customer price created for item ${itemId} at ${price}`);
+  logger.info(
+    `[PriceList] customer price created for item ${itemId}` +
+      `${serviceId ? ` service ${serviceId}` : ' (all services)'} at ${price}`
+  );
   return getCustomerPriceById(inserted.insertId!);
 }
 
@@ -734,8 +891,101 @@ async function deleteCustomerPrice(id: string, hard = false) {
  * BUSINESS PRICE LIST  — super admin CRUD
  * =================================================================== */
 
-interface BusinessPriceQueryRow extends Omit<BusinessPriceRow, 'service_types'> {
+interface BusinessPriceQueryRow
+  extends Omit<
+    BusinessPriceRow,
+    'service_types' | 'service_label' | 'is_inherited' | 'effective_price'
+  > {
   service_types: string | null;
+  /** The item's base-rate row, when it has one. See `expandBaseRateLines`. */
+  base_price_id?: string | number | null;
+  base_is_active?: unknown;
+  // `service_label`, `is_inherited` and `effective_price` are all derived in
+  // `toBusinessPriceRow`; none of them is selected.
+}
+
+/**
+ * Adds a line for the item's BASE RATE, where one exists.
+ *
+ * WHY THIS EXISTS. The listing is driven by the item's services, so a base
+ * row — a price that applies to every service — matches no service and would
+ * otherwise appear only as the `inherited_price` on other lines: visible as a
+ * figure, but with no id, and therefore impossible to edit, disable or
+ * remove. Every price in the list must be reachable by the person
+ * responsible for it, so the base rate gets a line of its own.
+ *
+ * ONLY WHEN THERE IS ONE. An item priced per service has no base row and
+ * gains no extra line, which is the normal case going forward. This is
+ * strictly about keeping the prices that already exist manageable.
+ */
+function expandBaseRateLines(rows: BusinessPriceRow[]): BusinessPriceRow[] {
+  // The rows arrive grouped by item, so one pass gathers each item's lines.
+  const out: BusinessPriceRow[] = [];
+  let batch: BusinessPriceRow[] = [];
+
+  const flush = () => {
+    if (batch.length === 0) return;
+    const head = batch[0];
+    const hasBaseRow = head.base_price_id != null;
+
+    /*
+     * A SINGLE-SERVICE ITEM NEVER SHOWS TWO LINES.
+     *
+     * If the item is offered for one service and holds only a base rate,
+     * that rate IS the price of its only service — so the service line
+     * simply adopts it and becomes directly editable. Emitting a separate
+     * "All services" line beside it would print the same figure twice, for
+     * the same one service, and invite the reader to wonder which applies.
+     */
+    if (hasBaseRow && batch.length === 1 && head.service_id !== null && head.price === null) {
+      out.push({
+        ...head,
+        id: String(head.base_price_id),
+        price: head.inherited_price,
+        effective_price: head.inherited_price,
+        inherited_price: null,
+        is_inherited: false,
+        is_active: Boolean(head.base_is_active),
+      });
+      batch = [];
+      return;
+    }
+
+    /*
+     * A MULTI-SERVICE ITEM WITH A BASE RATE gets a line for it.
+     *
+     * Here the base rate genuinely differs from any one service — it is what
+     * every service without its own rate falls back to — and without a line
+     * of its own it would appear only as an inherited figure with no id, so
+     * it could never be edited or removed.
+     *
+     * `service_id === null` on the head already IS the base line: an item
+     * with no services at all produces exactly one row, which is that rate.
+     */
+    if (hasBaseRow && head.service_id !== null) {
+      out.push({
+        ...head,
+        id: String(head.base_price_id),
+        service_id: null,
+        service_name: null,
+        service_label: 'All services',
+        price: head.inherited_price,
+        effective_price: head.inherited_price,
+        inherited_price: null,
+        is_inherited: false,
+        is_active: Boolean(head.base_is_active),
+      });
+    }
+    out.push(...batch);
+    batch = [];
+  };
+
+  for (const row of rows) {
+    if (batch.length > 0 && row.item_id !== batch[0].item_id) flush();
+    batch.push(row);
+  }
+  flush();
+  return out;
 }
 
 function toBusinessPriceRow(
@@ -758,6 +1008,23 @@ function toBusinessPriceRow(
     price: toNullableNumber(row.price),
     is_active: Boolean(row.is_active),
     item_is_active: Boolean(row.item_is_active),
+    /*
+     * THE SERVICE THIS LINE PRICES, and what it is actually billing.
+     *
+     * `price` is this service's OWN rate and is null when none has been set.
+     * `inherited_price` is the item's base rate, which an order for this
+     * service would fall back to. `effective_price` is therefore what would
+     * really be charged — and it is the figure the screen must show, because
+     * a line reading "Not set" while orders bill 30.00 would be false.
+     */
+    service_id:
+      row.service_id === null || row.service_id === undefined ? null : String(row.service_id),
+    service_name: row.service_name ?? null,
+    service_label: row.service_name ?? 'All services',
+    inherited_price: toNullableNumber(row.inherited_price),
+    is_inherited:
+      toNullableNumber(row.price) === null && toNullableNumber(row.inherited_price) !== null,
+    effective_price: toNullableNumber(row.price) ?? toNullableNumber(row.inherited_price),
     service_types: toServiceTypes(row.service_types),
   };
 }
@@ -790,17 +1057,44 @@ async function listBusinessPrices(
   // list rather than two rows per item.
   const laundryType = parseOptionalLaundryType(options.laundryType) ?? 'hotel';
 
-  // Only items under a live category. See LIVE_CATEGORY_PREDICATE.
-  const conditions: string[] = [`i.kind = 'ITEM'`, LIVE_CATEGORY_PREDICATE];
-  // Placeholder order: the projected business_id, then the two join
-  // predicates, then WHERE.
-  const values: unknown[] = [businessId, businessId, laundryType];
+  /*
+   * BUSINESS ITEMS ONLY.
+   *
+   * `services` holds the customer catalogue and the business catalogue in one
+   * table, told apart by `scope`. Without this filter the customer items show
+   * up on the BUSINESS price list -- which is what happened the moment the
+   * customer catalogue stopped being empty: 83 retail items appeared on a
+   * screen that prices hotel and banquet linen, none of them priceable for a
+   * business.
+   *
+   * Only items under a live category. See LIVE_CATEGORY_PREDICATE.
+   */
+  const conditions: string[] = [
+    `i.kind = 'ITEM'`,
+    `i.scope = 'BUSINESS'`,
+    LIVE_CATEGORY_PREDICATE,
+  ];
+  /*
+   * Placeholder order, and it must match the SELECT below exactly:
+   *   1. the projected business_id
+   *   2. the per-service price join   (business, laundry type)
+   *   3. the base-rate join           (business, laundry type)
+   * then whatever WHERE conditions are appended.
+   */
+  const values: unknown[] = [
+    businessId,
+    businessId, laundryType,
+    businessId, laundryType,
+  ];
 
   if (!options.includeInactiveItems) {
     conditions.push('i.is_active = true');
   }
   if (options.onlyConfigured) {
-    conditions.push('p.id IS NOT NULL');
+    // "Configured" means this SERVICE has a rate that would be charged —
+    // its own, or the item's base rate it inherits. A line billing an
+    // inherited figure is configured; one billing nothing is not.
+    conditions.push('(p.id IS NOT NULL OR base.id IS NOT NULL)');
   }
   if (options.search) {
     conditions.push('i.name LIKE ?');
@@ -812,32 +1106,108 @@ async function listBusinessPrices(
             i.category_id, c.name AS category_name,
             c.parent_id AS parent_category_id, pc.name AS parent_category_name,
             i.unit,
-            cp.customer_price,
+            /*
+             * THE CUSTOMER PRICE FOR THIS LINE'S SERVICE, AS A SUB-QUERY.
+             *
+             * It used to be a LEFT JOIN of customer_price_list on
+             * item_id alone. Since migration 046 an item can hold SEVERAL
+             * customer prices -- one per service -- so that join returned
+             * the whole row once PER PRICE and listed the same service
+             * line twice.
+             *
+             * The line already knows its service (st.id), so it takes that
+             * service's own price, falling back to the item's service-less
+             * row. Same precedence the customer app bills at.
+             */
+            COALESCE(
+              (SELECT c2.customer_price FROM customer_price_list c2
+                WHERE c2.item_id = i.id AND c2.is_active = true
+                  AND c2.service_id = st.id LIMIT 1),
+              (SELECT c2.customer_price FROM customer_price_list c2
+                WHERE c2.item_id = i.id AND c2.is_active = true
+                  AND c2.service_id IS NULL LIMIT 1)
+            ) AS customer_price,
             p.price, p.is_active,
             i.is_active AS item_is_active,
+            st.id AS service_id, st.name AS service_name,
+            base.price AS inherited_price,
+            -- The base row's own identity, so the extra line built for it in
+            -- expandBaseRateLines can be edited and removed like any other.
+            base.id AS base_price_id, base.is_active AS base_is_active,
             ${SERVICE_TYPES_SELECT},
             p.created_at, p.updated_at
        FROM services i
        LEFT JOIN service_categories c ON c.id = i.category_id
        LEFT JOIN service_categories pc ON pc.id = c.parent_id
-       -- THE ITEM'S FALLBACK ROW ONLY (p.service_id IS NULL).
-       --
-       -- Since prices gained a service dimension an item can hold several
-       -- rows at one laundry type: its base rate plus a per-service
-       -- override. Joining them all would return the SAME ITEM two or three
-       -- times and the screen would list it twice, which is a listing bug
-       -- rather than a pricing one. The listing therefore stays one row per
-       -- item, showing that item's base rate.
+       /*
+        * ===========================================================
+        * ONE LINE PER SERVICE THE ITEM IS OFFERED FOR.
+        * ===========================================================
+        *
+        * The list is driven by the ITEM'S SERVICES, not by its price rows:
+        *
+        *   Bath Robe   Wash & Iron   30.00
+        *   Bath Robe   Dry Clean     Not set
+        *
+        * Every service gets a line whether or not it has been priced, which
+        * is what lets a price be SET for each service separately, and what
+        * lets one service be left deliberately unpriced while the other is
+        * charged. A listing driven by the price rows could only show
+        * services that had already been priced — so the first price for a
+        * service could never be entered against the line it belongs to.
+        *
+        * The item_service_types join is filtered to real, active
+        * SERVICE_TYPEs inside the join itself
+        * rather than in the WHERE clause: an item with no services at all
+        * must still produce exactly one line, and a WHERE filter would drop
+        * it from the list entirely.
+        */
+       LEFT JOIN item_service_types m
+              ON m.item_id = i.id
+             AND EXISTS (SELECT 1 FROM services x
+                          WHERE x.id = m.service_id
+                            AND x.kind = 'SERVICE_TYPE' AND x.is_active = true)
+       LEFT JOIN services st ON st.id = m.service_id
+       /*
+        * THIS SERVICE'S OWN RATE.
+        *
+        * COALESCE to 0 on both sides so an item with no services joins the
+        * base row (service_id NULL) through the same condition, instead of
+        * needing a second query for that case.
+        */
        LEFT JOIN business_price_list p
               ON p.item_id = i.id AND p.business_id = ? AND p.laundry_type = ?
-             AND p.service_id IS NULL
-       LEFT JOIN customer_price_list cp ON cp.item_id = i.id AND cp.is_active = true
+             AND COALESCE(p.service_id, 0) = COALESCE(st.id, 0)
+       /*
+        * THE ITEM'S BASE RATE, carried alongside as inherited_price.
+        *
+        * A service with no rate of its own is still billed the base rate if
+        * the item has one — that is what every price set before per-service
+        * rates existed means, and it is what an order would actually charge.
+        * Showing such a line as "Not set" would state the opposite of what
+        * the system does, so the line shows the inherited figure and says it
+        * is inherited.
+        */
+       LEFT JOIN business_price_list base
+              ON base.item_id = i.id AND base.business_id = ? AND base.laundry_type = ?
+             AND base.service_id IS NULL
       WHERE ${conditions.join(' AND ')}
-      ${PRICE_LIST_ORDER}`,
+      ${PRICE_LIST_ORDER},
+               /* Within one item, its services in catalogue order, so the
+                  lines under an item read the same way every time rather
+                  than in whatever order the join produced.
+                  PRICE_LIST_ORDER is shared with queries that have no
+                  service alias, so this tiebreaker is appended here rather
+                  than added to it. */
+               st.display_order ASC, st.name ASC`,
     values
   );
 
-  return result.rows.map((row) => toBusinessPriceRow(row, businessId, laundryType));
+  // The service lines, plus a line for any base rate the item still holds so
+  // that rate stays editable. See `expandBaseRateLines`.
+  return expandBaseRateLines(
+    result.rows.map((row) => toBusinessPriceRow(row, businessId, laundryType))
+  );
 }
 
 const BUSINESS_PRICE_SELECT = `
@@ -845,15 +1215,26 @@ const BUSINESS_PRICE_SELECT = `
             i.category_id, c.name AS category_name,
             c.parent_id AS parent_category_id, pc.name AS parent_category_name,
             i.unit,
-            cp.customer_price,
+            /* The same sub-query as the listing, keyed on the service this
+               stored row prices. See the note there. */
+            COALESCE(
+              (SELECT c2.customer_price FROM customer_price_list c2
+                WHERE c2.item_id = i.id AND c2.is_active = true
+                  AND c2.service_id = p.service_id LIMIT 1),
+              (SELECT c2.customer_price FROM customer_price_list c2
+                WHERE c2.item_id = i.id AND c2.is_active = true
+                  AND c2.service_id IS NULL LIMIT 1)
+            ) AS customer_price,
             p.price, p.is_active, i.is_active AS item_is_active,
+            p.service_id, st.name AS service_name,
             ${SERVICE_TYPES_SELECT},
             p.created_at, p.updated_at
        FROM business_price_list p
        JOIN services i ON i.id = p.item_id
        LEFT JOIN service_categories c ON c.id = i.category_id
        LEFT JOIN service_categories pc ON pc.id = c.parent_id
-       LEFT JOIN customer_price_list cp ON cp.item_id = i.id AND cp.is_active = true`;
+       -- The service this row prices; null on the item's base rate.
+       LEFT JOIN services st ON st.id = p.service_id`;
 
 async function getBusinessPriceById(
   businessId: string,
@@ -1112,12 +1493,16 @@ const PRICEABLE_ITEM_SELECT = `
   SELECT i.id, i.name, i.category_id, c.name AS category_name,
          c.parent_id AS parent_category_id, pc.name AS parent_category_name,
          i.unit, i.scope,
-         i.is_active, (cp.id IS NOT NULL) AS has_customer_price,
+         i.is_active,
+         /* EXISTS, not a join: an item priced for two services would
+            otherwise be offered TWICE in the picker. The flag only ever
+            asked whether the item has ANY customer price. */
+         EXISTS (SELECT 1 FROM customer_price_list cp
+                  WHERE cp.item_id = i.id) AS has_customer_price,
          ${SERVICE_TYPES_SELECT}
     FROM services i
     LEFT JOIN service_categories c ON c.id = i.category_id
-    LEFT JOIN service_categories pc ON pc.id = c.parent_id
-    LEFT JOIN customer_price_list cp ON cp.item_id = i.id`;
+    LEFT JOIN service_categories pc ON pc.id = c.parent_id`;
 
 function toPriceableItem(row: any): PriceableItem {
   return {
@@ -1169,7 +1554,10 @@ async function listPriceableItems(
     values.push(`%${options.search}%`);
   }
   if (options.unpricedOnly) {
-    conditions.push('cp.id IS NULL');
+    // The join it used to read is gone; see PRICEABLE_ITEM_SELECT.
+    conditions.push(
+      'NOT EXISTS (SELECT 1 FROM customer_price_list cp WHERE cp.item_id = i.id)'
+    );
   }
 
   const result = await query<

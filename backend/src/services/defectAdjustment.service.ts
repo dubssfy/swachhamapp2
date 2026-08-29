@@ -416,11 +416,37 @@ export async function adjustDefectiveQuantity(params: {
     // The order first, then the line: always the same order of locks, so two
     // concurrent adjustments on one order queue instead of deadlocking.
     const [orderRows]: any = await connection.execute(
-      `SELECT id, order_number, status FROM orders WHERE id = ? FOR UPDATE`,
+      `SELECT id, order_number, status, accepted_at FROM orders WHERE id = ? FOR UPDATE`,
       [params.orderId]
     );
     const order = orderRows[0];
     if (!order) throw new AppError('Order not found', 404);
+
+    /*
+     * ACCEPTANCE CLOSES THE BOOK ON DEFECTS.
+     *
+     * Defective pieces are judged as the order is taken in — the count that
+     * is agreed at acceptance is what the customer is billed against. Once
+     * `accepted_at` is stamped, that count is settled, and changing it
+     * afterwards would move an amount both sides had already agreed.
+     *
+     * THE ORDER'S OWN RECORD DECIDES, NOT THE SCREEN. This is checked here,
+     * in the service every path goes through, so hiding the button is a
+     * courtesy and not the control: calling the API directly after
+     * acceptance is refused exactly the same way.
+     *
+     * `accepted_at` rather than a status: acceptance has no status of its
+     * own — the sorter's accept action stamps this column and moves the
+     * order to RECEIVED_AT_FACILITY, so the column is the only unambiguous
+     * record of the event.
+     */
+    if (order.accepted_at) {
+      throw new AppError(
+        `Order ${order.order_number} has already been accepted, so its defective pieces ` +
+          'are locked. Defective pieces can only be recorded before acceptance.',
+        409
+      );
+    }
 
     if (!ADJUSTABLE_STATUSES.includes(String(order.status))) {
       throw new AppError(

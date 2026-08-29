@@ -70,7 +70,19 @@ function cardTitleSize(width: number): number {
 }
 
 export default function HomeScreen({ navigation }: any) {
-  const { user } = useAuthStore();
+  const { user, userType } = useAuthStore();
+
+  /*
+   * THIS SCREEN SERVES BOTH APPS. It is registered on the Customer tab
+   * navigator AND inside BusinessHomeStack, so anything shown here appears
+   * to both unless it is gated.
+   *
+   * A CUSTOMER MUST NOT SEE THE BUSINESS NAME. They are booking their own
+   * laundry; whose establishment record they happen to be attached to is an
+   * internal detail. The association itself is untouched — this hides a
+   * label, it does not change what the backend stores or sends.
+   */
+  const isBusinessUser = userType === 'business' || String(user?.role || '').toLowerCase() === 'business';
   const { width } = useWindowDimensions();
   const titleSize = cardTitleSize(width);
   const [profile, setProfile] = useState<any>(null);
@@ -229,11 +241,14 @@ export default function HomeScreen({ navigation }: any) {
         />
       </View>
 
-      {/* Establishment / Business Name on Line 1 & User Name on Line 2 with Divider */}
+      {/* Line 1 is the establishment, and it is BUSINESS ONLY — see
+          `isBusinessUser`. A customer sees their own name and nothing else. */}
       <View style={styles.header}>
-        <Text style={styles.establishmentName} numberOfLines={1}>
-          {establishmentName}
-        </Text>
+        {isBusinessUser ? (
+          <Text style={styles.establishmentName} numberOfLines={1}>
+            {establishmentName}
+          </Text>
+        ) : null}
         <Text style={styles.userName} numberOfLines={1}>
           {userName}
         </Text>

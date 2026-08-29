@@ -24,11 +24,15 @@ import {
 import { recentPeriodsForBusiness } from '../services/billingCycle.service';
 import { panFromGstin } from '../services/creationRequest.service';
 import { renderInvoicePdf, invoiceFileName } from '../services/invoicePdf.service';
+import { recordInvoice } from '../services/invoiceHistory.service';
 import { createCatalogueItem } from '../services/priceList.service';
+import { transactionSummary } from '../services/transactionSummary.service';
 import priceRoutes from './superAdminPrice.routes';
 import requestRoutes from './superAdminRequest.routes';
 import accountRoutes from './superAdminAccounts.routes';
 import businessAccountRoutes from './superAdminBusinessAccount.routes';
+import purchaseRoutes from './superAdminPurchase.routes';
+import reportRoutes from './superAdminReport.routes';
 
 const router = Router();
 
@@ -92,6 +96,37 @@ router.use('/', accountRoutes);
  * Generate Invoice was not reimplemented; only the button moved.
  */
 router.use('/', businessAccountRoutes);
+
+/* ---- Purchase, Supplier and Expense ----
+ *
+ * Mounted here for the same reason as everything above: it inherits the
+ * `authenticate` + `authorize('SUPER_ADMIN')` pair, so creating a purchase,
+ * paying a supplier and recording an expense are Super Admin only by
+ * construction rather than by a check each route remembers to make.
+ */
+router.use('/', purchaseRoutes);
+
+/* ---- Reports ----
+ *
+ * Mounted here for the same reason as everything above: it inherits the
+ * `authenticate` + `authorize('SUPER_ADMIN')` pair, so the KG reports are
+ * Super Admin only by construction.
+ */
+router.use('/', reportRoutes);
+
+/* ---- Transaction Summary ----
+ *
+ * The home page's headline grid: Sale, Collection, Product Count and Expense
+ * across today, this month, this year and all time. Every figure is a SUM or
+ * COUNT over the rows that justify it — see `transactionSummary.service`.
+ */
+router.get('/transaction-summary', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    sendSuccess(res, await transactionSummary(), 'Transaction summary fetched');
+  } catch (error) {
+    next(error);
+  }
+});
 
 /* ---- Sales ---- */
 
@@ -422,6 +457,25 @@ router.get('/businesses/:id/invoice.pdf', async (req: Request, res: Response, ne
     const laundryType = parseLaundryType(req.query.laundry_type);
     const invoice = await buildInvoice(req.params.id, req.query.from, req.query.to, laundryType);
     const pdf = await renderInvoicePdf(invoice);
+
+    /*
+     * THE INVOICE IS NOW ON RECORD.
+     *
+     * Recorded here, at the PDF, rather than at the JSON endpoint above:
+     * `/invoice` is the preview the operator looks at before deciding, and a
+     * preview is not an issued invoice. Downloading the document is the act
+     * that issues it, so that is what puts it in the business's history.
+     *
+     * Deliberately not awaited into the response path's failure modes: the
+     * PDF has been rendered and the operator is entitled to it, so a history
+     * write that fails is logged and swallowed rather than turned into a
+     * failed download. Idempotent, so a retried download does not duplicate.
+     */
+    recordInvoice(invoice, { generatedBy: authReq.user!.id }).catch((e) => {
+      logger.error(
+        `[Invoice] could not record ${invoice.invoice_number} in history: ${e?.message || e}`
+      );
+    });
 
     // Named by the establishment and the period — see `invoiceFileName`. The
     // full invoice number stays the identifier, in the log line below and on

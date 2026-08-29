@@ -130,12 +130,24 @@ async function main() {
   const thead = html.slice(html.indexOf('<thead>'), html.indexOf('</thead>'));
   check('the Std. Weight column header is gone', !thead.includes('Std. Weight'), thead.replace(/\s+/g, ' ').slice(0, 120));
   check('the item table has no Weight column header', !/>\s*Weight\s*</.test(thead));
-  check('the columns kept are #, Item, Category, Service, Qty, Unit',
-    ['>#<', '>Item<', '>Category<', '>Service<', '>Qty<', '>Unit<'].every((h) => thead.includes(h)));
+  check('the columns kept are #, Item, Category, Qty, Unit',
+    ['>#<', '>Item<', '>Category<', '>Qty<', '>Unit<'].every((h) => thead.includes(h)));
+
+  // -- the Service column is gone from the item table --
+  // This is the only Order Detail template in the app, so asserting it here
+  // covers the Business, Sorter and Super Admin (row action and More Options)
+  // documents at once — they all render through this same function.
+  check('the Service column header is gone', !/>\s*Service\s*</.test(thead),
+    thead.replace(/\s+/g, ' ').slice(0, 160));
 
   const tbody = html.slice(html.indexOf('<tbody>'), html.indexOf('</tbody>'));
   const cellsPerRow = (tbody.match(/<tr>[\s\S]*?<\/tr>/)?.[0].match(/<td/g) || []).length;
-  check('each item row carries six cells, not eight', cellsPerRow === 6, `${cellsPerRow} cells`);
+  check('each item row carries five cells, not six', cellsPerRow === 5, `${cellsPerRow} cells`);
+
+  // The total must still land under the Qty column now that a column has gone.
+  const tfoot = html.slice(html.indexOf('<tfoot>'), html.indexOf('</tfoot>'));
+  check('the Total Quantity label spans the three columns left of Qty',
+    tfoot.includes('colspan="3"'), tfoot.replace(/\s+/g, ' ').slice(0, 160));
   check('no per-item weight value is printed',
     !tbody.includes('0.50') && !tbody.includes('5.00 kg') && !/\bkg\b/.test(tbody),
     'no kg in the rows');

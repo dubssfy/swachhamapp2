@@ -20,7 +20,13 @@ import { BusinessOrderDetail } from '../services/businessOrderApi';
 
 export const LAUNDRY_LABEL: Record<string, string> = { hotel: 'Hotel Laundry', guest: 'Guest Laundry' };
 export const ORDER_LABEL: Record<string, string> = { standard: 'Standard Order', quick: 'Quick Order' };
-export const SERVICE_LABEL: Record<string, string> = { wash_iron: 'Wash & Iron', dry_clean: 'Dry Clean' };
+/* The order PDF's service column. Wash & Fold is the TOWEL service — left
+   out, a towel line printed the bare code `wash_fold` on the document. */
+export const SERVICE_LABEL: Record<string, string> = {
+  wash_fold: 'Wash & Fold',
+  wash_iron: 'Wash & Iron',
+  dry_clean: 'Dry Clean',
+};
 
 /**
  * Weights are stored numerically in kilograms, so the unit is always rendered
@@ -90,13 +96,19 @@ export function buildPdfFileName(orderNumber: string, businessName?: string | nu
   return `${buildPdfBaseName(orderNumber, businessName)}.pdf`;
 }
 
-/**
- * The service for one line. `laundry_service_name` is what the API resolved
- * for that item; there is no order-wide service printed against the rows.
+/*
+ * NO SERVICE COLUMN.
+ *
+ * The item table prints #, Item, Category, Qty and Unit and nothing else. The
+ * per-line service was removed from every Order Detail PDF: it repeated a
+ * value the order already carries at its head, and on a narrow page it cost a
+ * column that Item and Category are better spending on their own names.
+ *
+ * This is the ONLY Order Detail template in the app — the Business app, the
+ * Sorter, the Super Admin row action and Super Admin More Options all render
+ * through `buildBusinessOrderPdfHtml` — so the column is gone from all of them
+ * by construction rather than by four separate edits kept in step by hand.
  */
-function itemServiceLabel(item: BusinessOrderDetail['items'][number]) {
-  return item.laundry_service_name || '-';
-}
 
 export function buildBusinessOrderPdfHtml(
   data: BusinessOrderDetail,
@@ -155,7 +167,6 @@ export function buildBusinessOrderPdfHtml(
         <td>${index + 1}</td>
         <td class="wrap">${escapeHtml(item.service_name)}</td>
         <td class="wrap">${escapeHtml(item.category_name || '-')}</td>
-        <td class="wrap">${escapeHtml(itemServiceLabel(item))}</td>
         ${
           adjusted
             ? `<td class="num">${escapeHtml(item.original_quantity)}</td>
@@ -217,12 +228,12 @@ export function buildBusinessOrderPdfHtml(
     return `<!DOCTYPE html><html><head><meta charset="utf-8" />
 <style>
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif; color: #1B1B1B; padding: 28px; padding-top: 52px; }
-  /* The Swachham mark, pinned so the print engine repeats it at the top-left
-     of EVERY page. The extra top padding on body is what keeps page content
-     from sitting under it. The page-1 header block below is unchanged. */
-  .page-brand { position: fixed; top: 8px; left: 8px; }
-  .page-brand img { width: 34px; height: 34px; object-fit: contain; }
+  /* ONE LOGO ON THIS DOCUMENT, and it is the one in the header block below.
+     The small mark that used to be pinned to the top-left of every page is
+     gone, and with it the extra top padding that existed only to stop page
+     content sitting underneath it — so the header now starts where the rest
+     of the page margin does, with no blank strip above it. */
+  body { font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif; color: #1B1B1B; padding: 28px; }
   .head { display: flex; align-items: center; gap: 14px; border-bottom: 3px solid #2D6A4F; padding-bottom: 14px; }
   .docbusiness { text-align: center; font-size: 20px; font-weight: 700; color: #1B4332;
                  margin: 16px 0 0; }
@@ -258,6 +269,11 @@ export function buildBusinessOrderPdfHtml(
   tr { page-break-inside: avoid; }
   h2 { page-break-after: avoid; }
   .wrap { word-break: break-word; overflow-wrap: anywhere; }
+  /* The width the Service column used to take is given back to the two
+     columns that carry real names, rather than left as slack spread evenly
+     across every column. Percentages, so the table still fits any page. */
+  .col-item { width: 46%; }
+  .col-cat { width: 26%; }
   tfoot td { border-top: 2px solid #D8E6DD; border-bottom: none; padding-top: 10px; }
   .tfoot-label { text-align: right; text-transform: uppercase; font-size: 11px; letter-spacing: .5px; color: #2D6A4F; font-weight: 700; }
   .tfoot-value { font-weight: 700; color: #1B4332; }
@@ -265,7 +281,6 @@ export function buildBusinessOrderPdfHtml(
   .adjnote { font-size: 11px; color: #6B7280; margin: 8px 0 0; line-height: 1.5; }
   footer { margin-top: 28px; border-top: 1px solid #E5E7EB; padding-top: 10px; text-align: center; color: #9AA3AE; font-size: 10px; }
 </style></head><body>
-  ${logo ? `<div class="page-brand"><img src="${logo}" /></div>` : ''}
   <div class="head">
     ${logo ? `<img class="logo" src="${logo}" />` : ''}
     <div>
@@ -293,7 +308,7 @@ export function buildBusinessOrderPdfHtml(
   <h2>Items</h2>
   <table>
     <thead><tr>
-      <th>#</th><th>Item</th><th>Category</th><th>Service</th>${
+      <th>#</th><th class="col-item">Item</th><th class="col-cat">Category</th>${
         adjusted
           ? `<th class="num">Ordered Qty</th><th class="num">Defective Qty</th><th class="num">Final Qty</th>`
           : `<th class="num">Qty</th>`
@@ -305,7 +320,10 @@ export function buildBusinessOrderPdfHtml(
         <!-- The label spans everything left of the figure it belongs to, so
              the total sits under Final Qty when the table is split and under
              Qty when it is not. -->
-        <td colspan="${adjusted ? 6 : 4}" class="tfoot-label">Total Quantity</td>
+        <!-- Counts the columns to the LEFT of the quantity total, which is one
+             fewer since the Service column went: #, Item, Category (3), plus
+             the Ordered and Defective columns when the table is split (5). -->
+        <td colspan="${adjusted ? 5 : 3}" class="tfoot-label">Total Quantity</td>
         <td class="num tfoot-value">${escapeHtml(data.total_quantity)}</td>
         <td${partial ? ` colspan="2"` : ''}></td>
       </tr>

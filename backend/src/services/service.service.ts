@@ -101,12 +101,38 @@ export interface SearchServicesParams {
 }
 
 /** The customer price, joined from customer_price_list or falling back to services.base_price. */
-const PRICE_SELECT = `COALESCE(cp.customer_price, s.base_price, 0) AS price,
-                      COALESCE(cp.customer_price, s.base_price, 0) AS customer_price,
-                      COALESCE(cp.original_price, s.discounted_price) AS original_price`;
+/*
+ * THE "FROM" PRICE, AS A SUB-QUERY RATHER THAN A JOIN.
+ *
+ * Since migration 046 an item can hold SEVERAL customer prices — one per
+ * laundry service, plus an optional fallback. A LEFT JOIN on `item_id` alone
+ * would then return the item ONCE PER PRICE, listing the same shirt twice.
+ *
+ * The listing shows the LOWEST of them, because the customer has not chosen a
+ * service yet and "from ₹40" is the only honest single figure at that point.
+ * The exact price for the service they pick comes from
+ * `getItemServiceOptions` on the item screen.
+ *
+ * `base_price` remains the last fallback for an item with no customer price
+ * at all, exactly as before.
+ */
+const PRICE_SELECT = `COALESCE(
+                        (SELECT MIN(cp.customer_price) FROM customer_price_list cp
+                          WHERE cp.item_id = s.id AND cp.is_active = true),
+                        s.base_price, 0
+                      ) AS price,
+                      COALESCE(
+                        (SELECT MIN(cp.customer_price) FROM customer_price_list cp
+                          WHERE cp.item_id = s.id AND cp.is_active = true),
+                        s.base_price, 0
+                      ) AS customer_price,
+                      (SELECT cp.original_price FROM customer_price_list cp
+                        WHERE cp.item_id = s.id AND cp.is_active = true
+                        ORDER BY cp.customer_price ASC LIMIT 1) AS original_price`;
 
-const PRICE_JOIN = `LEFT JOIN customer_price_list cp
-                         ON cp.item_id = s.id AND cp.is_active = true`;
+/* Nothing to join any more — the price is a sub-query. Kept as an empty
+   string so the statements that interpolate it need no edit. */
+const PRICE_JOIN = ``;
 
 const SERVICE_TYPES_SELECT = `
             (SELECT GROUP_CONCAT(st.code ORDER BY st.display_order ASC, st.name ASC)
@@ -328,5 +354,63 @@ async function getPopularServices(scope?: string): Promise<Service[]> {
   return result.rows.map(toService);
 }
 
-export { getCategories, getServices, searchServices, getServiceById, getPopularServices };
+
+
+/** One service an item can be bought for, and what it costs. */
+export interface ItemServiceOption {
+  service_id: string;
+  name: string;
+  code: string;
+  /**
+   * The customer price for THIS item at THIS service. Null when neither the
+   * service nor the item has one configured — the screen shows it as unset
+   * and the cart refuses it.
+   */
+  price: number | null;
+}
+
+/**
+ * The services one item can be ordered for, each with its own price.
+ *
+ * This is what the item screen needs: "Wash and Fold ₹40 / Dry Clean ₹80".
+ * The list screen cannot answer it, because an item has one row there and
+ * potentially several prices.
+ *
+ * The services come from `item_service_types` — the same mapping the cart
+ * validates against — so every option offered here can actually be added.
+ *
+ * The price uses the same precedence as everywhere else: the service's own
+ * row first, the item's fallback row second, and NEVER another service's row.
+ */
+async function getItemServiceOptions(itemId: string): Promise<ItemServiceOption[]> {
+  const result = await query<any>(
+    `SELECT st.id AS service_id, st.name, st.code,
+            COALESCE(
+              (SELECT cp.customer_price FROM customer_price_list cp
+                WHERE cp.item_id = ? AND cp.is_active = true
+                  AND cp.service_id = st.id
+                LIMIT 1),
+              (SELECT cp.customer_price FROM customer_price_list cp
+                WHERE cp.item_id = ? AND cp.is_active = true
+                  AND cp.service_id IS NULL
+                LIMIT 1)
+            ) AS price
+       FROM services st
+       JOIN item_service_types m ON m.service_id = st.id
+      WHERE m.item_id = ? AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
+      ORDER BY st.display_order ASC, st.name ASC`,
+    [itemId, itemId, itemId]
+  );
+  return result.rows.map((row) => ({
+    service_id: String(row.service_id),
+    name: row.name,
+    code: row.code,
+    price: row.price === null || row.price === undefined ? null : Number(row.price),
+  }));
+}
+
+export {
+  getCategories, getServices, searchServices, getServiceById,
+  getPopularServices, getItemServiceOptions,
+};
 
