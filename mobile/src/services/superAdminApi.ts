@@ -848,7 +848,12 @@ export interface SaleDetail {
 }
 
 export interface TransactionSummary {
+  /** Everything billed, both kinds of order together. */
   sale: SummaryMetric;
+  /** The part of `sale` placed by a walk-in customer. */
+  sale_customer: SummaryMetric;
+  /** The part of `sale` placed by an establishment. */
+  sale_business: SummaryMetric;
   collection: SummaryMetric;
   product_count: SummaryMetric;
   expense: SummaryMetric;

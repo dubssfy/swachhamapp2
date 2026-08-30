@@ -81,6 +81,56 @@ async function main() {
     `   month ₹${sale?.month?.amount}/${sale?.month?.count}`);
 
   /* ================================================================
+   * 1b. SALE IS SPLIT BY WHO ORDERED, AND THE HALVES ADD UP
+   * ================================================================ */
+  console.log('\n1b. SALE, SPLIT BY CUSTOMER AND BUSINESS');
+
+  const customerSale = summary.json?.data?.sale_customer;
+  const businessSale = summary.json?.data?.sale_business;
+  check('both halves are reported', !!customerSale && !!businessSale);
+
+  for (const period of ['today', 'month', 'year', 'total'] as const) {
+    /*
+     * THE HALVES MUST ADD UP TO THE WHOLE, at every period. This is the
+     * property that makes the split trustworthy: an order counted in neither
+     * half (or in both) would show up here as a mismatch rather than as a
+     * figure nobody could reconcile.
+     */
+    check(`${period}: customer + business = sale`,
+      money(customerSale[period].amount) + money(businessSale[period].amount)
+        === money(sale[period].amount),
+      `${customerSale[period].amount} + ${businessSale[period].amount} `
+        + `= ${sale[period].amount}`);
+    check(`${period}: the counts add up too`,
+      customerSale[period].count + businessSale[period].count === sale[period].count,
+      `${customerSale[period].count} + ${businessSale[period].count} `
+        + `= ${sale[period].count}`);
+  }
+
+  // And each half is what the database says it is, computed independently.
+  const dbSplit = await query<any>(
+    `SELECT CASE WHEN o.business_user_id IS NOT NULL THEN 'B' ELSE 'C' END AS side,
+            COALESCE(SUM(o.total), 0) AS amount, COUNT(*) AS n
+       FROM orders o
+      WHERE o.status <> 'CANCELLED'
+      GROUP BY side`
+  );
+  const expect = { C: { amount: 0, n: 0 }, B: { amount: 0, n: 0 } } as any;
+  for (const row of dbSplit.rows) {
+    expect[row.side] = { amount: money(row.amount), n: Number(row.n) };
+  }
+  check('the customer total matches the database',
+    money(customerSale.total.amount) === expect.C.amount
+      && customerSale.total.count === expect.C.n,
+    `₹${customerSale.total.amount}/${customerSale.total.count} vs `
+      + `₹${expect.C.amount}/${expect.C.n}`);
+  check('the business total matches the database',
+    money(businessSale.total.amount) === expect.B.amount
+      && businessSale.total.count === expect.B.n,
+    `₹${businessSale.total.amount}/${businessSale.total.count} vs `
+      + `₹${expect.B.amount}/${expect.B.n}`);
+
+  /* ================================================================
    * 2. THE LIST ADDS UP TO THE CARD
    * ================================================================ */
   console.log('\n2. THE DETAIL MATCHES THE CARD IT OPENED');

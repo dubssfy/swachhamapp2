@@ -95,6 +95,23 @@ export default function ManagerDashboardScreen({ navigation }: any) {
           <CountTile label="Rejected" value={counts.REJECTED || 0} tone="REJECTED" />
         </View>
 
+        {/* ORDER REQUESTS — bookings from customers and businesses waiting to
+            be accepted. Above "Create a request" because it is work that has
+            arrived, not work the Manager initiates. */}
+        <Text style={sa.label}>ORDER REQUESTS</Text>
+        <Action
+          icon="people-outline"
+          title="Customer Requests"
+          subtitle="Customer bookings awaiting your approval"
+          onPress={() => navigation.navigate('ManagerOrderRequests', { source: 'CUSTOMER' })}
+        />
+        <Action
+          icon="briefcase-outline"
+          title="Business Requests"
+          subtitle="Business bookings awaiting your approval"
+          onPress={() => navigation.navigate('ManagerOrderRequests', { source: 'BUSINESS' })}
+        />
+
         <Text style={sa.label}>CREATE A REQUEST</Text>
         <Action
           icon="business-outline"

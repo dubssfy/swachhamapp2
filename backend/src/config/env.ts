@@ -32,6 +32,15 @@ interface AppConfig {
   OTP_API_KEY: string;
   OTP_SENDER_ID: string;
   BUSINESS_TZ_OFFSET: string;
+  /**
+   * How many reverse proxies sit in front of this server.
+   *
+   * '' or '0' means none, and Express reads the socket address as the client
+   * IP. Behind nginx, a load balancer or a PaaS router it MUST be the number
+   * of hops, or every request appears to come from the proxy and the rate
+   * limiter buckets the entire userbase together.
+   */
+  TRUST_PROXY: string;
 
   // --- GSTIN verification (server-side only) ---
   // The app never sees any of these; it calls our own endpoint instead.
@@ -165,6 +174,14 @@ const config: AppConfig = {
   // Business calendar day used for daily order-number sequences. The DB
   // server runs in UTC, so this offset decides when the day rolls over.
   BUSINESS_TZ_OFFSET: optionalEnv('BUSINESS_TZ_OFFSET', '+05:30'),
+  /*
+   * OFF BY DEFAULT, and deliberately.
+   *
+   * Trusting `X-Forwarded-For` when nothing is actually in front of the
+   * server lets any caller spoof its own IP -- and therefore its own rate
+   * limit bucket. It is opt-in per deployment, set to the number of proxies.
+   */
+  TRUST_PROXY: optionalEnv('TRUST_PROXY', ''),
 
   GST_PROVIDER: optionalEnv('GST_PROVIDER', 'gstinapi'),
   GST_API_KEY: optionalEnv('GST_API_KEY', ''),

@@ -99,7 +99,65 @@ export interface GstLookup {
   message?: string;
 }
 
+/** Which of the Manager's two order tabs a booking belongs to. */
+export type OrderRequestSource = 'CUSTOMER' | 'BUSINESS';
+
+/** One booking waiting for the Manager. It IS the order row, at one status. */
+export interface PendingOrderRequest {
+  id: string;
+  order_number: string;
+  source: OrderRequestSource;
+  customer_name: string;
+  customer_contact: string | null;
+  status: string;
+  total: number;
+  item_count: number;
+  /** Sum of item weight x quantity, as the order stored it. Null when unknown. */
+  total_weight_kg: number | null;
+  laundry_type: string | null;
+  pickup_date: string | null;
+  pickup_slot_start: string | null;
+  pickup_slot_end: string | null;
+  special_notes: string | null;
+  created_at: string;
+}
+
 const managerApi = {
+  /* ---- Order approval: the two request tabs ----
+   *
+   * These read and move the ORDER ITSELF; there is no separate request
+   * record. Accepting one sets its status to ORDER_PLACED, which is what
+   * makes it visible to the Sorter and raises the Rider advisory.
+   */
+
+  /** The bookings waiting in one tab, oldest first. */
+  getOrderRequests: async (source: OrderRequestSource): Promise<PendingOrderRequest[]> => {
+    const res = await apiClient.get<ApiResponse<PendingOrderRequest[]>>(
+      `/api/manager/order-requests/${source.toLowerCase()}`
+    );
+    return res.data.data ?? [];
+  },
+
+  /** How many are waiting in each tab, for the badges. */
+  getOrderRequestCounts: async (): Promise<{ CUSTOMER: number; BUSINESS: number }> => {
+    const res = await apiClient.get<ApiResponse<{ CUSTOMER: number; BUSINESS: number }>>(
+      '/api/manager/order-requests/counts'
+    );
+    return res.data.data ?? { CUSTOMER: 0, BUSINESS: 0 };
+  },
+
+  /**
+   * Accepts one booking. The server owns the rule: it refuses with 409 if the
+   * order has already moved on, and writes ORDER_PLACED plus the history row
+   * in one transaction. Nothing about the order is decided here.
+   */
+  acceptOrderRequest: async (orderId: string): Promise<any> => {
+    const res = await apiClient.post<ApiResponse<any>>(
+      `/api/manager/order-requests/${orderId}/accept`
+    );
+    return res.data.data;
+  },
+
   getSummary: async (): Promise<{ counts: Record<string, number> }> => {
     const res = await apiClient.get<ApiResponse<{ counts: Record<string, number> }>>(
       '/api/manager/summary'

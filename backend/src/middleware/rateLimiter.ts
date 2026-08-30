@@ -16,10 +16,22 @@ const AUTH_MAX_ATTEMPTS = Math.max(
   parseInt(process.env.AUTH_RATE_LIMIT_MAX || '10', 10) || 10
 );
 
-/** The general limiter's ceiling. Default unchanged at 100 per 15 minutes. */
+/**
+ * The general limiter's ceiling, per IP per 15 minutes.
+ *
+ * RAISED FROM 100 TO 600. 100 is a spike guard, not a usage limit, and this
+ * one sits on `app.use` in front of EVERY route: a single customer moving
+ * through categories -> items -> cart -> checkout spends 30-40 requests, and
+ * screens that re-read on focus spend more. At 100 an ordinary session hit
+ * the wall in a few minutes, which is what "too many requests" was.
+ *
+ * The AUTH limiter below is untouched at 10. That one is guarding credentials
+ * against stuffing, where a tight number is the point; this one is only
+ * stopping a runaway client, where it was not.
+ */
 const GENERAL_MAX_REQUESTS = Math.max(
   1,
-  parseInt(process.env.RATE_LIMIT_MAX || '100', 10) || 100
+  parseInt(process.env.RATE_LIMIT_MAX || '600', 10) || 600
 );
 
 const rateLimiter = rateLimit({

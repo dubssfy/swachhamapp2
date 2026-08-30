@@ -51,6 +51,17 @@ type PeriodKey = (typeof PERIODS)[number]['key'];
  */
 const METRICS = [
   { key: 'sale', label: 'SALE', icon: 'bag-handle', tint: '#1FA463', wash: '#E6F5EC' },
+  /*
+   * THE SAME SALE, SPLIT BY WHO ORDERED IT. The two always add up to SALE
+   * above, so they sit immediately after it rather than at the end of the row
+   * where that relationship would not read.
+   *
+   * They share SALE's green: they are the same measure, and giving them
+   * colours of their own would say they were three unrelated figures. The
+   * icon is what tells them apart -- a person and a building.
+   */
+  { key: 'sale_customer', label: 'CUSTOMER SALE', icon: 'person', tint: '#1FA463', wash: '#E6F5EC' },
+  { key: 'sale_business', label: 'BUSINESS SALE', icon: 'business', tint: '#1FA463', wash: '#E6F5EC' },
   { key: 'collection', label: 'COLLECTION', icon: 'card', tint: '#4F6BED', wash: '#EAEEFD' },
   { key: 'product_count', label: 'PRODUCT COUNT', icon: 'cube', tint: '#E8A33D', wash: '#FDF2E1' },
   { key: 'expense', label: 'EXPENSE', icon: 'cash', tint: '#E05252', wash: '#FCEAEA' },
@@ -96,7 +107,12 @@ export default function TransactionSummarySection({ refreshKey }: Props) {
    * otherwise. The threshold is where a quarter-width card stops fitting
    * "₹ 2,608.00/4" without shrinking the type past legibility.
    */
-  const columns = width >= 900 ? 4 : width >= 620 ? 3 : 2;
+  /*
+   * Six metrics now rather than four, so the wide breakpoint carries three
+   * across in two rows instead of four and a stray pair. The narrow case is
+   * unchanged at two.
+   */
+  const columns = width >= 900 ? 3 : width >= 620 ? 3 : 2;
 
   const load = useCallback(async () => {
     setError('');
@@ -176,6 +192,12 @@ export default function TransactionSummarySection({ refreshKey }: Props) {
                    * entirely, and Sale's Year and Total have no drill-down
                    * asked for, so offering a tap that did nothing would be
                    * worse than not offering one.
+                   */
+                  /*
+                   * ONLY THE TOTAL SALE CARD OPENS. The drill-down lists every
+                   * order behind the figure, customer and business together,
+                   * and each row already says which it is -- so opening it
+                   * from a half would show rows that half does not contain.
                    */
                   onPress={
                     metric.key === 'sale'

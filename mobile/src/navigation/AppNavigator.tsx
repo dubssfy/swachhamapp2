@@ -264,6 +264,8 @@ import ManagerDashboardScreen from '../screens/manager/ManagerDashboardScreen';
 import ManagerNewBusinessScreen from '../screens/manager/ManagerNewBusinessScreen';
 import ManagerNewStaffScreen from '../screens/manager/ManagerNewStaffScreen';
 import ManagerRequestsScreen from '../screens/manager/ManagerRequestsScreen';
+import ManagerOrderRequestsScreen
+  from '../screens/manager/ManagerOrderRequestsScreen';
 
 
 // =========================================================
@@ -669,6 +671,10 @@ function ManagerStack() {
       {/* Rider and sorter share a screen; `kind` says which. */}
       <Stack.Screen name="ManagerNewStaff" component={ManagerNewStaffScreen} />
       <Stack.Screen name="ManagerRequests" component={ManagerRequestsScreen} />
+      {/* The two ORDER tabs: Customer Requests and Business Requests. Separate
+          from ManagerRequests above, which is the manager's own account
+          creation requests and is unchanged. */}
+      <Stack.Screen name="ManagerOrderRequests" component={ManagerOrderRequestsScreen} />
     </Stack.Navigator>
   );
 }

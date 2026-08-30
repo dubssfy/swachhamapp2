@@ -8,6 +8,12 @@ import {
   BILLING_CYCLES,
 } from '../services/creationRequest.service';
 import { verifyGstin } from '../services/gstVerification.service';
+import {
+  listPendingOrders,
+  pendingOrderCounts,
+  acceptOrder,
+  RequestSource,
+} from '../services/managerOrderApproval.service';
 import { sendSuccess } from '../utils/response';
 import { authenticate, authorize, AuthenticatedRequest } from '../middleware/auth';
 import { AppError } from '../utils/appError';
@@ -35,6 +41,74 @@ router.use(authorize('MANAGER'));
 
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+
+/* ===================================================================
+ * ORDER APPROVAL — the two request tabs
+ *
+ * A booking is created at PENDING_APPROVAL and waits here. These endpoints
+ * read and move the ORDER ROW ITSELF; there is no request record beside it,
+ * so the order id a Manager accepts is the id the Sorter and the Rider then
+ * work with. See managerOrderApproval.service.
+ *
+ * Behind the same `authenticate` + `authorize('MANAGER')` pair as everything
+ * else on this router.
+ * =================================================================== */
+
+/** The tab, from the path. Only the two sources that exist are accepted. */
+function parseSource(value: unknown): RequestSource {
+  const raw = String(value ?? '').trim().toUpperCase();
+  if (raw === 'CUSTOMER' || raw === 'BUSINESS') return raw;
+  throw new AppError('Source must be either customer or business.', 400);
+}
+
+/**
+ * GET /api/manager/order-requests/counts
+ *
+ * How many are waiting in each tab. Its own endpoint so the tab badges can be
+ * refreshed without pulling both lists.
+ */
+router.get('/order-requests/counts', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    sendSuccess(res, await pendingOrderCounts(), 'Pending order counts fetched');
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/manager/order-requests/:source   (customer | business)
+ *
+ * The bookings waiting in one tab, oldest first — the order they should be
+ * dealt with in.
+ */
+router.get('/order-requests/:source', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rows = await listPendingOrders(parseSource(req.params.source));
+    sendSuccess(res, rows, 'Pending orders fetched');
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/manager/order-requests/:orderId/accept
+ *
+ * Accepts one booking: its status becomes ORDER_PLACED, which is what makes
+ * it visible to the Sorter and raises the Rider advisory. NOTHING ELSE about
+ * the order is touched — no item, price, schedule or address.
+ */
+router.post(
+  '/order-requests/:orderId/accept',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const result = await acceptOrder(req.params.orderId, authReq.user!.id);
+      sendSuccess(res, result, `Order ${result.order_number} accepted`);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /* ---- Dashboard ---- */
 

@@ -20,7 +20,29 @@ import { AppError } from '../utils/appError';
  * A second, drifting definition of "cancellable" in the client is how a
  * Cancel button ends up offered on an order the server then refuses.
  */
-export const CANCELLABLE_STATUSES = ['ORDER_PLACED', 'CONFIRMED', 'RECEIVED_AT_FACILITY'];
+export const CANCELLABLE_STATUSES = [
+  /*
+   * A booking still waiting on a Manager is the MOST cancellable state there
+   * is -- nobody has started on it. It heads the list for that reason.
+   */
+  'PENDING_APPROVAL',
+  'ORDER_PLACED',
+  'CONFIRMED',
+  'RECEIVED_AT_FACILITY',
+];
+
+/**
+ * WHAT A NEW BOOKING IS, BEFORE A MANAGER HAS SEEN IT.
+ *
+ * Orders used to be created as ORDER_PLACED, and that status is exactly what
+ * puts an order in front of the Sorter -- `sorter.service`'s queue is
+ * `status IN (ORDER_PLACED, ...)`. A booking therefore reached the shop floor
+ * the moment it was made, with nobody having agreed to take it on.
+ *
+ * PENDING_APPROVAL is not in that queue, so a pending booking is invisible to
+ * the Sorter without the Sorter query being touched at all. See migration 053.
+ */
+export const PENDING_APPROVAL_STATUS = 'PENDING_APPROVAL';
 
 /** Whether THIS status may be cancelled by the customer. */
 export function canCancelStatus(status: unknown): boolean {
@@ -199,13 +221,38 @@ async function createOrder(
     // change what the order costs.
     const [cartItems]: any = await connection.execute(
       `SELECT ci.service_id, s.name AS service_name, s.unit, ci.quantity,
-              ci.laundry_service_id
+              ci.laundry_service_id,
+              -- The item's own weight, for the order total below. It is the
+              -- SAME column the business order reads; nothing new is stored.
+              s.weight_kg
        FROM cart_items ci
        JOIN services s ON s.id = ci.service_id
        WHERE ci.cart_id = ?`,
       [cart.id]
     );
     if (cartItems.length === 0) throw new Error('Cart is empty');
+
+    /*
+     * THE ORDER'S TOTAL WEIGHT: Σ(item weight × quantity).
+     *
+     * A customer order never wrote this column at all, so every one of them
+     * stored 0.000 and the Manager's Customer Requests tab had nothing to
+     * show. The business order has always computed it; this is the SAME
+     * formula, line-rounded to 3dp first so the stored total is the exact sum
+     * of its lines rather than a re-rounding of them.
+     *
+     * `weight_kg` IS NULL FOR AN ITEM NOBODY HAS WEIGHED, and null contributes
+     * nothing rather than guessing. An order made entirely of such items
+     * totals 0 -- which is a fact about the catalogue, not about this
+     * calculation: no CUSTOMER-scope item currently carries a weight.
+     */
+    const lineWeight = (item: { weight_kg: number | null; quantity: number }) =>
+      Number((Number(item.weight_kg ?? 0) * Number(item.quantity)).toFixed(3));
+    const totalWeightKg = Number(
+      (cartItems as Array<{ weight_kg: number | null; quantity: number }>)
+        .reduce((sum, item) => sum + lineWeight(item), 0)
+        .toFixed(3)
+    );
 
     /*
      * 3) Prices, from the GLOBAL customer price list, PER ITEM AND SERVICE.
@@ -280,10 +327,10 @@ async function createOrder(
       `INSERT INTO orders (
          user_id, address_id, placed_by_mobile, order_number, status, subtotal,
          delivery_charge, delivery_distance_km, delivery_store_id,
-         coupon_discount, coupon_id, total,
+         coupon_discount, coupon_id, total, total_weight_kg,
          payment_method, payment_status, special_notes
        )
-       VALUES (?, ?, ?, ?, 'ORDER_PLACED', ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
+       VALUES (?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
       // `placed_by_mobile` is written ONCE, here, and never updated: changing
       // the profile number later must not rewrite what an order already says.
       [
@@ -300,6 +347,7 @@ async function createOrder(
         discountAmount,
         couponId,
         totalAmount,
+        totalWeightKg,
         paymentMethod,
         input.notes || null,
       ]
@@ -331,10 +379,17 @@ async function createOrder(
       );
     }
 
-    // 7) INSERT order_status_history (ORDER_PLACED)
+    /*
+     * 7) INSERT order_status_history (PENDING_APPROVAL)
+     *
+     * The history starts where the order starts. It reaches ORDER_PLACED when
+     * a Manager accepts it, and `acceptOrder` writes that second row -- so the
+     * trail shows the booking and the decision as two separate events, which
+     * is what they are.
+     */
     await connection.execute(
       `INSERT INTO order_status_history (order_id, status, changed_by, notes)
-       VALUES (?, 'ORDER_PLACED', ?, 'Order placed by customer')`,
+       VALUES (?, 'PENDING_APPROVAL', ?, 'Booked by customer, awaiting manager approval')`,
       [orderId, userId]
     );
 
@@ -376,7 +431,7 @@ async function createOrder(
       id: orderId,
       order_number: orderNumber,
       user_id: userId,
-      status: 'ORDER_PLACED',
+      status: PENDING_APPROVAL_STATUS,
       subtotal,
       delivery_charge,
       discount_amount: discountAmount,
@@ -387,37 +442,41 @@ async function createOrder(
       created_at: new Date(),
     };
 
-    // Fire notifications
+    /*
+     * The booking is ACKNOWLEDGED, not confirmed.
+     *
+     * "Order Placed!" would be untrue here now -- a Manager has not accepted
+     * it yet, and telling the customer it is placed and then showing them a
+     * pending tracker is the contradiction this wording avoids. The
+     * confirmation is sent by `acceptOrder`.
+     */
     await createNotification(
       userId,
       order.id,
-      'ORDER_PLACED',
-      'Order Placed!',
-      `Your order ${order.order_number} has been placed successfully.`
+      'PENDING_APPROVAL',
+      'Booking received',
+      `We have your booking ${order.order_number}. You will hear from us once it is confirmed.`
     );
 
     socketService.emitOrderStatusUpdate(order.id, {
       orderId: order.id,
       orderNumber: order.order_number,
-      status: 'ORDER_PLACED',
+      status: PENDING_APPROVAL_STATUS,
     });
 
     /*
-     * RIDERS NEARBY GET A HEADS-UP — nothing more.
+     * NO RIDER ADVISORY HERE ANY MORE.
      *
-     * No job exists yet and none can be accepted: the order has not been
-     * confirmed by a Sorter, and dispatching work that might still be
-     * rejected would send riders to doors for orders that never happen.
-     * This is the advisory only; the real offer follows the Sorter's
-     * acceptance.
-     *
-     * Deliberately not awaited into the caller's failure path — the
-     * transaction is already committed, so a dispatch problem must never
-     * turn a placed order into a 500. It logs and swallows internally.
+     * It used to fire on creation, which now means riders would be told about
+     * a booking no Manager has agreed to take. `acceptOrder` raises it at the
+     * moment the order becomes ORDER_PLACED instead -- the same call, moved,
+     * not a second one.
      */
-    void notifyNearbyRidersOfNewOrder(order.id);
 
-    logger.info(`[OrderService] Order created: ${order.order_number} for user ${userId}`);
+    logger.info(
+      `[OrderService] Booking created: ${order.order_number} for user ${userId}, `
+      + 'awaiting manager approval'
+    );
     return order;
   } catch (error) {
     await connection.rollback();

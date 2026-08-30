@@ -321,7 +321,17 @@ async function main() {
     );
     eq('...and that is what the database holds, not just what was returned',
       stored.rows[0].order_number, order.order_number);
-    eq('the order is ORDER_PLACED', stored.rows[0].status, 'ORDER_PLACED');
+    /*
+     * A NEW BOOKING IS PENDING_APPROVAL, not ORDER_PLACED.
+     *
+     * This used to assert the opposite. Since migration 053 a booking waits
+     * for a Manager to accept it, and ORDER_PLACED is what that acceptance
+     * writes -- the status is also the Sorter's queue gate, so creating an
+     * order at ORDER_PLACED put it on the shop floor before anyone had agreed
+     * to take it. See managerOrderApproval.service.
+     */
+    eq('a new booking is PENDING_APPROVAL, awaiting a manager',
+      stored.rows[0].status, 'PENDING_APPROVAL');
 
     const pickup = await query<any>(
       `SELECT scheduled_date, time_slot_start, time_slot_end, status

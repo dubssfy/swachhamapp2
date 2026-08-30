@@ -249,6 +249,8 @@ export function canCancelOrder(status: string): boolean {
 
 /** Every status the database can actually hold, in the order it happens. */
 export const CUSTOMER_STATUS_LABELS: Record<string, string> = {
+  /* Booked, and waiting on a Manager to accept it. Migration 053. */
+  PENDING_APPROVAL: 'Awaiting Confirmation',
   ORDER_PLACED: 'Order Placed',
   PICKUP_SCHEDULED: 'Pickup Scheduled',
   PICKUP_ASSIGNED: 'Agent Assigned',
@@ -306,6 +308,18 @@ export interface CustomerStage {
 }
 
 export const CUSTOMER_STAGES: CustomerStage[] = [
+  /*
+   * A booking waits here until a Manager accepts it. Its own rung rather
+   * than folded into Order Placed: the approval step exists precisely
+   * because the two are different states, and showing "Order Placed" for an
+   * order nobody has accepted would state something untrue.
+   */
+  {
+    key: 'PENDING',
+    label: 'Awaiting Confirmation',
+    icon: 'hourglass-outline',
+    statuses: ['PENDING_APPROVAL'],
+  },
   {
     key: 'PLACED',
     label: 'Order Placed',

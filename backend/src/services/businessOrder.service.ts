@@ -323,7 +323,7 @@ async function createOrder(
     // about the laundry itself — no new field was added for it.
     const [orderInsert]: any = await connection.execute(
       `INSERT INTO orders (order_number, business_user_id, placed_by_mobile, laundry_type, order_type, service_type, service_id, status, subtotal, total_weight_kg, total, special_notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'ORDER_PLACED', ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?, ?, ?)`,
       // `placed_by_mobile` is written ONCE, here, and never updated: editing a
       // contact later must not rewrite what an order already says.
       [orderNumber, businessUserId, normaliseMobileOrNull(placedByMobile), cart.laundry_type, cart.order_type, orderServiceType, orderServiceId, subtotal, totalWeightKg, subtotal, schedule.serviceNotes || null]
@@ -362,10 +362,16 @@ async function createOrder(
     // failure here rolls the whole order back rather than half-creating it.
     await generateGarmentsForOrder(String(orderId), connection);
 
-    // Seed the tracking history so progression is real data, not a stub.
+    /*
+     * Seed the tracking history so progression is real data, not a stub.
+     *
+     * It starts at PENDING_APPROVAL, where the order starts. The
+     * ORDER_PLACED row is written by `acceptOrder` when a Manager accepts it,
+     * so the trail shows the booking and the decision as two events.
+     */
     await connection.execute(
       `INSERT INTO order_status_history (order_id, status, notes)
-       VALUES (?, 'ORDER_PLACED', 'Order placed by business')`,
+       VALUES (?, 'PENDING_APPROVAL', 'Booked by business, awaiting manager approval')`,
       [orderId]
     );
 
@@ -406,7 +412,7 @@ async function createOrder(
       laundry_type: cart.laundry_type,
       order_type: cart.order_type,
       service_type: orderServiceType || '',
-      status: 'ORDER_PLACED',
+      status: 'PENDING_APPROVAL',
       total_weight_kg: totalWeightKg,
       pickup: {
         date: schedule.pickupDate,
@@ -771,10 +777,22 @@ async function getOrderForBusiness(
  * phase (ORDER_PLACED). Enforced here, not in the UI, so a direct API call
  * after that point is rejected too.
  */
-const CANCELLABLE_STATUSES = ['ORDER_PLACED'];
+const CANCELLABLE_STATUSES = [
+  // A booking still waiting on a Manager is the most cancellable state there
+  // is: nobody has agreed to it, let alone started on it.
+  'PENDING_APPROVAL',
+  'ORDER_PLACED',
+];
 
 /** UI progression, mapped onto the statuses the orders table already uses. */
 const TRACKING_STAGES: Array<{ key: string; label: string; statuses: string[] }> = [
+  /*
+   * The booking exists and is waiting on a Manager. Its own stage rather than
+   * folded into "Order Placed": the whole point of the approval step is that
+   * the two are different, and a business shown "Order Placed" while nobody
+   * had accepted it would be told something untrue.
+   */
+  { key: 'pending', label: 'Awaiting Confirmation', statuses: ['PENDING_APPROVAL'] },
   { key: 'placed', label: 'Order Placed', statuses: ['ORDER_PLACED'] },
   {
     key: 'confirmed',

@@ -35,6 +35,25 @@ const server = http.createServer(app);
 // Initialize Socket.IO
 socketService.initialize(server);
 
+/**
+ * HOW MANY PROXIES ARE IN FRONT OF US.
+ *
+ * `req.ip` is what the rate limiter buckets by. Behind a reverse proxy,
+ * a load balancer or a PaaS router, the socket address is the PROXY's for
+ * every request -- so without this the whole userbase shares ONE bucket and
+ * the tenth customer in a quarter of an hour is locked out.
+ *
+ * Set from `TRUST_PROXY` rather than hardcoded, and OFF unless a deployment
+ * says otherwise: trusting `X-Forwarded-For` with nothing in front lets any
+ * caller spoof its IP and pick its own bucket. A COUNT OF HOPS, not `true`,
+ * because `true` trusts the whole chain including whatever the client sent.
+ */
+const trustProxyHops = parseInt(config.TRUST_PROXY, 10);
+if (Number.isFinite(trustProxyHops) && trustProxyHops > 0) {
+  app.set('trust proxy', trustProxyHops);
+  console.log(`[Server] Trusting ${trustProxyHops} proxy hop(s) for client IPs`);
+}
+
 // Middleware
 app.use(helmet());
 app.use(cors({ origin: config.CLIENT_URL || '*' }));

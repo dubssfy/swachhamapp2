@@ -7,6 +7,9 @@ import { config } from '../config/env';
  * Four metrics across four periods, each an amount and a count:
  *
  *   SALE           what was billed        SUM(orders.total) / orders
+ *                  ...and the same figure split by who ordered:
+ *                  SALE (CUSTOMER) and SALE (BUSINESS), which always
+ *                  add up to SALE.
  *   COLLECTION     what was received      SUM(receipts)     / receipts
  *   PRODUCT COUNT  what went through      SUM(quantities)   / orders
  *   EXPENSE        what was spent         SUM(expenses)     / expenses
@@ -61,7 +64,12 @@ export interface SummaryMetric {
 }
 
 export interface TransactionSummary {
+  /** Everything billed, both kinds of order together. */
   sale: SummaryMetric;
+  /** The part of `sale` placed by a walk-in customer. */
+  sale_customer: SummaryMetric;
+  /** The part of `sale` placed by an establishment. */
+  sale_business: SummaryMetric;
   collection: SummaryMetric;
   product_count: SummaryMetric;
   expense: SummaryMetric;
@@ -145,11 +153,43 @@ export async function transactionSummary(): Promise<TransactionSummary> {
   const tz = config.BUSINESS_TZ_OFFSET;
   const orderDate = `DATE(CONVERT_TZ(o.created_at, '+00:00', ?))`;
 
-  /* ---- SALE: what was billed ---- */
+  /* ---- SALE: what was billed ----
+   *
+   * THREE FIGURES, FROM THE SAME ROWS. The total, and the same total split by
+   * who placed the order.
+   *
+   * THE SPLIT IS A COLUMN THAT ALREADY EXISTS: an order carries either
+   * `user_id` (a walk-in customer placed it) or `business_user_id` (an
+   * establishment did), which is the same predicate the Manager's two request
+   * tabs and the Sale drill-down already use. Nothing is stored for it.
+   *
+   * Each is its own pass rather than one query with more conditional sums,
+   * because `periodSums` builds a fixed set of columns and its placeholder
+   * count is asserted against them -- three small queries are cheaper to read
+   * than a second column builder.
+   */
   const saleSql = `SELECT ${periodSums(orderDate, 'o.total')}
        FROM orders o
       WHERE o.status <> 'CANCELLED'`;
   const sale = await query<any>(saleSql, tzArgs(saleSql, tz));
+
+  /*
+   * A CUSTOMER ORDER is one with a user and no business. Tested on the column
+   * that is SET as well as the one that is not, so a row carrying neither --
+   * which should not exist -- lands in neither half rather than in both. The
+   * two halves therefore always add up to the total above.
+   */
+  const customerSaleSql = `SELECT ${periodSums(orderDate, 'o.total')}
+       FROM orders o
+      WHERE o.status <> 'CANCELLED'
+        AND o.user_id IS NOT NULL AND o.business_user_id IS NULL`;
+  const customerSale = await query<any>(customerSaleSql, tzArgs(customerSaleSql, tz));
+
+  const businessSaleSql = `SELECT ${periodSums(orderDate, 'o.total')}
+       FROM orders o
+      WHERE o.status <> 'CANCELLED'
+        AND o.business_user_id IS NOT NULL`;
+  const businessSale = await query<any>(businessSaleSql, tzArgs(businessSaleSql, tz));
 
   /* ---- COLLECTION: what was actually received ----
      `business_payment_receipts` is the only record of money coming IN; an
@@ -185,6 +225,8 @@ export async function transactionSummary(): Promise<TransactionSummary> {
 
   return {
     sale: toMetric(sale.rows[0]),
+    sale_customer: toMetric(customerSale.rows[0]),
+    sale_business: toMetric(businessSale.rows[0]),
     collection: toMetric(collection.rows[0]),
     product_count: toMetric(products.rows[0]),
     expense: toMetric(expenses.rows[0]),
