@@ -125,7 +125,9 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id/tracking', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tracking = await getOrderTracking(req.params.id);
+    const authReq = req as AuthenticatedRequest;
+    // Scoped to the signed-in customer, as `GET /:id` beside it already is.
+    const tracking = await getOrderTracking(authReq.user!.id, req.params.id);
     sendSuccess(res, tracking, 'Tracking info fetched successfully');
   } catch (error) {
     next(error);

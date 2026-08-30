@@ -12,6 +12,7 @@ import superAdminApi, {
   BusinessPrice, BusinessCompletenessRow, LaundryTypeValue, LaundryServiceType,
 } from '../../services/superAdminApi';
 import CategoryItemPicker from './CategoryItemPicker';
+import BusinessPriceUploadModal from './BusinessPriceUploadModal';
 import { printPriceListPdf } from './printPriceList';
 
 /**
@@ -300,6 +301,25 @@ export default function SuperAdminBusinessPricesScreen({ navigation, route }: an
                 : `Print ${LAUNDRY_TYPES.find((t) => t.value === laundryType)?.label ?? ''} List`}
             </Text>
           </TouchableOpacity>
+
+          {/* BULK PRICE UPDATE, for ALL the rows below.
+              It sits with Print rather than inside one of the three lists
+              because it is scoped exactly as Print is: the whole price list
+              for this business at this laundry type, not the category the
+              browse pages narrow to. Only the Price column is ever applied —
+              see BusinessPriceUploadModal. */}
+          <View style={{ marginTop: SPACING.sm }}>
+            <BusinessPriceUploadModal
+              businessId={businessId}
+              businessName={business?.business_name ?? ''}
+              laundryType={laundryType}
+              laundryTypeLabel={laundryTypeLabel}
+              unsetCount={unsetCount}
+              /* The counts, the warning and the item picker's exclusions all
+                 read `rows`, so they refresh together after an upload. */
+              onApplied={loadPrices}
+            />
+          </View>
 
           {/* All / Priced / Not set. Each opens its own page — the item list
               lives on SuperAdminBusinessPricesListScreen now. The tapped one

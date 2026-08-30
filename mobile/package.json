@@ -43,7 +43,8 @@
     "typecheck": "tsc --noEmit",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test:notifications": "tsc src/services/requestNotifications.ts --outDir .tmp-rn --module commonjs --target es2019 --moduleResolution node --skipLibCheck --esModuleInterop || true && node scripts/test_request_notifications.js"
   },
   "private": true
 }

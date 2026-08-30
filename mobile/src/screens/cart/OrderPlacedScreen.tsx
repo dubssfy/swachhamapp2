@@ -36,7 +36,28 @@ export default function OrderPlacedScreen({ route, navigation }: any) {
 
   /** Home is a TAB, so it is reached through the navigator's parent. */
   const goHome = () => navigation.getParent()?.navigate('Home') ?? navigation.navigate('Home');
-  const goOrders = () => navigation.getParent()?.navigate('Orders') ?? navigation.navigate('Orders');
+
+  /**
+   * TRACK MY ORDER — this order, by the id the server just returned.
+   *
+   * It used to `navigate('Orders')` and stop at the tab, which showed a list
+   * (and, before that, a placeholder) rather than the order just placed. The
+   * Orders tab is a stack now, so the tracking screen is addressed inside it
+   * and given the real `orderId` — the tracking screen fetches by that id, so
+   * what appears is the order that was actually created.
+   *
+   * Falls back to the tab itself if there is no id to track, which is better
+   * than a screen that would have nothing to fetch.
+   */
+  const goOrders = () => {
+    const parent = navigation.getParent();
+    if (!parent) return navigation.navigate('Orders');
+    if (!orderId) return parent.navigate('Orders');
+    return parent.navigate('Orders', {
+      screen: 'CustomerOrderTracking',
+      params: { orderId: String(orderId), orderNumber },
+    });
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>

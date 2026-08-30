@@ -186,6 +186,48 @@ export const customerOrderApi = {
   },
 
   /**
+   * This customer's orders, newest first.
+   *
+   * `GET /api/orders` is scoped to the signed-in user by the server — the id
+   * comes from the token, never from the client — so there is nothing to pass
+   * and no way to ask for somebody else's.
+   */
+  listOrders: async (page = 1, limit = 20): Promise<{ orders: any[]; total: number }> => {
+    const res = await apiClient.get<ApiResponse<{ orders: any[]; total: number }>>(
+      '/api/orders',
+      { params: { page, limit } }
+    );
+    return res.data.data ?? { orders: [], total: 0 };
+  },
+
+  /**
+   * The tracking view of ONE order: its status, both schedules, and the
+   * history of every status it has been through.
+   *
+   * Scoped to the signed-in customer server-side, like `getOrder`.
+   */
+  getOrderTracking: async (orderId: string): Promise<any> => {
+    const res = await apiClient.get<ApiResponse<any>>(`/api/orders/${orderId}/tracking`);
+    return res.data.data;
+  },
+
+  /**
+   * Cancels one order, through the existing endpoint.
+   *
+   * The server owns the rule: it re-checks the status, refuses with 409 and a
+   * readable reason when the order has moved past cancelling, writes the
+   * CANCELLED status and records it in `order_status_history`. Nothing is
+   * decided here — the caller re-reads the order afterwards.
+   */
+  cancelOrder: async (orderId: string, reason?: string): Promise<any> => {
+    const res = await apiClient.post<ApiResponse<any>>(
+      `/api/orders/${orderId}/cancel`,
+      reason ? { reason } : {}
+    );
+    return res.data.data;
+  },
+
+  /**
    * The pickup windows bookable on a given day.
    *
    * The list is the SERVER'S — the same one the business flow books against.

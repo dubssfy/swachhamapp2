@@ -26,7 +26,7 @@ import { panFromGstin } from '../services/creationRequest.service';
 import { renderInvoicePdf, invoiceFileName } from '../services/invoicePdf.service';
 import { recordInvoice } from '../services/invoiceHistory.service';
 import { createCatalogueItem } from '../services/priceList.service';
-import { transactionSummary } from '../services/transactionSummary.service';
+import { transactionSummary, saleDetail } from '../services/transactionSummary.service';
 import priceRoutes from './superAdminPrice.routes';
 import requestRoutes from './superAdminRequest.routes';
 import accountRoutes from './superAdminAccounts.routes';
@@ -127,6 +127,36 @@ router.get('/transaction-summary', async (_req: Request, res: Response, next: Ne
     next(error);
   }
 });
+
+/**
+ * GET /api/super-admin/transaction-summary/sale?period=today|month
+ *
+ * The ORDERS BEHIND a Sale card: who each one is for, and what it came to.
+ * Opened by tapping Today Sale or Current Month Sale on the home page.
+ *
+ * Nothing new is computed here. It is the same `orders` rows the Sale card
+ * already sums, under the same `status <> 'CANCELLED'` filter and the same
+ * business-timezone day, so the list adds up to the card that opened it --
+ * see `saleDetail`.
+ *
+ * Only the two periods that are clickable are accepted. `year` and `total`
+ * are refused rather than quietly answered, so a mistyped link cannot return
+ * a list nothing on screen claims to be about.
+ */
+router.get(
+  '/transaction-summary/sale',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const period = String(req.query.period ?? '').trim().toLowerCase();
+      if (period !== 'today' && period !== 'month') {
+        throw new AppError('Period must be either today or month.', 400);
+      }
+      sendSuccess(res, await saleDetail(period), 'Sale detail fetched');
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /* ---- Sales ---- */
 

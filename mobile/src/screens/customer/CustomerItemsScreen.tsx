@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator,
   RefreshControl, Modal, TextInput,
@@ -11,6 +11,7 @@ import customerCartApi, {
   customerCatalogueApi, CustomerItem, ItemServiceOption,
 } from '../../services/customerCartApi';
 import CartIconButton from './CartIconButton';
+import { useCartFly } from '../../components/CartFlyOverlay';
 
 /**
  * The items in one category, and the sheet that adds one to the cart.
@@ -192,6 +193,10 @@ function AddToCartSheet({
       .finally(() => setLoading(false));
   }, [item]);
 
+  /** The button the bag flies FROM, and the overlay it flies in. */
+  const addBtnRef = useRef<View>(null);
+  const { flyToCart } = useCartFly();
+
   const selected = options.find((o) => o.service_id === serviceId) || null;
   const qty = Math.max(1, Math.floor(Number(quantity) || 0));
   const unitPrice = selected?.price ?? null;
@@ -207,9 +212,30 @@ function AddToCartSheet({
     if (!item || problem || saving) return;
     setSaving(true);
     setError('');
+    /*
+     * WHERE THE BAG STARTS — measured NOW, while the button is still on
+     * screen. `onAdded` closes this sheet, so measuring afterwards would
+     * measure a view that is being torn down.
+     */
+    let from: { x: number; y: number } | null = null;
+    await new Promise<void>((resolve) => {
+      if (!addBtnRef.current) return resolve();
+      addBtnRef.current.measureInWindow((x, y, width, height) => {
+        if (typeof x === 'number' && typeof y === 'number') {
+          from = { x: x + width / 2, y: y + height / 2 };
+        }
+        resolve();
+      });
+    });
     try {
       await customerCartApi.addItem(item.id, qty, serviceId);
       onAdded();
+      /*
+       * ONLY ONCE THE SERVER HAS IT. The bag says "this is in your cart", so
+       * animating before the call returned would say it of an item that might
+       * still fail to be added.
+       */
+      if (from) flyToCart(from);
     } catch (e: any) {
       setError(e?.response?.data?.message || e.message || 'Could not add this item');
     } finally {
@@ -316,6 +342,7 @@ function AddToCartSheet({
                 {!!problem && <Text style={styles.problem}>{problem}</Text>}
 
                 <TouchableOpacity
+                  ref={addBtnRef}
                   style={[styles.addBtn, (!!problem || saving) && styles.addBtnDisabled]}
                   onPress={add}
                   disabled={!!problem || saving}

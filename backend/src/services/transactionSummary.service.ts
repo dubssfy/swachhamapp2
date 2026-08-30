@@ -192,3 +192,128 @@ export async function transactionSummary(): Promise<TransactionSummary> {
   };
 }
 
+
+/* ===================================================================
+ * SALE DETAIL — the orders behind a Sale card
+ *
+ * WHY IT LIVES HERE, beside `transactionSummary`. The card and the list have
+ * to agree to the rupee, and the only way to guarantee that is for both to
+ * apply the same predicate and the same date expressions. Written in another
+ * module they would be two definitions of "today's sale", and the day one of
+ * them changed is the day the list stops adding up to the card above it.
+ *
+ * It reuses, unchanged:
+ *   - `status <> 'CANCELLED'`, the SALE metric's own filter
+ *   - `TODAY` / `MONTH_START`, the same fragments the grid cuts periods on
+ *   - the business timezone, so "today" means today where the business is
+ * =================================================================== */
+
+/** Which Sale card was opened. */
+export type SalePeriod = 'today' | 'month';
+
+export interface SaleDetailRow {
+  order_id: string;
+  order_number: string;
+  /** The establishment, or the customer. See the COALESCE below. */
+  name: string;
+  /** 'BUSINESS' or 'CUSTOMER', so the list can label the two apart. */
+  party_type: 'BUSINESS' | 'CUSTOMER';
+  /** `orders.total` — the same column the Sale card sums. */
+  amount: number;
+  created_at: string;
+}
+
+export interface SaleDetail {
+  period: SalePeriod;
+  rows: SaleDetailRow[];
+  /**
+   * The list's own total and count.
+   *
+   * Returned rather than left to the client to add up, so the detail view can
+   * show the same pair the card does without re-implementing the arithmetic.
+   */
+  total_amount: number;
+  count: number;
+  as_of: string;
+}
+
+/**
+ * The orders behind the Today or Current Month Sale card.
+ *
+ * THE NAME COMES FROM THE DATA THAT ALREADY EXISTS. An order is either an
+ * establishment's (`business_user_id` -> `business_users` -> `businesses`) or
+ * a customer's (`user_id` -> `users`) — the same join `dispatch.service`
+ * already resolves a pickup contact through, and the same
+ * `COALESCE(NULLIF(TRIM(establishment_name), ''), name)` the business listings
+ * use. No new column, and nothing is written.
+ *
+ * The customer fallback chain ends at the mobile number the order was placed
+ * from: a customer signs in by OTP and may never have set a name, and a blank
+ * cell in a money list is worse than the number they are known by.
+ */
+export async function saleDetail(period: SalePeriod): Promise<SaleDetail> {
+  const tz = config.BUSINESS_TZ_OFFSET;
+  const orderDate = `DATE(CONVERT_TZ(o.created_at, '+00:00', ?))`;
+
+  /*
+   * TODAY is one day; MONTH is the first of the month THROUGH today. `>=` on
+   * its own is what the grid uses and is right here too: a row cannot be
+   * created later than now, so there is no future edge to exclude.
+   */
+  const dateTest = period === 'today'
+    ? `${orderDate} = ${TODAY}`
+    : `${orderDate} >= ${MONTH_START}`;
+
+  const sql =
+    `SELECT o.id AS order_id, o.order_number, o.total AS amount, o.created_at,
+            CASE WHEN o.business_user_id IS NOT NULL THEN 'BUSINESS' ELSE 'CUSTOMER' END
+              AS party_type,
+            COALESCE(
+              NULLIF(TRIM(COALESCE(NULLIF(TRIM(b.establishment_name), ''), b.name)), ''),
+              NULLIF(TRIM(u.name), ''),
+              NULLIF(TRIM(o.placed_by_mobile), ''),
+              NULLIF(TRIM(u.mobile_number), ''),
+              CONCAT('Order ', o.order_number)
+            ) AS name
+       FROM orders o
+       LEFT JOIN users u           ON u.id = o.user_id
+       LEFT JOIN business_users bu ON bu.id = o.business_user_id
+       LEFT JOIN businesses b      ON b.id = bu.business_id
+      WHERE o.status <> 'CANCELLED'
+        AND ${dateTest}
+      ORDER BY o.created_at DESC, o.id DESC`;
+
+  // Two placeholders: the row's own date expression, and the "now" inside
+  // TODAY / MONTH_START. Both are the timezone.
+  const found = (sql.match(/\?/g) || []).length;
+  if (found !== 2) {
+    throw new Error(
+      `Sale detail: expected 2 placeholders, found ${found}. ` +
+      'The date fragment changed without the argument count following it.'
+    );
+  }
+
+  const result = await query<any>(sql, Array(found).fill(tz));
+
+  const rows: SaleDetailRow[] = result.rows.map((row) => ({
+    order_id: String(row.order_id),
+    order_number: String(row.order_number ?? ''),
+    name: String(row.name ?? ''),
+    party_type: row.party_type === 'BUSINESS' ? 'BUSINESS' : 'CUSTOMER',
+    amount: money(row.amount),
+    created_at: row.created_at,
+  }));
+
+  const asOf = await query<{ d: string }>(
+    `SELECT DATE_FORMAT(DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?)), '%Y-%m-%d') AS d`,
+    [tz]
+  );
+
+  return {
+    period,
+    rows,
+    total_amount: money(rows.reduce((sum, row) => sum + row.amount, 0)),
+    count: rows.length,
+    as_of: asOf.rows[0]?.d ?? '',
+  };
+}

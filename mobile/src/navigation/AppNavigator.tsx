@@ -68,6 +68,8 @@ import CartScreen
 
 import CustomerOrdersScreen
   from '../screens/orders/CustomerOrdersScreen';
+import CustomerOrderTrackingScreen
+  from '../screens/orders/CustomerOrderTrackingScreen';
 
 import CheckoutScreen
   from '../screens/cart/CheckoutScreen';
@@ -193,6 +195,10 @@ import LiquidGlassTabBar from '../components/LiquidGlassTabBar';
 import SwachhamChatbot from '../components/chat/SwachhamChatbot';
 import { useChatStore } from '../store/chatStore';
 
+/* The add-to-cart bag animation. Mounted once, above every screen — see
+   CartFlyOverlay for why it lives here rather than on a screen. */
+import { CartFlyProvider } from '../components/CartFlyOverlay';
+
 import SignInPasswordScreen from '../screens/auth/SignInPasswordScreen';
 import ServiceCategoryScreen from '../screens/home/ServiceCategoryScreen';
 /* The CUSTOMER app's own screens. Separate from the shared HomeScreen, which
@@ -307,6 +313,36 @@ function CartStack() {
   );
 }
 
+/**
+ * The Orders tab, as a STACK.
+ *
+ * It was the bare `CustomerOrdersScreen`, which is why tracking had nowhere
+ * to go: with no stack under the tab there was no screen to push an order
+ * onto. The list stays the tab's first screen, so the tab itself is
+ * unchanged; tracking is pushed on top of it and Back returns to the list.
+ */
+function CustomerOrdersStack() {
+  return (
+    <Stack.Navigator
+      screenOptions={{
+        headerShown: false,
+      }}
+    >
+
+      <Stack.Screen
+        name="CustomerOrdersScreen"
+        component={CustomerOrdersScreen}
+      />
+
+      <Stack.Screen
+        name="CustomerOrderTracking"
+        component={CustomerOrderTrackingScreen}
+      />
+
+    </Stack.Navigator>
+  );
+}
+
 
 // =========================================================
 // CUSTOMER TABS
@@ -375,7 +411,7 @@ function MainTab() {
 
         <Tab.Screen
           name="Orders"
-          component={CustomerOrdersScreen}
+          component={CustomerOrdersStack}
         />
 
         <Tab.Screen
@@ -763,6 +799,10 @@ export default function AppNavigator() {
 
   return (
 
+    /* The bag overlay wraps the navigator so it is drawn above every screen
+       and survives navigation. It renders nothing until an Add to Cart is
+       pressed, and never takes touches. */
+    <CartFlyProvider>
     <NavigationContainer>
 
       <Stack.Navigator
@@ -1067,5 +1107,6 @@ export default function AppNavigator() {
       </Stack.Navigator>
 
     </NavigationContainer>
+    </CartFlyProvider>
   );
 }

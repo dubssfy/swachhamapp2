@@ -60,11 +60,22 @@ const DEFECT_PHOTO_PATH = /^\/api\/sorter\/orders\/[^/]+\/defect$/;
  */
 const WALKING_ORDER_PATH =
   /^\/api\/super-admin\/business-account\/[^/]+\/walking-orders\/(preview|import)$/;
+/**
+ * The Business Price List bulk price update, which carries a base64
+ * spreadsheet. Same treatment and the same reason as the two above: this
+ * parser runs first and would reject the body with 413 before the route's own
+ * parser saw it, so the path is skipped HERE and parsed in
+ * superAdminPrice.routes.ts.
+ */
+const PRICE_UPLOAD_PATH =
+  /^\/api\/super-admin\/prices\/businesses\/[^/]+\/price-upload(\/preview)?$/;
 
 app.use((req, res, next) => {
   if (
     req.method === 'POST' &&
-    (DEFECT_PHOTO_PATH.test(req.path) || WALKING_ORDER_PATH.test(req.path))
+    (DEFECT_PHOTO_PATH.test(req.path) ||
+      WALKING_ORDER_PATH.test(req.path) ||
+      PRICE_UPLOAD_PATH.test(req.path))
   ) {
     return next();
   }

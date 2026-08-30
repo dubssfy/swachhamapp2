@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, RefreshControl, TouchableOpacity, ActivityIndicator,
 } from 'react-native';
@@ -12,9 +12,13 @@ import {
 import RevenueLineChart from '../../components/charts/RevenueLineChart';
 import TransactionSummarySection from './TransactionSummarySection';
 import superAdminApi, {
-  SalesSummary, SalesTimeseries, BusinessCompletenessRow,
+  SalesSummary, SalesTimeseries, BusinessCompletenessRow, CreationRequest,
 } from '../../services/superAdminApi';
 import { useAuthStore } from '../../store/authStore';
+import RequestNotificationPopup from './RequestNotificationPopup';
+import {
+  detectNewRequests, markSectionSeen, RequestAlert, RequestType,
+} from '../../services/requestNotifications';
 
 /**
  * Super admin landing page.
@@ -34,21 +38,67 @@ export default function SuperAdminDashboardScreen({ navigation }: any) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
 
+  /* ------------------------------------------- new-request notifications */
+
+  /**
+   * Unseen counts per request section, and the toasts currently on screen.
+   *
+   * BUSINESS, RIDER AND SORTER ONLY — those are the request types that exist
+   * (`creation_requests.request_type` is an enum of exactly those three). The
+   * Managers tile beside them opens an account screen, not a request queue,
+   * so it has nothing to count and gets no badge.
+   */
+  const [badges, setBadges] = useState<Record<RequestType, number>>({
+    BUSINESS: 0, RIDER: 0, SORTER: 0,
+  });
+  const [alerts, setAlerts] = useState<RequestAlert[]>([]);
+  /** The pending list the counts were derived from, so "seen" marks the same rows. */
+  const pendingRef = useRef<CreationRequest[]>([]);
+
+  /**
+   * Opens a section and marks it read.
+   *
+   * The navigation is the SAME call the tile already made — same route, same
+   * `type` param. Marking read writes a local marker only: no request is
+   * approved, rejected or altered by opening or dismissing a notification.
+   */
+  const openRequests = useCallback(async (type: RequestType) => {
+    setAlerts((current) => current.filter((alert) => alert.type !== type));
+    setBadges((current) => ({ ...current, [type]: 0 }));
+    await markSectionSeen(type, pendingRef.current);
+    navigation.navigate('SuperAdminRequests', { type });
+  }, [navigation]);
+
   const load = useCallback(async () => {
     setError('');
     try {
-      const [s, t, pb, pr, inc] = await Promise.all([
+      /*
+       * The pending requests ride along in the call this screen already
+       * makes. `GET /requests?status=PENDING` is the same endpoint the
+       * Requests screen reads — no new API, and no separate poll: detection
+       * happens on focus and on pull-to-refresh, which is the refresh
+       * mechanism this dashboard already had.
+       */
+      const [s, t, pb, pr, inc, requests] = await Promise.all([
         superAdminApi.getSalesSummary(),
         superAdminApi.getSalesTimeseries(undefined, undefined, 'day'),
         superAdminApi.getBusinessApprovals('PENDING'),
         superAdminApi.getRiderApprovals('PENDING'),
         superAdminApi.listBusinesses(true),
+        superAdminApi.getRequests({ status: 'PENDING' }),
       ]);
       setSummary(s);
       setSeries(t);
       setPendingBusinesses(pb.length);
       setPendingRiders(pr.length);
       setIncomplete(inc);
+
+      pendingRef.current = requests;
+      const detected = await detectNewRequests(requests);
+      setBadges(detected.badges);
+      // Replaced rather than appended: a type whose requests have all been
+      // read should lose its card, not keep an old one beside the new.
+      if (detected.alerts.length > 0) setAlerts(detected.alerts);
     } catch (e: any) {
       setError(e?.response?.data?.message || e.message || 'Could not load the dashboard');
     } finally {
@@ -224,20 +274,26 @@ export default function SuperAdminDashboardScreen({ navigation }: any) {
           <ActionTile
             icon="business-outline"
             label="Business requests"
-            onPress={() => navigation.navigate('SuperAdminRequests', { type: 'BUSINESS' })}
+            badge={badges.BUSINESS}
+            onPress={() => openRequests('BUSINESS')}
           />
           <ActionTile
             icon="bicycle-outline"
             label="Rider requests"
-            onPress={() => navigation.navigate('SuperAdminRequests', { type: 'RIDER' })}
+            badge={badges.RIDER}
+            onPress={() => openRequests('RIDER')}
           />
         </View>
         <View style={styles.row}>
           <ActionTile
             icon="shirt-outline"
             label="Sorter requests"
-            onPress={() => navigation.navigate('SuperAdminRequests', { type: 'SORTER' })}
+            badge={badges.SORTER}
+            onPress={() => openRequests('SORTER')}
           />
+          {/* Managers is an ACCOUNT screen, not a request queue — there is no
+              MANAGER request type — so it keeps its plain tile and its own
+              navigation, unchanged. */}
           <ActionTile
             icon="people-outline"
             label="Managers"
@@ -324,6 +380,16 @@ export default function SuperAdminDashboardScreen({ navigation }: any) {
           <Ionicons name="chevron-forward" size={18} color={COLORS.TextSecondary} />
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Over the scroll view, so a toast arriving never pushes the dashboard
+          around. Each card opens its own section or dismisses itself; neither
+          touches the request. */}
+      <RequestNotificationPopup
+        alerts={alerts}
+        onOpen={(alert) => openRequests(alert.type)}
+        onDismiss={(alert) =>
+          setAlerts((current) => current.filter((a) => a.type !== alert.type))}
+      />
     </SafeAreaView>
   );
 }
@@ -339,11 +405,27 @@ function QueueTile({ icon, label, count, onPress }: any) {
   );
 }
 
-function ActionTile({ icon, label, onPress }: any) {
+/**
+ * A dashboard tile.
+ *
+ * `badge` is optional, and a tile without one renders exactly as it always
+ * did — the count is an extra element, not a change to the tile.
+ */
+function ActionTile({ icon, label, onPress, badge }: any) {
+  const count = Number(badge) || 0;
   return (
     <TouchableOpacity style={styles.tile} onPress={onPress}>
       <Ionicons name={icon} size={22} color={COLORS.Primary} />
       <Text style={styles.actionLabel}>{label}</Text>
+      {/* Zero is absent, not a grey "0": a badge is for something waiting. */}
+      {count > 0 && (
+        <View
+          style={styles.tileBadge}
+          accessibilityLabel={`${count} new`}
+        >
+          <Text style={styles.tileBadgeText}>{count > 99 ? '99+' : count}</Text>
+        </View>
+      )}
     </TouchableOpacity>
   );
 }
@@ -363,6 +445,24 @@ const styles = StyleSheet.create({
     fontWeight: 'bold', color: COLORS.TextPrimary,
   },
   iconBtn: { padding: SPACING.sm },
+  tileBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 5,
+    borderRadius: 9,
+    backgroundColor: COLORS.Error,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tileBadgeText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: 10,
+    fontWeight: '800',
+    color: COLORS.Surface,
+  },
   card: {
     backgroundColor: COLORS.Surface, borderRadius: BORDER_RADIUS.lg,
     padding: SPACING.md, marginBottom: SPACING.md,

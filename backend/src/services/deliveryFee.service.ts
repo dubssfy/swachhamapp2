@@ -17,10 +17,16 @@ import { query } from '../config/database';
  * the only rule that can be stated to a customer in one line. Rounding to the
  * nearest would make 10.4 km free and 10.6 km ₹7, which reads as arbitrary.
  *
- * WHAT THE DISTANCE IS MEASURED BETWEEN. The pickup point and the NEAREST
- * active Swachham branch — the one that would actually collect. Measuring
- * from a single fixed depot would charge a Chiplun customer for the distance
- * to Ratnagiri when Chiplun has its own branch 2 km away.
+ * WHAT THE DISTANCE IS MEASURED BETWEEN. THE LAUNDRY and the pickup point.
+ * The laundry is a FIXED ORIGIN — `LAUNDRY_ORIGIN` below — because there is
+ * one facility that actually does the work, and every collection is a run out
+ * from it and back.
+ *
+ * This replaced a "nearest active branch" lookup over the `stores` table.
+ * That measured to whichever of six rows happened to be closest to the
+ * customer, so a customer near Chiplun was quoted against Chiplun even though
+ * the laundry that would collect, wash and return their clothes is the one
+ * below. The charge has to be measured from where the van actually starts.
  *
  * It is a great-circle distance, not a road distance: it needs no routing
  * service, it can never exceed the real drive, and it is stable — the same
@@ -32,6 +38,21 @@ import { query } from '../config/database';
  * function of what was in the basket rather than of where it had to go.
  */
 
+/**
+ * THE LAUNDRY. Every customer delivery distance is measured from this point.
+ *
+ * It is the facility itself, not a branch row and not the device's own fix:
+ * a distance measured from the phone would quote a different charge for the
+ * same address depending on where the customer happened to be standing.
+ */
+export const LAUNDRY_ORIGIN = {
+  latitude: 17.724384133253267,
+  longitude: 73.19915386664937,
+} as const;
+
+/** What the quote calls the origin, where it used to name a branch. */
+export const LAUNDRY_NAME = 'Swachham Laundry';
+
 /** Kilometres that cost nothing. Inclusive: exactly 10 km is free. */
 export const FREE_DELIVERY_KM = 10;
 
@@ -41,10 +62,15 @@ export const RATE_PER_KM = 7;
 export interface DeliveryQuote {
   /** Rupees. 0 within the free radius. */
   charge: number;
-  /** Great-circle km to the nearest branch, 1 dp. Null when unknown. */
+  /** Great-circle km from the laundry, 1 dp. Null when unknown. */
   distance_km: number | null;
-  /** The branch the distance was measured to. Null when unknown. */
+  /**
+   * Always null now: the origin is the laundry itself, not one of the
+   * `stores` rows. Kept on the shape because `orders.delivery_store_id` is
+   * written from it and older orders still carry a branch id there.
+   */
   store_id: string | null;
+  /** The origin the distance was measured from. Null when unknown. */
   store_name: string | null;
   /** False when there was no location to measure from — see `UNKNOWN`. */
   resolved: boolean;
@@ -93,11 +119,32 @@ export function chargeForDistance(distanceKm: number): number {
 }
 
 /**
+ * Great-circle kilometres between two points. 6371 km is the mean Earth
+ * radius; the `LEAST(1, ...)` guard is the floating-point clamp that keeps
+ * `acos` in domain for two points that are effectively the same.
+ */
+function haversineKm(
+  fromLat: number,
+  fromLon: number,
+  toLat: number,
+  toLon: number
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const cos =
+    Math.cos(toRad(fromLat)) *
+      Math.cos(toRad(toLat)) *
+      Math.cos(toRad(toLon) - toRad(fromLon)) +
+    Math.sin(toRad(fromLat)) * Math.sin(toRad(toLat));
+  return 6371 * Math.acos(Math.min(1, Math.max(-1, cos)));
+}
+
+/**
  * Quotes the delivery charge for a pickup point.
  *
- * The nearest branch is found in SQL with the haversine formula, so the
- * ordering happens in the database rather than by reading every store row.
- * 6371 km is the mean Earth radius.
+ * MEASURED FROM `LAUNDRY_ORIGIN`, the one facility that collects. It used to
+ * run a nearest-branch query over `stores`; the origin is fixed now, so there
+ * is nothing to search and the arithmetic is done here rather than in SQL —
+ * one fewer round trip, and the formula is testable without a database.
  */
 export async function quoteForPoint(
   latitude: unknown,
@@ -105,28 +152,12 @@ export async function quoteForPoint(
 ): Promise<DeliveryQuote> {
   if (!usable(latitude, longitude)) return UNKNOWN;
 
-  const result = await query<{ id: string; name: string; distance_km: string }>(
-    `SELECT id, name,
-            (6371 * ACOS(
-               LEAST(1.0,
-                 COS(RADIANS(?)) * COS(RADIANS(latitude)) *
-                 COS(RADIANS(longitude) - RADIANS(?)) +
-                 SIN(RADIANS(?)) * SIN(RADIANS(latitude))
-               )
-             )) AS distance_km
-       FROM stores
-      WHERE is_active = true AND latitude IS NOT NULL AND longitude IS NOT NULL
-      ORDER BY distance_km ASC
-      LIMIT 1`,
-    [latitude, longitude, latitude]
+  const distance = haversineKm(
+    LAUNDRY_ORIGIN.latitude,
+    LAUNDRY_ORIGIN.longitude,
+    Number(latitude),
+    Number(longitude)
   );
-
-  const nearest = result.rows[0];
-  // No branch has coordinates: there is nothing to measure to, and inventing
-  // a distance would be worse than saying it is not known.
-  if (!nearest) return UNKNOWN;
-
-  const distance = Number(nearest.distance_km);
   if (!Number.isFinite(distance)) return UNKNOWN;
 
   /*
@@ -144,8 +175,15 @@ export async function quoteForPoint(
   return {
     charge: chargeForDistance(shown),
     distance_km: shown,
-    store_id: String(nearest.id),
-    store_name: nearest.name,
+    /*
+     * NO BRANCH ROW ANY MORE. The distance is measured from the laundry
+     * itself, which is not one of the `stores` rows, so there is no id to
+     * report. `orders.delivery_store_id` therefore stores NULL from here on;
+     * it has no foreign key, nothing reads it back, and the figure that
+     * actually explains the bill — `delivery_distance_km` — is still written.
+     */
+    store_id: null,
+    store_name: LAUNDRY_NAME,
     resolved: true,
     free_up_to_km: FREE_DELIVERY_KM,
     rate_per_km: RATE_PER_KM,

@@ -1,4 +1,4 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import {
   listCustomerPrices,
   getCustomerPriceById,
@@ -23,7 +23,14 @@ import {
   renderPriceListPdf,
   PriceListDocument,
 } from '../services/priceListPdf.service';
+import {
+  buildBusinessPriceTemplate,
+  previewBusinessPriceUpload,
+  applyBusinessPriceUpload,
+} from '../services/businessPriceImport.service';
+import { parseLaundryType } from '../services/priceList.service';
 import { sendSuccess } from '../utils/response';
+import { AppError } from '../utils/appError';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { logger } from '../utils/logger';
 
@@ -47,6 +54,26 @@ const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 
 const asBool = (value: unknown): boolean => String(value ?? '').toLowerCase() === 'true';
+
+/**
+ * The parser for the two bulk price-update uploads.
+ *
+ * A base64 spreadsheet does not fit the app-wide 100kb JSON limit, so
+ * `server.ts` skips these paths and they are parsed here instead -- the same
+ * arrangement the defect photo and the walking-order import already use. 12mb
+ * is far more than a few thousand rows of names and prices needs, and it
+ * applies to these two routes alone.
+ */
+const priceUploadBody = express.json({ limit: '12mb' });
+
+/** The base64 .xlsx off the request, or the reason it is not usable. */
+function requireUploadedFile(body: any): string {
+  const file = asString(body?.file_base64);
+  if (!file) {
+    throw new AppError('An Excel file is required.', 400);
+  }
+  return file;
+}
 
 /**
  * Writes a finished price-list document out as a PDF download.
@@ -341,6 +368,114 @@ router.get(
       );
 
       sendPriceListPdf(res, document, pdf);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/* -------------------------------------------------------------------
+ * BULK PRICE UPDATE — download the rate card, edit Price, upload it back
+ *
+ * ORDER MATTERS, for the same reason as `price-list.pdf` above: all three
+ * paths below sit under '/businesses/:businessId/...' and Express matches in
+ * registration order, so '/businesses/:businessId/:priceId' would otherwise
+ * read "price-template.xlsx" as a price id and answer 404.
+ *
+ * The BUSINESS and the LAUNDRY TYPE are in the URL and the body, never in the
+ * spreadsheet: both are chosen on the screen and are what the whole upload
+ * belongs to. A column for either would let one file re-price the wrong
+ * establishment. See businessPriceImport.service.ts.
+ * ------------------------------------------------------------------- */
+
+/**
+ * GET /api/super-admin/prices/businesses/:businessId/price-template.xlsx
+ *        ?laundry_type=hotel|guest&include_unset=true
+ *
+ * This business's price list at this laundry type, as the editable sheet:
+ * Main Category | Subcategory | Service Type | Item Name | Price, with the
+ * current price already filled in. Its four identifying columns therefore
+ * hold values that already exist and will match on the way back.
+ *
+ * `include_unset` adds the lines this business has no rate for, with a blank
+ * Price to be filled in -- the same flag, and the same default, as the printed
+ * rate card above. Off by default because a blank Price is a rejected row on
+ * the way back in; see buildBusinessPriceTemplate.
+ */
+router.get(
+  '/businesses/:businessId/price-template.xlsx',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      // Required rather than defaulted: the sheet IS one laundry type's rate
+      // card, and a Super Admin who meant Guest must not be handed Hotel.
+      const laundryType = parseLaundryType(req.query.laundry_type);
+      const { file, fileName } = await buildBusinessPriceTemplate(
+        req.params.businessId,
+        laundryType,
+        { includeUnset: asBool(req.query.include_unset) }
+      );
+
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', String(file.length));
+      res.end(file);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/super-admin/prices/businesses/:businessId/price-upload/preview
+ *   { laundry_type, file_base64 }
+ *
+ * Validates the whole sheet and reports exactly what WOULD change. Writes
+ * nothing. Row-level problems come back as a list rather than as one failure,
+ * so every one of them can be fixed in a single pass.
+ */
+router.post(
+  '/businesses/:businessId/price-upload/preview',
+  priceUploadBody,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const laundryType = parseLaundryType(req.body?.laundry_type);
+      const result = await previewBusinessPriceUpload(
+        req.params.businessId,
+        laundryType,
+        requireUploadedFile(req.body)
+      );
+      sendSuccess(res, result, 'Price list validated');
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/super-admin/prices/businesses/:businessId/price-upload
+ *   { laundry_type, file_base64 }
+ *
+ * Applies the prices. The sheet is re-validated here rather than trusting the
+ * preview, and the accepted rows are written in one transaction.
+ */
+router.post(
+  '/businesses/:businessId/price-upload',
+  priceUploadBody,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const laundryType = parseLaundryType(req.body?.laundry_type);
+      const result = await applyBusinessPriceUpload(
+        req.params.businessId,
+        laundryType,
+        requireUploadedFile(req.body),
+        // Who did it. The service writes the audit line, with the counts —
+        // logging it here as well would only double every entry.
+        (req as AuthenticatedRequest).user!.id
+      );
+      sendSuccess(res, result, 'Price List Upload Completed');
     } catch (error) {
       next(error);
     }

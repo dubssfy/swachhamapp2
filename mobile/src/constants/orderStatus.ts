@@ -224,3 +224,141 @@ export function getProductionStatusDef(status: string): OrderStatusDef | undefin
 export function canCancelOrder(status: string): boolean {
   return ['ORDER_PLACED', 'ORDER_CONFIRMED', 'PICKUP_SCHEDULED'].includes(status);
 }
+
+/* ===================================================================
+ * THE CUSTOMER TRACKER
+ *
+ * WHY THIS SECTION EXISTS. Everything above predates the current schema and
+ * had drifted from it: `ORDER_STATUSES` has keys the database cannot hold
+ * (ORDER_CONFIRMED, IN_PRODUCTION, DELIVERY_IN_PROGRESS) and is missing ones
+ * it uses every day (OUT_FOR_DELIVERY, RECEIVED_AT_FACILITY, SORTING,
+ * PICKUP_ASSIGNED, PARTIALLY_COMPLETED). Nothing imported the file, so the
+ * drift had never shown up.
+ *
+ * The `orders.status` ENUM is the authority:
+ *
+ *   ORDER_PLACED, PICKUP_SCHEDULED, PICKUP_ASSIGNED, PICKED_UP,
+ *   RECEIVED_AT_FACILITY, SORTING, WASHING, DRYING, IRONING, QUALITY_CHECK,
+ *   READY_FOR_DELIVERY, DELIVERY_ASSIGNED, OUT_FOR_DELIVERY, DELIVERED,
+ *   COMPLETED, CANCELLED, PARTIALLY_COMPLETED
+ *
+ * The wording above is REUSED wherever a key matches, so the app keeps saying
+ * "Picked Up" and "Ready for Delivery" exactly as it always has. Nothing
+ * above is renamed or removed.
+ * =================================================================== */
+
+/** Every status the database can actually hold, in the order it happens. */
+export const CUSTOMER_STATUS_LABELS: Record<string, string> = {
+  ORDER_PLACED: 'Order Placed',
+  PICKUP_SCHEDULED: 'Pickup Scheduled',
+  PICKUP_ASSIGNED: 'Agent Assigned',
+  PICKED_UP: 'Picked Up',
+  RECEIVED_AT_FACILITY: 'Received at Facility',
+  SORTING: 'Sorting',
+  WASHING: 'Washing',
+  DRYING: 'Drying',
+  IRONING: 'Ironing',
+  QUALITY_CHECK: 'Quality Check',
+  READY_FOR_DELIVERY: 'Ready for Delivery',
+  DELIVERY_ASSIGNED: 'Delivery Assigned',
+  OUT_FOR_DELIVERY: 'Out for Delivery',
+  DELIVERED: 'Delivered',
+  COMPLETED: 'Completed',
+  PARTIALLY_COMPLETED: 'Partially Completed',
+  CANCELLED: 'Cancelled',
+};
+
+/**
+ * What a status is called, for any of them.
+ *
+ * An unknown value is spelled out rather than dropped: a status added to the
+ * ENUM later should read as "Awaiting Pickup", not as a blank line.
+ */
+export function customerStatusLabel(status: unknown): string {
+  const key = String(status ?? '');
+  return CUSTOMER_STATUS_LABELS[key]
+    ?? key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export const CANCELLED_STATUS = 'CANCELLED';
+
+export function isCancelledStatus(status: unknown): boolean {
+  return String(status ?? '') === CANCELLED_STATUS;
+}
+
+/**
+ * THE STAGES THE CUSTOMER SEES.
+ *
+ * Seventeen statuses is an operations vocabulary, not a customer one — nobody
+ * ordering a wash needs Sorting and Drying as separate milestones. Each stage
+ * therefore collects the statuses that mean the same thing to the person
+ * waiting, and the tracker highlights the stage holding the CURRENT status.
+ *
+ * CANCELLED IS NOT A STAGE. It is not a point along this line — it ends it —
+ * so the tracker replaces the ladder rather than lighting a step on it.
+ */
+export interface CustomerStage {
+  key: string;
+  label: string;
+  icon: string;
+  /** The `orders.status` values that put an order at this stage. */
+  statuses: string[];
+}
+
+export const CUSTOMER_STAGES: CustomerStage[] = [
+  {
+    key: 'PLACED',
+    label: 'Order Placed',
+    icon: 'receipt-outline',
+    statuses: ['ORDER_PLACED'],
+  },
+  {
+    key: 'SCHEDULED',
+    label: 'Pickup Scheduled',
+    icon: 'calendar-outline',
+    statuses: ['PICKUP_SCHEDULED', 'PICKUP_ASSIGNED'],
+  },
+  {
+    key: 'PICKED_UP',
+    label: 'Picked Up',
+    icon: 'bicycle-outline',
+    statuses: ['PICKED_UP', 'RECEIVED_AT_FACILITY'],
+  },
+  {
+    key: 'IN_PROCESS',
+    label: 'In Process',
+    icon: 'water-outline',
+    statuses: ['SORTING', 'WASHING', 'DRYING', 'IRONING', 'QUALITY_CHECK'],
+  },
+  {
+    key: 'READY',
+    label: 'Ready for Delivery',
+    icon: 'cube-outline',
+    statuses: ['READY_FOR_DELIVERY', 'DELIVERY_ASSIGNED'],
+  },
+  {
+    key: 'OUT_FOR_DELIVERY',
+    label: 'Out for Delivery',
+    icon: 'car-outline',
+    statuses: ['OUT_FOR_DELIVERY'],
+  },
+  {
+    key: 'DELIVERED',
+    label: 'Delivered',
+    icon: 'checkmark-done-outline',
+    statuses: ['DELIVERED', 'COMPLETED', 'PARTIALLY_COMPLETED'],
+  },
+];
+
+/**
+ * Which stage an order is at, as an index into `CUSTOMER_STAGES`.
+ *
+ * -1 for a cancelled order and for anything unrecognised, so a caller that
+ * lights "every stage up to n" cannot light the whole ladder for a status it
+ * did not understand.
+ */
+export function customerStageIndex(status: unknown): number {
+  const key = String(status ?? '');
+  if (key === CANCELLED_STATUS) return -1;
+  return CUSTOMER_STAGES.findIndex((stage) => stage.statuses.includes(key));
+}

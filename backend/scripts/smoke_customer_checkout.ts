@@ -32,7 +32,7 @@ import { createOrder, generateCustomerOrderNumber } from '../src/services/order.
 import { PICKUP_SLOTS } from '../src/services/pickupSlot.service';
 import {
   chargeForDistance, quoteForPoint, quoteForAddress,
-  FREE_DELIVERY_KM, RATE_PER_KM,
+  FREE_DELIVERY_KM, RATE_PER_KM, LAUNDRY_ORIGIN,
 } from '../src/services/deliveryFee.service';
 
 dotenv.config();
@@ -168,29 +168,48 @@ async function main() {
   eq('24.5 km rounds the part-kilometre UP, never down', chargeForDistance(24.5), 105);
   eq('a nonsense distance is not charged for', chargeForDistance(NaN), 0);
 
-  /* Measured to the NEAREST branch, not to one fixed depot: Chiplun has its
-     own, so a Chiplun customer is not charged the distance to Ratnagiri. */
+  /*
+   * MEASURED FROM THE LAUNDRY, a fixed origin.
+   *
+   * This used to assert the opposite — that the distance was taken to the
+   * NEAREST of the `stores` rows, so standing at a branch quoted 0 km. The
+   * origin is the laundry that actually collects now, so standing at a branch
+   * is simply however far that branch is from it, and no branch is named.
+   */
+  const atLaundry = await quoteForPoint(LAUNDRY_ORIGIN.latitude, LAUNDRY_ORIGIN.longitude);
+  check('standing at the laundry quotes 0 km and no charge',
+    atLaundry.resolved && Number(atLaundry.distance_km) === 0 && atLaundry.charge === 0,
+    `${atLaundry.distance_km} km -> ${atLaundry.charge}`);
+  eq('and it names the laundry as the origin', atLaundry.store_name, 'Swachham Laundry');
+  eq('no branch id is reported, because the origin is not a branch',
+    atLaundry.store_id, null);
+
+  /* Roughly 0.9 degrees of latitude is ~100 km — far outside the free radius. */
+  const faraway = await quoteForPoint(
+    LAUNDRY_ORIGIN.latitude + 0.9,
+    LAUNDRY_ORIGIN.longitude
+  );
+  check('a point far from the laundry is charged',
+    faraway.resolved && faraway.charge > 0 && Number(faraway.distance_km) > FREE_DELIVERY_KM,
+    `${faraway.distance_km} km -> ${faraway.charge}`);
+  eq('...at exactly the rate the rule states',
+    faraway.charge, chargeForDistance(Number(faraway.distance_km)));
+
+  /* A branch is no longer special: it is just another point on the map. */
   const branches = await query<any>(
     `SELECT name, latitude, longitude FROM stores WHERE is_active = true ORDER BY id LIMIT 1`
   );
   if (branches.rows[0]) {
     const branch = branches.rows[0];
-    const atBranch = await quoteForPoint(Number(branch.latitude), Number(branch.longitude));
-    check('standing at a branch quotes 0 km and no charge',
-      atBranch.resolved && Number(atBranch.distance_km) === 0 && atBranch.charge === 0,
-      `${atBranch.distance_km} km -> ${atBranch.charge}`);
-    eq('and it names the branch it measured to', atBranch.store_name, branch.name);
-
-    /* Roughly 0.9 degrees of latitude is ~100 km — far outside the free
-       radius whichever branch turns out to be nearest. */
-    const faraway = await quoteForPoint(Number(branch.latitude) + 0.9, Number(branch.longitude));
-    check('a point far from every branch is charged',
-      faraway.resolved && faraway.charge > 0 && Number(faraway.distance_km) > FREE_DELIVERY_KM,
-      `${faraway.distance_km} km -> ${faraway.charge}`);
-    eq('...at exactly the rate the rule states',
-      faraway.charge, chargeForDistance(Number(faraway.distance_km)));
+    const atBranch = await quoteForPoint(
+      Number(branch.latitude), Number(branch.longitude)
+    );
+    check('a branch is measured from the laundry like anywhere else',
+      atBranch.resolved && atBranch.store_id === null &&
+        atBranch.charge === chargeForDistance(Number(atBranch.distance_km)),
+      `${branch.name}: ${atBranch.distance_km} km -> ${atBranch.charge}`);
   } else {
-    console.log('  SKIP  no active branch to measure from');
+    console.log('  SKIP  no active branch to check against');
   }
 
   const nowhere = await quoteForPoint(0, 0);

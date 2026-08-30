@@ -8,10 +8,24 @@ import { requireCustomerPrices, priceKey } from './priceList.service';
 import { normaliseMobileOrNull } from './businessContact.service';
 import { config } from '../config/env';
 import { quoteForAddress } from './deliveryFee.service';
+import { AppError } from '../utils/appError';
 
 /* Delivery is quoted by distance -- see `deliveryFee.service`. The flat
    40.00-above-399.00 rule that used to live here is gone. */
-const CANCELLABLE_STATUSES = ['ORDER_PLACED', 'CONFIRMED', 'RECEIVED_AT_FACILITY'];
+
+/**
+ * WHEN A CUSTOMER MAY STILL CANCEL. Unchanged -- this is the existing rule,
+ * now exported so the app can ask rather than keep its own copy of it.
+ *
+ * A second, drifting definition of "cancellable" in the client is how a
+ * Cancel button ends up offered on an order the server then refuses.
+ */
+export const CANCELLABLE_STATUSES = ['ORDER_PLACED', 'CONFIRMED', 'RECEIVED_AT_FACILITY'];
+
+/** Whether THIS status may be cancelled by the customer. */
+export function canCancelStatus(status: unknown): boolean {
+  return CANCELLABLE_STATUSES.includes(String(status ?? ''));
+}
 
 /**
  * CUSTOMER ORDER NUMBER: SWC#DDMMYYYY + a 6-digit daily sequence,
@@ -524,12 +538,23 @@ async function cancelOrder(
   );
 
   const order = orderResult.rows[0];
+  /*
+   * BOTH REFUSALS CARRY A STATUS CODE.
+   *
+   * They were plain `Error`s, which `errorHandler` answers as 500 "Internal
+   * server error" -- so a customer cancelling an order already picked up was
+   * told the server had broken rather than why it would not cancel. The
+   * reason is the whole point of the message.
+   */
   if (!order) {
-    throw new Error('Order not found');
+    throw new AppError('Order not found.', 404);
   }
-  if (!CANCELLABLE_STATUSES.includes(order.status)) {
-    throw new Error(
-      `Order cannot be cancelled in status: ${order.status}. Only orders in ${CANCELLABLE_STATUSES.join(', ')} can be cancelled.`
+  if (!canCancelStatus(order.status)) {
+    throw new AppError(
+      `This order can no longer be cancelled — it is already ${String(order.status)
+        .replace(/_/g, ' ')
+        .toLowerCase()}. Please contact us if you need to change it.`,
+      409
     );
   }
 
@@ -555,50 +580,90 @@ async function cancelOrder(
   return updatedResult.rows[0];
 }
 
-async function getOrderTracking(orderId: string): Promise<object | null> {
-  const orderResult = await query(
-    `SELECT o.id, o.order_number, o.status, o.total_amount, o.created_at,
-            row_to_json(pk.*) AS pickup,
-            row_to_json(dl.*) AS delivery
-     FROM orders o
-     LEFT JOIN pickups pk ON pk.order_id = o.id
-     LEFT JOIN deliveries dl ON dl.order_id = o.id
-     WHERE o.id = ?
-     GROUP BY o.id, pk.id, dl.id`,
-    [orderId]
+/**
+ * The tracking view of one order, for the customer who placed it.
+ *
+ * ASSEMBLED IN JS, NOT IN SQL — the same treatment, and for the same reason,
+ * as `getOrderById` above. This function was still the original PostgreSQL:
+ * `row_to_json(pk.*)`, `json_agg(...) FILTER (WHERE ...)` and
+ * `json_build_object`, none of which MySQL has. It could never have run here,
+ * and every call to it answered 500 with a SQL syntax error — which is what
+ * "Track my order does not work" was.
+ *
+ * Three other faults went with it, all of which would still have broken the
+ * query after the JSON functions were replaced:
+ *
+ *   `o.total_amount` DOES NOT EXIST. The column is `orders.total`; the API
+ *   exposes it under the `total_amount` name, which is why the wrong one
+ *   looks plausible. It is aliased here so the response keeps that name.
+ *
+ *   `production_status_history` HAS NO `production_order_id`. It is keyed by
+ *   `order_id`, so the join could not have matched a row.
+ *
+ *   IT WAS NOT SCOPED TO A USER. Any signed-in account could track any
+ *   order by guessing an id, reading its number, status and schedule. It now
+ *   takes `userId` and filters on it, exactly as `getOrderById` does — a null
+ *   for someone else's order rather than a disclosure.
+ */
+async function getOrderTracking(userId: string, orderId: string): Promise<object | null> {
+  const orderResult = await query<any>(
+    `SELECT o.id, o.order_number, o.status, o.total AS total_amount, o.created_at
+       FROM orders o
+      WHERE o.id = ? AND o.user_id = ?`,
+    [orderId, userId]
   );
 
   const order = orderResult.rows[0];
   if (!order) return null;
 
-  const statusHistoryResult = await query(
-    `SELECT status, notes, changed_by, created_at
-     FROM order_status_history
-     WHERE order_id = ?
-     ORDER BY created_at ASC`,
+  const pickup = await query<any>(
+    `SELECT * FROM pickups WHERE order_id = ? LIMIT 1`,
+    [orderId]
+  );
+  const delivery = await query<any>(
+    `SELECT * FROM deliveries WHERE order_id = ? LIMIT 1`,
     [orderId]
   );
 
-  const productionResult = await query(
-    `SELECT po.id, po.current_status,
-            json_agg(
-              json_build_object(
-                'status', psh.status,
-                'notes', psh.notes,
-                'created_at', psh.created_at
-              ) ORDER BY psh.created_at ASC
-            ) FILTER (WHERE psh.id IS NOT NULL) AS history
-     FROM production_orders po
-     LEFT JOIN production_status_history psh ON psh.production_order_id = po.id
-     WHERE po.order_id = ?
-     GROUP BY po.id`,
+  const statusHistoryResult = await query<any>(
+    `SELECT status, notes, changed_by, created_at
+       FROM order_status_history
+      WHERE order_id = ?
+      ORDER BY created_at ASC`,
     [orderId]
   );
+
+  const productionResult = await query<any>(
+    `SELECT id, current_status FROM production_orders WHERE order_id = ? LIMIT 1`,
+    [orderId]
+  );
+  const production = productionResult.rows[0] ?? null;
+  // The production steps, in their own query rather than an aggregate — the
+  // one row per order means there is nothing to group.
+  if (production) {
+    const history = await query<any>(
+      `SELECT status, notes, created_at
+         FROM production_status_history
+        WHERE order_id = ?
+        ORDER BY created_at ASC`,
+      [orderId]
+    );
+    production.history = history.rows;
+  }
 
   return {
     ...order,
+    pickup: pickup.rows[0] ?? null,
+    delivery: delivery.rows[0] ?? null,
     status_history: statusHistoryResult.rows,
-    production: productionResult.rows[0] || null,
+    production,
+    /*
+     * WHETHER CANCEL MAY BE OFFERED, decided HERE by the same rule that
+     * enforces it. The app shows the button on this flag rather than on a
+     * status list of its own, so it cannot offer a cancellation the server
+     * would refuse. Same arrangement `businessOrder.service` already uses.
+     */
+    can_cancel: canCancelStatus(order.status),
   };
 }
 

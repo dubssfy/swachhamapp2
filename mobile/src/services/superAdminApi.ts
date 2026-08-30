@@ -234,6 +234,62 @@ export interface BusinessPrice {
   item_is_active: boolean;
 }
 
+/* ---- Bulk price update from an Excel sheet ---- */
+
+/** What became of one row of the uploaded sheet. Only `invalid` is an error. */
+export type PriceUploadRowStatus =
+  | 'updated'
+  | 'item_created'
+  | 'unchanged'
+  | 'price_not_set'
+  | 'invalid';
+
+export interface PriceUploadRow {
+  /** The row number as the SPREADSHEET shows it — its header is row 1. */
+  row: number;
+  main_category: string;
+  subcategory: string;
+  service_type: string;
+  item_name: string;
+  /** The Price cell exactly as it was typed. */
+  price: string;
+  status: PriceUploadRowStatus;
+  /** Why it failed. Null on every status but `invalid`. */
+  reason: string | null;
+  current_price?: number | null;
+  /** Null when the Price cell was blank — "Price Not Set", not zero. */
+  new_price?: number | null;
+  /** True when this row adds the item to the catalogue. */
+  creates_item?: boolean;
+}
+
+export interface PriceUploadResult {
+  business: { id: string; name: string };
+  laundry_type: LaundryTypeValue;
+  laundry_type_label: string;
+  /** False on the preview, which writes nothing. */
+  applied: boolean;
+  /** Rows that carried anything. Blank rows are not counted here. */
+  total_rows: number;
+  /** Wholly empty rows, skipped in silence. */
+  blank_skipped: number;
+  /** The item did not exist and was added to the catalogue. */
+  items_created: number;
+  /** An item already on the list had its price written or moved. */
+  updated: number;
+  /** Matched, and the sheet's figure is the one already stored. */
+  unchanged: number;
+  /**
+   * Valid rows left with no price, because the Price cell was blank.
+   * NOT disjoint from `items_created`: a new item with no price is both.
+   */
+  price_not_set: number;
+  /** The only count that means something went wrong. */
+  errors: number;
+  failed_rows: PriceUploadRow[];
+  changed_rows: PriceUploadRow[];
+}
+
 export interface PriceableItem {
   id: string;
   name: string;
@@ -767,6 +823,30 @@ export interface SummaryMetric {
   total: SummaryCell;
 }
 
+/** Which Sale card was opened. Only these two are clickable. */
+export type SalePeriod = 'today' | 'month';
+
+/** One order behind a Sale card. */
+export interface SaleDetailRow {
+  order_id: string;
+  order_number: string;
+  /** The establishment's `establishment_name`, or the customer's own name. */
+  name: string;
+  party_type: 'BUSINESS' | 'CUSTOMER';
+  /** `orders.total` — the same column the card sums. */
+  amount: number;
+  created_at: string;
+}
+
+export interface SaleDetail {
+  period: SalePeriod;
+  rows: SaleDetailRow[];
+  /** The server's own total for the list, so the view need not add it up. */
+  total_amount: number;
+  count: number;
+  as_of: string;
+}
+
 export interface TransactionSummary {
   sale: SummaryMetric;
   collection: SummaryMetric;
@@ -1281,6 +1361,65 @@ const superAdminApi = {
     `${API_BASE_URL}/api/super-admin/prices/businesses/${businessId}/price-list.pdf` +
     `?laundry_type=${encodeURIComponent(laundryType)}` +
     (includeUnset ? '&include_unset=true' : ''),
+
+  /* ---- Bulk price update (Excel) ---- */
+
+  /**
+   * The editable price sheet for this business at this laundry type.
+   *
+   * Main Category | Subcategory | Service Type | Item Name | Price, with the
+   * CURRENT price already filled in and every identifying cell taken from the
+   * live catalogue — so the sheet the Super Admin opens already names lines
+   * that will match on the way back.
+   *
+   * `includeUnset` adds the lines with no rate yet, for filling the gaps. Off
+   * by default, because their Price cell is blank and a blank Price is a
+   * rejected row: a default sheet full of them would report errors the moment
+   * it was returned untouched. Same flag, same default, as the printed card.
+   *
+   * `FileSystem.downloadAsync` makes its own request, so `authHeader()`
+   * supplies the bearer token — see `invoicePdfUrl`.
+   */
+  businessPriceTemplateUrl: (
+    businessId: string,
+    laundryType: LaundryTypeValue,
+    includeUnset = false
+  ): string =>
+    `${API_BASE_URL}/api/super-admin/prices/businesses/${businessId}/price-template.xlsx` +
+    `?laundry_type=${encodeURIComponent(laundryType)}` +
+    (includeUnset ? '&include_unset=true' : ''),
+
+  /**
+   * Validates a filled sheet and reports exactly what WOULD change.
+   *
+   * Writes nothing. `file_base64` is the .xlsx read off the device.
+   */
+  previewBusinessPriceUpload: async (
+    businessId: string,
+    body: { laundry_type: LaundryTypeValue; file_base64: string }
+  ): Promise<PriceUploadResult> => {
+    const res = await apiClient.post<ApiResponse<PriceUploadResult>>(
+      `/api/super-admin/prices/businesses/${businessId}/price-upload/preview`,
+      body
+    );
+    return res.data.data;
+  },
+
+  /**
+   * Applies the prices. The sheet is re-validated on the server rather than
+   * the preview being trusted, and the accepted rows are written in one
+   * transaction. ONLY the Price of an existing line is ever changed.
+   */
+  uploadBusinessPrices: async (
+    businessId: string,
+    body: { laundry_type: LaundryTypeValue; file_base64: string }
+  ): Promise<PriceUploadResult> => {
+    const res = await apiClient.post<ApiResponse<PriceUploadResult>>(
+      `/api/super-admin/prices/businesses/${businessId}/price-upload`,
+      body
+    );
+    return res.data.data;
+  },
 
   createBusinessPrice: async (
     businessId: string,
@@ -2098,6 +2237,20 @@ const superAdminApi = {
   getTransactionSummary: async (): Promise<TransactionSummary> => {
     const res = await apiClient.get<ApiResponse<TransactionSummary>>(
       '/api/super-admin/transaction-summary'
+    );
+    return res.data.data;
+  },
+
+  /**
+   * The orders behind a Sale card — Today or Current Month.
+   *
+   * The server applies the SAME filter and the same business-timezone day the
+   * card itself is summed over, so the list adds up to the figure that was
+   * tapped. Nothing is filtered or totalled on this side.
+   */
+  getSaleDetail: async (period: SalePeriod): Promise<SaleDetail> => {
+    const res = await apiClient.get<ApiResponse<SaleDetail>>(
+      '/api/super-admin/transaction-summary/sale', { params: { period } }
     );
     return res.data.data;
   },

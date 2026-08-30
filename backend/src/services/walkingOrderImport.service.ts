@@ -7,6 +7,7 @@ import { logger } from '../utils/logger';
 import { resolveBusinessPrices, priceKey } from './priceList.service';
 import { generateBusinessOrderNumber } from './businessOrder.service';
 import { InvoiceLaundryType, LAUNDRY_TYPE_LABELS } from './gstInvoice.service';
+import { addListValidation } from '../utils/xlsxListValidation';
 
 /**
  * BACKDATED WALKING-ORDER IMPORT.
@@ -64,6 +65,16 @@ const COLUMN_ALIASES: Record<string, string[]> = {
 
 /** The sheet the template writes and the import reads. */
 const SHEET_NAME = 'Walking Orders';
+
+/**
+ * The hidden sheet holding the item names the Item Name dropdown offers, and
+ * the defined name pointing at them.
+ *
+ * Both exist ONLY to make the dropdown work. The import never reads either:
+ * it takes `SHEET_NAME`, or the first sheet, and neither of those is this.
+ */
+const ITEM_LIST_SHEET = 'Items';
+const ITEM_NAMES_RANGE = 'SwachhamItemNames';
 
 /** A cap, so a malformed file cannot be walked forever. */
 const MAX_ROWS = 2000;
@@ -149,6 +160,15 @@ function normalise(value: unknown): string {
  * contains item and service names that will validate. A generic template
  * with "Shirt" on it is a template whose first import fails for every
  * business that does not happen to stock a shirt.
+ *
+ * ITEM NAME IS A DROPDOWN. The column carries an Excel list validation over
+ * `ITEM_NAMES_RANGE`, so the cell is picked from rather than typed into. The
+ * list is THE VALIDATOR'S OWN CATALOGUE QUERY -- the same items, under the
+ * same predicate, that `previewWalkingOrderImport` will match against -- so a
+ * name chosen from the dropdown is a name that validates. Nothing else about
+ * the sheet changes: the four columns, their order, the sample rows and the
+ * Instructions sheet are exactly as they were, and the import path does not
+ * know the dropdown exists.
  */
 export async function buildWalkingOrderTemplate(
   businessId: string,
@@ -213,7 +233,59 @@ export async function buildWalkingOrderTemplate(
   XLSX.utils.book_append_sheet(book, sheet, SHEET_NAME);
   XLSX.utils.book_append_sheet(book, notes, 'Instructions');
 
-  return XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  /*
+   * THE DROPDOWN'S LIST OF ITEMS.
+   *
+   * Exactly the catalogue `previewWalkingOrderImport` matches against: an item
+   * with an ACTIVE price for THIS business at THIS laundry type. One predicate,
+   * written once in each place it is needed, so the names offered here and the
+   * names accepted there cannot drift apart -- and so one establishment's
+   * dropdown can never offer another's items.
+   *
+   * They go on their own HIDDEN sheet rather than in spare columns of the
+   * order sheet: a value parked in, say, column Z would keep otherwise-blank
+   * rows alive through `sheet_to_json`, and every one of them would come back
+   * as "Item Name is empty".
+   */
+  const catalogue = await query<{ name: string }>(
+    `SELECT DISTINCT i.name
+       FROM services i
+       JOIN business_price_list p ON p.item_id = i.id
+      WHERE i.kind = 'ITEM' AND i.is_active = true
+        AND p.business_id = ? AND p.laundry_type = ? AND p.is_active = true
+      ORDER BY i.name ASC`,
+    [String(businessId), laundryType]
+  );
+  const itemNames = catalogue.rows.map((row) => row.name);
+
+  if (itemNames.length > 0) {
+    const list = XLSX.utils.aoa_to_sheet(itemNames.map((name) => [name]));
+    XLSX.utils.book_append_sheet(book, list, ITEM_LIST_SHEET);
+    book.Workbook = book.Workbook || {};
+    // Appended LAST, so `SHEET_NAME` stays the first sheet and the import's
+    // "first sheet" fallback still lands on the order sheet.
+    book.Workbook.Sheets = [{}, {}, { Hidden: 1 }];
+    book.Workbook.Names = [
+      { Name: ITEM_NAMES_RANGE, Ref: `${ITEM_LIST_SHEET}!$A$1:$A$${itemNames.length}` },
+    ];
+  }
+
+  const workbook = XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  if (itemNames.length === 0) return workbook;
+
+  // SheetJS cannot write data validation, so the element is injected into the
+  // finished file. A workbook it cannot patch comes back untouched and still
+  // works by typing -- see addListValidation.
+  return addListValidation(workbook, {
+    // The order sheet is appended first, so it is written as sheet1.
+    sheetFile: 'xl/worksheets/sheet1.xml',
+    sqref: `A2:A${MAX_ROWS + 1}`,
+    formula: ITEM_NAMES_RANGE,
+    errorTitle: 'Not on this price list',
+    error:
+      'Pick an item from the dropdown. Only items priced for this business at ' +
+      'this laundry type can be imported.',
+  });
 }
 
 /** `EstablishmentName_Walking_Order_Template_Hotel_Laundry.xlsx` */

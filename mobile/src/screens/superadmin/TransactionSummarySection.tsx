@@ -1,9 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, useWindowDimensions } from 'react-native';
+import {
+  View, Text, StyleSheet, ActivityIndicator, useWindowDimensions,
+  TouchableOpacity, Modal, ScrollView,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../../constants/theme';
+import { sa } from './styles';
 import superAdminApi, {
-  TransactionSummary, SummaryCell, SummaryMetric,
+  TransactionSummary, SummaryCell, SummaryMetric, SaleDetail, SalePeriod,
 } from '../../services/superAdminApi';
 
 /**
@@ -107,6 +111,32 @@ export default function TransactionSummarySection({ refreshKey }: Props) {
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
+  /* ------------------------------------------------- the Sale drill-down */
+
+  /** Which Sale card is open, or null. Nothing else on the grid opens. */
+  const [detailPeriod, setDetailPeriod] = useState<SalePeriod | null>(null);
+  const [detail, setDetail] = useState<SaleDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+
+  const openSaleDetail = useCallback(async (period: SalePeriod) => {
+    setDetailPeriod(period);
+    // Cleared rather than kept: showing the previous period's rows under the
+    // new heading while the fetch runs would state something untrue.
+    setDetail(null);
+    setDetailError('');
+    setDetailLoading(true);
+    try {
+      setDetail(await superAdminApi.getSaleDetail(period));
+    } catch (e: any) {
+      setDetailError(
+        e?.response?.data?.message || e.message || 'Could not load those transactions'
+      );
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
+
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Transaction Summary</Text>
@@ -137,18 +167,132 @@ export default function TransactionSummarySection({ refreshKey }: Props) {
                     metric.key,
                     (summary[metric.key] as SummaryMetric)[period.key as PeriodKey]
                   )}
+                  /*
+                   * ONLY TODAY SALE AND CURRENT MONTH SALE OPEN.
+                   *
+                   * The other fourteen cards get no `onPress` and so render
+                   * exactly as before — a plain View, not a button. Collection,
+                   * Product Count and Expense are summed from other registers
+                   * entirely, and Sale's Year and Total have no drill-down
+                   * asked for, so offering a tap that did nothing would be
+                   * worse than not offering one.
+                   */
+                  onPress={
+                    metric.key === 'sale'
+                      && (period.key === 'today' || period.key === 'month')
+                      ? () => openSaleDetail(period.key as SalePeriod)
+                      : undefined
+                  }
                 />
               ))}
             </View>
           </View>
         ))
       ) : null}
+
+      <SaleDetailModal
+        period={detailPeriod}
+        detail={detail}
+        loading={detailLoading}
+        error={detailError}
+        onClose={() => setDetailPeriod(null)}
+      />
     </View>
   );
 }
 
+/**
+ * The orders behind a Sale card.
+ *
+ * REUSES THE SECTION'S EXISTING SHEET. `sa.modalBackdrop` / `sa.modalSheet` are
+ * the bottom sheet every other Super Admin picker already uses, so this reads
+ * as the same surface rather than a new pattern — as does the table markup,
+ * which is `sa.tableHeadRow` / `sa.tableRow` / `sa.th` / `sa.td` from the
+ * price and report screens.
+ *
+ * IT DISPLAYS, IT DOES NOT COMPUTE. The rows, the total and the count are all
+ * the server's, so this cannot show a total the card disagrees with.
+ */
+function SaleDetailModal({
+  period, detail, loading, error, onClose,
+}: {
+  period: SalePeriod | null;
+  detail: SaleDetail | null;
+  loading: boolean;
+  error: string;
+  onClose: () => void;
+}) {
+  const title = period === 'today' ? "Today's Sales" : 'Current Month Sales';
+  const rows = detail?.rows ?? [];
+
+  return (
+    <Modal
+      visible={period !== null}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={sa.modalBackdrop}>
+        <View style={[sa.modalSheet, { maxHeight: '85%' }]}>
+          <View style={sa.header}>
+            <Text style={[sa.headerTitle, { flex: 1 }]}>{title}</Text>
+            <TouchableOpacity style={sa.iconBtn} onPress={onClose} accessibilityLabel="Close">
+              <Ionicons name="close" size={22} color={COLORS.TextPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          {loading ? (
+            <View style={styles.loading}>
+              <ActivityIndicator color={COLORS.Primary} />
+            </View>
+          ) : error ? (
+            <View style={[styles.errorBox, { margin: SPACING.md }]}>
+              <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : rows.length === 0 ? (
+            <Text style={sa.empty}>No transactions found.</Text>
+          ) : (
+            <ScrollView contentContainerStyle={{ padding: SPACING.md }}>
+              <View style={sa.tableHeadRow}>
+                <Text style={[sa.th, styles.nameCol]}>CUSTOMER / ESTABLISHMENT</Text>
+                <Text style={[sa.th, styles.priceCol]}>ORDER PRICE</Text>
+              </View>
+
+              {rows.map((row) => (
+                <View key={row.order_id} style={sa.tableRow}>
+                  <View style={styles.nameCol}>
+                    <Text style={sa.td} numberOfLines={2}>{row.name}</Text>
+                    {/* The order number identifies the row when one
+                        establishment has several on the same day. */}
+                    <Text style={sa.tdMuted} numberOfLines={1}>{row.order_number}</Text>
+                  </View>
+                  <Text style={[sa.td, styles.priceCol, styles.priceText]}>
+                    {rupees(row.amount)}
+                  </Text>
+                </View>
+              ))}
+
+              {/* The same pair the card shows, so the two can be compared at
+                  a glance without adding the column up. */}
+              <View style={[sa.tableRow, styles.totalRow]}>
+                <Text style={[sa.td, styles.nameCol, styles.totalText]}>
+                  {detail?.count} order{detail?.count === 1 ? '' : 's'}
+                </Text>
+                <Text style={[sa.td, styles.priceCol, styles.priceText, styles.totalText]}>
+                  {rupees(detail?.total_amount ?? 0)}
+                </Text>
+              </View>
+            </ScrollView>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function MetricCard({
-  columns, icon, tint, wash, label, value,
+  columns, icon, tint, wash, label, value, onPress,
 }: {
   columns: number;
   icon: any;
@@ -156,24 +300,50 @@ function MetricCard({
   wash: string;
   label: string;
   value: string;
+  /** Given only to the two Sale cards that open a list. */
+  onPress?: () => void;
 }) {
   // A percentage width with the gap subtracted, so the row fills edge to
   // edge at any column count without a fixed pixel size to go stale.
   const width = `${100 / columns}%` as const;
-  return (
-    <View style={[styles.cardOuter, { width }]}>
-      <View style={styles.card}>
-        <View style={[styles.iconBox, { backgroundColor: wash }]}>
-          <Ionicons name={icon} size={16} color={tint} />
-        </View>
-        <View style={styles.cardBody}>
-          <Text style={styles.cardLabel} numberOfLines={2}>{label}</Text>
-          <Text style={styles.cardValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
-            {value}
-          </Text>
-        </View>
+
+  /*
+   * A CARD WITHOUT `onPress` IS THE ORIGINAL VIEW, untouched — same element,
+   * same styles, not a disabled button. Only a card that actually opens
+   * something becomes pressable, and it says so with a chevron rather than by
+   * changing colour, so the grid still reads as one set of cards.
+   */
+  const body = (
+    <View style={styles.card}>
+      <View style={[styles.iconBox, { backgroundColor: wash }]}>
+        <Ionicons name={icon} size={16} color={tint} />
       </View>
+      <View style={styles.cardBody}>
+        <Text style={styles.cardLabel} numberOfLines={2}>{label}</Text>
+        <Text style={styles.cardValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+          {value}
+        </Text>
+      </View>
+      {!!onPress && (
+        <Ionicons name="chevron-forward" size={14} color={COLORS.TextSecondary} />
+      )}
     </View>
+  );
+
+  if (!onPress) {
+    return <View style={[styles.cardOuter, { width }]}>{body}</View>;
+  }
+
+  return (
+    <TouchableOpacity
+      style={[styles.cardOuter, { width }]}
+      onPress={onPress}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel={`${label} ${value}. Tap to see the transactions.`}
+    >
+      {body}
+    </TouchableOpacity>
   );
 }
 
@@ -270,4 +440,9 @@ const styles = StyleSheet.create({
     fontSize: TYPOGRAPHY.sizes.xs,
     flex: 1,
   },
+  nameCol: { flex: 1 },
+  priceCol: { width: 110, textAlign: 'right' },
+  priceText: { fontWeight: '700' },
+  totalRow: { borderTopWidth: 1, borderTopColor: COLORS.Border },
+  totalText: { fontWeight: '800', color: COLORS.TextPrimary },
 });

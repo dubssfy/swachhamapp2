@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   TouchableOpacity,
   View,
@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
  * is left exactly as it is. See `CUSTOMER_COLORS` in constants/theme. */
 import { CUSTOMER_COLORS as COLORS, TYPOGRAPHY } from '../../constants/theme';
 import customerCartApi from '../../services/customerCartApi';
+import { useCartFly } from '../../components/CartFlyOverlay';
 
 /**
  * The cart button, with its live count.
@@ -36,6 +37,25 @@ export default function CartIconButton({
   color?: string;
 }) {
   const [count, setCount] = useState(0);
+
+  /*
+   * WHERE THE BAG LANDS.
+   *
+   * The button reports its own position in window coordinates, so the
+   * animation flies to the icon actually on screen rather than to an assumed
+   * corner. Measured on layout, which is also when it settles after a rotation
+   * or a change in the header above it.
+   */
+  const buttonRef = useRef<View>(null);
+  const { setCartAnchor } = useCartFly();
+
+  const measure = useCallback(() => {
+    buttonRef.current?.measureInWindow((x, y, width, height) => {
+      if (typeof x === 'number' && typeof y === 'number') {
+        setCartAnchor({ x: x + width / 2, y: y + height / 2 });
+      }
+    });
+  }, [setCartAnchor]);
 
   const load = useCallback(async () => {
     try {
@@ -61,6 +81,8 @@ export default function CartIconButton({
 
   return (
     <TouchableOpacity
+      ref={buttonRef}
+      onLayout={measure}
       style={styles.button}
       onPress={() => navigation.navigate('Cart')}
       accessibilityRole="button"

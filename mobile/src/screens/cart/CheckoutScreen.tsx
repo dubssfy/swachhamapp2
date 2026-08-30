@@ -18,6 +18,7 @@ import customerCartApi, {
   CustomerPaymentMethod,
 } from '../../services/customerCartApi';
 import { addressApi, AddressData } from '../../services/addressApi';
+import { detectCurrentAddress } from '../../services/currentLocation';
 
 /**
  * CHECKOUT — the last step before an order exists.
@@ -167,6 +168,38 @@ export default function CheckoutScreen({ navigation }: any) {
   const [newCity, setNewCity] = useState('');
   const [newPincode, setNewPincode] = useState('');
   const [savingAddress, setSavingAddress] = useState(false);
+  /** The fix from "Use my current location", when it was used. See `saveAddress`. */
+  const [detectedCoords, setDetectedCoords] =
+    useState<{ latitude: number; longitude: number } | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locationNote, setLocationNote] = useState('');
+
+  /** Fills the form below from the phone's position. Same helper the Address
+      screen uses, so the two behave identically. */
+  const useCurrentLocation = useCallback(async () => {
+    if (locating) return;
+    setLocating(true);
+    setLocationNote('');
+    setError('');
+    const result = await detectCurrentAddress();
+    if (!result.ok) {
+      setLocationNote(result.message);
+      setLocating(false);
+      return;
+    }
+    const found = result.address;
+    // Only empty fields: anything already typed is the customer's own.
+    setNewAddress((current) => current || found.full_address);
+    setNewCity((current) => current || found.city);
+    setNewPincode((current) => current || found.pincode);
+    setDetectedCoords({ latitude: found.latitude, longitude: found.longitude });
+    setLocationNote(
+      found.full_address || found.city
+        ? 'Location detected. Check the address and edit anything that is wrong.'
+        : 'Location captured, but we could not name the street. Please type the address.'
+    );
+    setLocating(false);
+  }, [locating]);
 
   const [loading, setLoading] = useState(true);
   const [placing, setPlacing] = useState(false);
@@ -332,16 +365,22 @@ export default function CheckoutScreen({ navigation }: any) {
        * The address is saved WITH COORDINATES where the phone can supply
        * them, because the delivery charge is measured from them. Without
        * them the order falls back to the device fix taken at booking.
+       *
+       * A fix taken by "Use my current location" WINS over the ambient one:
+       * the customer pressed a button to say "here", and a silent last-known
+       * reading could be from wherever they were an hour ago.
        */
-      let coords: { latitude?: number; longitude?: number } = {};
-      const permission = await Location.getForegroundPermissionsAsync();
-      if (permission.granted) {
-        const position = await Location.getLastKnownPositionAsync({ maxAge: 5 * 60 * 1000 });
-        if (position) {
-          coords = {
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          };
+      let coords: { latitude?: number; longitude?: number } = detectedCoords ?? {};
+      if (!detectedCoords) {
+        const permission = await Location.getForegroundPermissionsAsync();
+        if (permission.granted) {
+          const position = await Location.getLastKnownPositionAsync({ maxAge: 5 * 60 * 1000 });
+          if (position) {
+            coords = {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+            };
+          }
         }
       }
 
@@ -359,12 +398,14 @@ export default function CheckoutScreen({ navigation }: any) {
       setNewAddress('');
       setNewCity('');
       setNewPincode('');
+      setDetectedCoords(null);
+      setLocationNote('');
     } catch (e: any) {
       setError(e?.response?.data?.message || e.message || 'That address could not be saved.');
     } finally {
       setSavingAddress(false);
     }
-  }, [savingAddress, newAddress, newCity, newPincode, loadAddresses]);
+  }, [savingAddress, newAddress, newCity, newPincode, detectedCoords, loadAddresses]);
 
   /* -------------------------------------------------------------- place */
   const placeOrder = useCallback(async () => {
@@ -528,6 +569,24 @@ export default function CheckoutScreen({ navigation }: any) {
 
           {addingAddress ? (
             <View style={[addresses.length > 0 && styles.divided, { paddingVertical: SPACING.sm }]}>
+              {/* The shortcut past the fields. Typing below is untouched. */}
+              <TouchableOpacity
+                style={styles.locateBtn}
+                onPress={useCurrentLocation}
+                disabled={locating}
+                accessibilityRole="button"
+                accessibilityLabel="Use my current location to fill in this address"
+                accessibilityState={{ disabled: locating }}
+              >
+                {locating
+                  ? <ActivityIndicator size="small" color={C.Primary} />
+                  : <Ionicons name="locate-outline" size={18} color={C.Primary} />}
+                <Text style={styles.locateBtnText}>
+                  {locating ? 'Finding you…' : 'Use My Current Location'}
+                </Text>
+              </TouchableOpacity>
+              {!!locationNote && <Text style={styles.locateNote}>{locationNote}</Text>}
+
               <TextInput
                 style={styles.input}
                 placeholder="Flat / building / street"
@@ -602,21 +661,24 @@ export default function CheckoutScreen({ navigation }: any) {
           emptyText="No pickup window is left on that day. Choose another."
         />
 
-        {/* ---- DELIVERY ---- */}
-        <Text style={styles.sectionTitle}>Delivery day</Text>
-        <DayPicker days={deliveryDays} value={deliveryDate} onChange={setDeliveryDate} />
-        <Text style={styles.hint}>
-          Delivery starts the day after collection, so there is time to wash and finish your
-          laundry.
-        </Text>
+        {/*
+          ---- DELIVERY: NOT ASKED FOR ----
 
-        <Text style={styles.sectionTitle}>Delivery time</Text>
-        <SlotPicker
-          slots={deliverySlots}
-          value={deliverySlotId}
-          onChange={setDeliverySlotId}
-          emptyText="No delivery window on that day. Choose another."
-        />
+          Neither the delivery DAY nor the delivery TIME is shown. The customer
+          books a collection; when it comes back is ours to schedule.
+
+          BOTH ARE STILL CHOSEN AND STILL SENT. `deliveryDate` defaults to the
+          first day after the pickup and `loadSlots` selects the first
+          available window on it, exactly as they did when the pickers drove
+          them — the effects that maintain them are untouched, so the values
+          simply come from the defaults now.
+
+          THAT IS DELIBERATE, NOT LEFTOVER STATE. The server writes the
+          `deliveries` row only when it has the day AND both ends of a window;
+          sending none of them would stop delivery being booked at all, and
+          the rider would have nothing to work from. Removing the fields
+          removes the CHOICE, not the booking.
+        */}
 
         {/* ---- PAYMENT ---- */}
         <Text style={styles.sectionTitle}>Payment</Text>
@@ -814,6 +876,19 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xs,
     fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.sm,
     color: C.TextPrimary,
+  },
+  locateBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACING.xs,
+    borderRadius: BORDER_RADIUS.sm, borderWidth: 1, borderColor: C.Primary,
+    paddingVertical: SPACING.sm, marginBottom: SPACING.xs,
+  },
+  locateBtnText: {
+    fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '700', color: C.Primary,
+  },
+  locateNote: {
+    fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.xs,
+    color: C.TextSecondary, marginBottom: SPACING.xs,
   },
   smallBtn: {
     paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
