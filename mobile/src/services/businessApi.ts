@@ -1,5 +1,6 @@
 import apiClient from './api';
 import { ApiResponse } from '../types';
+import { DEMO_MODE } from '../demo/demoMode';
 
 export interface BusinessData {
   id: string;
@@ -21,7 +22,18 @@ export interface BusinessData {
 }
 
 export const businessApi = {
+  /**
+   * The PUBLIC directory of establishments — a customer-side listing.
+   *
+   * A demo build answers with an empty page rather than calling out. The
+   * Business home mounts this call on load, and the demo has no directory to
+   * show: an empty list is the honest answer, and it keeps the demo's console
+   * clean of a blocked-request warning on every launch.
+   */
   getBusinesses: async (params?: Record<string, any>): Promise<ApiResponse<{ businesses: BusinessData[]; pagination: any }>> => {
+    if (DEMO_MODE) {
+      return { success: true, data: { businesses: [], pagination: { page: 1, total: 0 } } };
+    }
     const response = await apiClient.get('/api/businesses/public', { params });
     return response.data;
   },

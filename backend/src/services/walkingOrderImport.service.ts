@@ -76,6 +76,18 @@ const SHEET_NAME = 'Walking Orders';
 const ITEM_LIST_SHEET = 'Items';
 const ITEM_NAMES_RANGE = 'SwachhamItemNames';
 
+/**
+ * The same pair for the SERVICE TYPE column — the second column of the sheet.
+ *
+ * A separate hidden sheet and defined name rather than a second column on
+ * `ITEM_LIST_SHEET`: the two lists have different lengths, and a defined name
+ * has to point at a range with nothing but its own values in it.
+ */
+// No space in the sheet name, so the defined name below needs no quoting —
+// the same shape as `ITEM_LIST_SHEET`, and one less thing for Excel to parse.
+const SERVICE_LIST_SHEET = 'ServiceTypes';
+const SERVICE_NAMES_RANGE = 'SwachhamServiceTypes';
+
 /** A cap, so a malformed file cannot be walked forever. */
 const MAX_ROWS = 2000;
 
@@ -169,6 +181,20 @@ function normalise(value: unknown): string {
  * the sheet changes: the four columns, their order, the sample rows and the
  * Instructions sheet are exactly as they were, and the import path does not
  * know the dropdown exists.
+ *
+ * SERVICE TYPE IS A DROPDOWN TOO, on exactly the same terms. Its list is the
+ * service types the validator will accept for this business's own priced
+ * items -- `item_service_types` joined to active SERVICE_TYPE services, which
+ * is the predicate `previewWalkingOrderImport` matches a Service Type cell
+ * against. The column keeps its name, its position, its meaning and its
+ * validation; only the way a cell is filled in changes.
+ *
+ * The two lists are DELIBERATELY INDEPENDENT of each other. Excel's
+ * cascading-list trick (a second list narrowed by the first cell) needs one
+ * named range per item name, which would put a hidden sheet column per item
+ * in the workbook and break the moment an item is renamed. A flat list of the
+ * business's service types is offered instead, and the upload still reports a
+ * service that item is not offered for -- exactly as it did before.
  */
 export async function buildWalkingOrderTemplate(
   businessId: string,
@@ -258,34 +284,103 @@ export async function buildWalkingOrderTemplate(
   );
   const itemNames = catalogue.rows.map((row) => row.name);
 
+  /*
+   * THE DROPDOWN'S LIST OF SERVICE TYPES — the second column.
+   *
+   * Exactly the services `previewWalkingOrderImport` will accept: an ACTIVE
+   * SERVICE_TYPE reachable through `item_service_types` from an item this
+   * business has an active price for at this laundry type. Same predicate,
+   * same source table, so the names offered here are names that validate.
+   */
+  const serviceCatalogue = await query<{ name: string }>(
+    `SELECT DISTINCT st.name
+       FROM services i
+       JOIN business_price_list p ON p.item_id = i.id
+       JOIN item_service_types m ON m.item_id = i.id
+       JOIN services st ON st.id = m.service_id
+      WHERE i.kind = 'ITEM' AND i.is_active = true
+        AND p.business_id = ? AND p.laundry_type = ? AND p.is_active = true
+        AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
+      ORDER BY st.name ASC`,
+    [String(businessId), laundryType]
+  );
+  const serviceNames = serviceCatalogue.rows.map((row) => row.name);
+
+  /*
+   * The hidden list sheets, appended AFTER the two visible ones so
+   * `SHEET_NAME` stays the first sheet and the import's "first sheet"
+   * fallback still lands on the order sheet.
+   *
+   * `Workbook.Sheets` is positional, so it is built alongside the appends
+   * rather than written as a literal — a list that assumed both hidden sheets
+   * exist would mark the Instructions sheet hidden on a business that has one
+   * of the two lists empty.
+   */
+  const sheetVisibility: Array<Record<string, any>> = [{}, {}];
+  const definedNames: Array<{ Name: string; Ref: string }> = [];
+
   if (itemNames.length > 0) {
     const list = XLSX.utils.aoa_to_sheet(itemNames.map((name) => [name]));
     XLSX.utils.book_append_sheet(book, list, ITEM_LIST_SHEET);
+    sheetVisibility.push({ Hidden: 1 });
+    definedNames.push({
+      Name: ITEM_NAMES_RANGE,
+      Ref: `${ITEM_LIST_SHEET}!$A$1:$A$${itemNames.length}`,
+    });
+  }
+
+  if (serviceNames.length > 0) {
+    const list = XLSX.utils.aoa_to_sheet(serviceNames.map((name) => [name]));
+    XLSX.utils.book_append_sheet(book, list, SERVICE_LIST_SHEET);
+    sheetVisibility.push({ Hidden: 1 });
+    definedNames.push({
+      Name: SERVICE_NAMES_RANGE,
+      Ref: `${SERVICE_LIST_SHEET}!$A$1:$A$${serviceNames.length}`,
+    });
+  }
+
+  if (definedNames.length > 0) {
     book.Workbook = book.Workbook || {};
-    // Appended LAST, so `SHEET_NAME` stays the first sheet and the import's
-    // "first sheet" fallback still lands on the order sheet.
-    book.Workbook.Sheets = [{}, {}, { Hidden: 1 }];
-    book.Workbook.Names = [
-      { Name: ITEM_NAMES_RANGE, Ref: `${ITEM_LIST_SHEET}!$A$1:$A$${itemNames.length}` },
-    ];
+    book.Workbook.Sheets = sheetVisibility;
+    book.Workbook.Names = definedNames;
   }
 
   const workbook = XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-  if (itemNames.length === 0) return workbook;
 
   // SheetJS cannot write data validation, so the element is injected into the
   // finished file. A workbook it cannot patch comes back untouched and still
   // works by typing -- see addListValidation.
-  return addListValidation(workbook, {
-    // The order sheet is appended first, so it is written as sheet1.
-    sheetFile: 'xl/worksheets/sheet1.xml',
-    sqref: `A2:A${MAX_ROWS + 1}`,
-    formula: ITEM_NAMES_RANGE,
-    errorTitle: 'Not on this price list',
-    error:
-      'Pick an item from the dropdown. Only items priced for this business at ' +
-      'this laundry type can be imported.',
-  });
+  //
+  // BOTH dropdowns go in ONE call: a worksheet carries a single
+  // `<dataValidations>` element, so they have to be written together.
+  const validations = [];
+  if (itemNames.length > 0) {
+    validations.push({
+      // The order sheet is appended first, so it is written as sheet1.
+      sheetFile: 'xl/worksheets/sheet1.xml',
+      sqref: `A2:A${MAX_ROWS + 1}`,
+      formula: ITEM_NAMES_RANGE,
+      errorTitle: 'Not on this price list',
+      error:
+        'Pick an item from the dropdown. Only items priced for this business at ' +
+        'this laundry type can be imported.',
+    });
+  }
+  if (serviceNames.length > 0) {
+    validations.push({
+      sheetFile: 'xl/worksheets/sheet1.xml',
+      // Column B, row by row, so every line carries its own choice.
+      sqref: `B2:B${MAX_ROWS + 1}`,
+      formula: SERVICE_NAMES_RANGE,
+      errorTitle: 'Not a service for this business',
+      error:
+        'Pick a service type from the dropdown. The upload checks that the item ' +
+        'on the same row is actually offered for it.',
+    });
+  }
+  if (validations.length === 0) return workbook;
+
+  return addListValidation(workbook, validations);
 }
 
 /** `EstablishmentName_Walking_Order_Template_Hotel_Laundry.xlsx` */

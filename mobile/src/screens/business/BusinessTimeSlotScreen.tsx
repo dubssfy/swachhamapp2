@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
-  TextInput,
   KeyboardAvoidingView,
   Platform,
   Image,
@@ -15,299 +14,144 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import OrderConfirmationModal from '../../components/OrderConfirmationModal';
-import DateStrip from '../../components/business/DateStrip';
-import TimeSlotRow from '../../components/business/TimeSlotRow';
-import businessOrderApi, { BusinessTimeSlot } from '../../services/businessOrderApi';
-import { extractErrorMessage } from '../../services/api';
-import {
-  useBusinessOrderStore,
-  SCHEDULE_REQUIRED_MESSAGE,
-  DELIVERY_DATE_REQUIRED_MESSAGE,
-  DELIVERY_TIME_REQUIRED_MESSAGE,
-} from '../../store/businessOrderStore';
-import {
-  todayIST,
-  dateRange,
-  getMinimumDeliveryDate,
-  formatLongDateIST,
-  formatShortDateIST,
-  validatePickupDateTime,
-  validateDeliveryDateTime,
-  getAvailableDeliverySlots,
-} from '../../utils/istDates';
+/* DateStrip and TimeSlotRow are no longer imported here — this screen has no
+   date or time to pick. Both components are untouched and still used by the
+   rest of the app. */
+import businessOrderApi from '../../services/businessOrderApi';
+import { useBusinessOrderStore } from '../../store/businessOrderStore';
+import { todayIST, addDays } from '../../utils/istDates';
 
 /**
- * Pickup & Delivery — the step between the Cart and the order itself.
+ * Review Order — the step between the Cart and the order itself.
  *
  * Its own page in the Cart stack, so the Cart holds nothing but the cart. The
  * Cart screen stays mounted underneath while this is open, which is what
  * keeps every item and quantity intact on the way back.
  *
- * TWO SEPARATE SECTIONS. Pickup and delivery are distinct bookings on
- * distinct days, so they get distinct sections, each with its own date and
- * its own time. Nothing is shared between them but the working day's slots.
+ * THE BUSINESS NO LONGER SCHEDULES THE COLLECTION.
  *
- * PROGRESSIVE DISCLOSURE. A section's times appear only after its date is
- * chosen — there is nothing to pick a time on until there is a day, and an
- * empty row of times before then is noise. Delivery dates cannot even be
- * offered until the pickup date is known, because the earliest of them is
- * derived from it.
+ * This page used to carry two booking sections — "Pickup Details" and
+ * "Delivery Details" — where the business picked a date and a time for each.
+ * Both are gone. A Manager now sets the pickup when they accept the order,
+ * which is why the business is not asked to guess at one: a business order is
+ * created at PENDING_APPROVAL and waits for that acceptance before anything
+ * is committed to.
  *
- * DELIVERY IS OPTIONAL. Continue is gated on the PICKUP alone: a business
- * often does not know when it wants the laundry back at the moment it books
- * the collection, and making it guess produces a wrong date rather than no
- * date. The delivery can be scheduled afterwards from the order. What is not
- * allowed is half a delivery — a date with no time, or a time with no date —
- * so the two are validated as a pair whenever either is set.
+ * The page is therefore a REVIEW: what is in the order, and one button to
+ * place it. The order's lifecycle is untouched — it still runs
+ * Order Placed -> Pickup -> Processing -> Out for Delivery -> Delivered, and
+ * the tracking screen still shows every one of those stages.
  *
- * IST EVERYWHERE. Every date and every cutoff comes from `utils/istDates`,
- * never from the device's own calendar. The server re-checks all of it in
- * `pickupSlot.service.ts`, and the server is what decides.
+ * THE PROVISIONAL PICKUP BELOW IS TEMPORARY. See `resolveProvisionalPickup`.
  */
 
-/** How many days ahead each strip offers, from its own first day. */
-const DAY_COUNT = 7;
+/**
+ * A placeholder pickup, sent only because the server still insists on one.
+ *
+ * TODAY the order endpoint rejects a booking with no pickup date and slot —
+ * `pickupSlot.service.ts` throws before the order is written. The business
+ * side no longer collects either, so one has to be supplied for the order to
+ * be accepted at all.
+ *
+ * It is a PLACEHOLDER, not a promise. The order is created at
+ * PENDING_APPROVAL and the Manager sets the real collection when they accept
+ * it, overwriting this. Tomorrow's first slot is used rather than one later
+ * today, for two reasons: it cannot go stale while the screen is open (a slot
+ * today can start, and the server then refuses it), and it never reads as a
+ * commitment to collect within the hour.
+ *
+ * DELETE THIS ONCE THE BACKEND STOPS REQUIRING A PICKUP. When the order
+ * endpoint accepts a booking with no schedule and the Manager's accept step
+ * writes it instead, this helper and its call site are the whole of what has
+ * to be removed here — nothing else on this screen depends on it.
+ */
+const PROVISIONAL_PICKUP_SLOT_FALLBACK = '09-11';
 
 export default function BusinessTimeSlotScreen({ navigation }: any) {
   const { confirmOrder, isPlacingOrder, cart } = useBusinessOrderStore();
 
-  // Nothing is preselected: choosing the pickup date is the first thing to do
-  // here, and it is what reveals the rest of the page.
-  const [pickupDate, setPickupDate] = useState<string | null>(null);
-  const [pickupSlotId, setPickupSlotId] = useState<string | null>(null);
-  const [deliveryDate, setDeliveryDate] = useState<string | null>(null);
-  const [deliverySlotId, setDeliverySlotId] = useState<string | null>(null);
-
-  /** Optional free text, kept alongside the slots and sent with the order. */
-  const [pickupNotes, setPickupNotes] = useState('');
-  const [serviceNotes, setServiceNotes] = useState('');
-
-  /**
-   * Slots are fetched per date, because availability depends on the date: on
-   * today the server marks the slots that have already started unavailable.
-   * The two legs are held separately so a pickup on today and a delivery on a
-   * later day each get their own answer.
+  /*
+   * No pickup or delivery state lives here any more. The business does not
+   * choose either, so there is nothing on this screen to hold — the
+   * provisional pickup is resolved at the moment the order is placed and is
+   * never shown.
    */
-  const [pickupSlots, setPickupSlots] = useState<BusinessTimeSlot[]>([]);
-  const [deliverySlots, setDeliverySlots] = useState<BusinessTimeSlot[]>([]);
-  const [isLoadingPickupSlots, setIsLoadingPickupSlots] = useState(false);
-  const [isLoadingDeliverySlots, setIsLoadingDeliverySlots] = useState(false);
-  const [slotsError, setSlotsError] = useState('');
+
+  /*
+   * The two free-text note fields that used to live here — "Pickup And Drop
+   * Notes" and "Laundry service Notes" — have been removed from the Business
+   * order flow, along with the state that backed them. Nothing is sent for
+   * them any more; see `handleContinue`.
+   */
+
   const [error, setError] = useState('');
 
   /** Set once the order is placed; drives the existing confirmation panel. */
-  const [placedOrder, setPlacedOrder] = useState<{
-    number: string;
-    pickupDate: string;
-    pickupSlot: string;
-    deliveryDate: string;
-    deliverySlot: string;
-  } | null>(null);
+  const [placedOrder, setPlacedOrder] = useState<{ number: string } | null>(null);
 
   /**
-   * Pickup days start at today IN IST — read at render, so a screen left open
-   * across midnight offers the new Indian day rather than a stale one.
-   */
-  const pickupDays = useMemo(() => dateRange(todayIST(), DAY_COUNT), []);
-
-  /**
-   * Delivery days start the day AFTER the chosen pickup, and are recomputed
-   * whenever that pickup changes. Same-day delivery is therefore not offered
-   * at all — it is absent from the strip, not merely rejected on tap.
-   */
-  const deliveryDays = useMemo(
-    () => (pickupDate ? dateRange(getMinimumDeliveryDate(pickupDate), DAY_COUNT) : []),
-    [pickupDate]
-  );
-
-  const loadSlots = useCallback(
-    async (date: string, leg: 'pickup' | 'delivery') => {
-      const setLoading = leg === 'pickup' ? setIsLoadingPickupSlots : setIsLoadingDeliverySlots;
-      const setSlots = leg === 'pickup' ? setPickupSlots : setDeliverySlots;
-      try {
-        setSlotsError('');
-        setLoading(true);
-        // The server answers for THIS date, so the row can never show a slot
-        // the order endpoint would refuse.
-        const response = await businessOrderApi.getTimeSlots(date);
-        setSlots(response.data || []);
-      } catch (err: any) {
-        setSlots([]);
-        setSlotsError(extractErrorMessage(err, 'Could not load time slots. Please try again.'));
-      } finally {
-        setLoading(false);
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
-    if (pickupDate) loadSlots(pickupDate, 'pickup');
-  }, [pickupDate, loadSlots]);
-
-  useEffect(() => {
-    if (deliveryDate) loadSlots(deliveryDate, 'delivery');
-  }, [deliveryDate, loadSlots]);
-
-  /**
-   * Choosing a pickup date re-evaluates everything downstream of it, because
-   * the earliest delivery date is derived from it.
-   */
-  const handlePickupDate = (dateKey: string) => {
-    setPickupDate(dateKey);
-    // A different day has a different cutoff, so the pickup time is re-chosen.
-    setPickupSlotId(null);
-
-    // A delivery date that is still after the new pickup stays, and so do its
-    // slots — they were loaded for that date and are unaffected by the pickup
-    // moving. Anything else is no longer a valid delivery and is cleared
-    // whole, so a stale date can never survive a pickup change.
-    const deliveryStillValid = Boolean(deliveryDate && deliveryDate > dateKey);
-    if (!deliveryStillValid) {
-      setDeliveryDate(null);
-      setDeliverySlotId(null);
-      setDeliverySlots([]);
-    }
-    setError('');
-  };
-
-  const handleDeliveryDate = (dateKey: string) => {
-    setDeliveryDate(dateKey);
-    setDeliverySlotId(null);
-    setError('');
-  };
-
-  const labelOf = (slots: BusinessTimeSlot[], id: string | null) =>
-    (id && slots.find((slot) => slot.id === id)?.label) || null;
-
-  const pickupSlot = pickupSlots.find((slot) => slot.id === pickupSlotId) || null;
-
-  /**
-   * THE 24-HOUR TURNAROUND, applied to what is offered rather than only to
-   * what is accepted.
+   * Picks the placeholder pickup described at the top of this file.
    *
-   * A slot fewer than 24 hours after the chosen pickup TIME is not shown at
-   * all, so the earliest delivery on the day after a 6pm pickup is 6pm. The
-   * list therefore depends on the pickup slot as well as the delivery date,
-   * and recomputes whenever either moves.
+   * It asks the server which slots exist for tomorrow rather than hardcoding
+   * one, so a change to the working day is picked up here for free. The
+   * fallback covers only the case where that call fails — an order should not
+   * be blocked by a lookup for a value the Manager is going to replace.
    */
-  const availableDeliverySlots = useMemo(
-    () => getAvailableDeliverySlots(deliverySlots, deliveryDate, pickupDate, pickupSlot),
-    [deliverySlots, deliveryDate, pickupDate, pickupSlot]
-  );
-
-  const deliverySlot =
-    availableDeliverySlots.find((slot) => slot.id === deliverySlotId) || null;
-  const pickupLabel = labelOf(pickupSlots, pickupSlotId);
-  const deliveryLabel = labelOf(availableDeliverySlots, deliverySlotId);
-
-  /**
-   * A delivery time chosen before the pickup moved later can stop qualifying.
-   * Dropping it here means the screen can never hold a selection that is no
-   * longer offered — which the user would otherwise only discover on Continue.
-   */
-  useEffect(() => {
-    if (deliverySlotId && !availableDeliverySlots.some((slot) => slot.id === deliverySlotId)) {
-      setDeliverySlotId(null);
+  const resolveProvisionalPickup = useCallback(async () => {
+    const date = addDays(todayIST(), 1);
+    try {
+      const response = await businessOrderApi.getTimeSlots(date);
+      const slot = (response.data || []).find((option) => option.available);
+      return { date, slotId: slot?.id || PROVISIONAL_PICKUP_SLOT_FALLBACK };
+    } catch {
+      return { date, slotId: PROVISIONAL_PICKUP_SLOT_FALLBACK };
     }
-  }, [availableDeliverySlots, deliverySlotId]);
-
-  // Continue needs the pickup and nothing else. A delivery that has been
-  // half-entered still blocks it, because that is an unfinished edit rather
-  // than a decision to skip.
-  const deliveryHalfEntered =
-    (Boolean(deliveryDate) && !deliverySlotId) || (!deliveryDate && Boolean(deliverySlotId));
-  const isReady = Boolean(pickupDate && pickupSlotId) && !deliveryHalfEntered;
+  }, []);
 
   /**
    * Places the order.
    *
-   * Each rule is checked in the order the user meets it and reported in its
-   * own words, so "what is missing" is never a guess. The server enforces the
-   * identical set, so a request that skipped this screen is refused too — the
-   * checks here exist to answer sooner, not to be the authority.
+   * There is nothing on this page for the business to get wrong any more, so
+   * there is nothing to validate before sending: the cart's own rules (at
+   * least one item, every line with a service, a laundry type) are enforced
+   * by the store and by the server, exactly as they were.
    */
   const handleContinue = async () => {
     if (isPlacingOrder) return;
 
-    const pickupProblem = validatePickupDateTime(pickupDate, pickupSlot);
-    if (pickupProblem) {
-      setError(!pickupDate || !pickupSlotId ? SCHEDULE_REQUIRED_MESSAGE : pickupProblem);
-      return;
-    }
-    // Delivery is optional, but not half-optional: a date on its own is an
-    // unfinished choice and is reported as the missing time, and vice versa.
-    if (deliveryDate && !deliverySlotId) {
-      setError(DELIVERY_TIME_REQUIRED_MESSAGE);
-      return;
-    }
-    if (!deliveryDate && deliverySlotId) {
-      setError(DELIVERY_DATE_REQUIRED_MESSAGE);
-      return;
-    }
-    if (deliveryDate && deliverySlotId) {
-      const deliveryProblem = validateDeliveryDateTime(
-        pickupDate,
-        deliveryDate,
-        deliverySlot,
-        pickupSlot
-      );
-      if (deliveryProblem) {
-        setError(deliveryProblem);
-        return;
-      }
-    }
-
     try {
       setError('');
+      // The placeholder the server still requires. The Manager replaces it
+      // when they accept the order — see the note at the top of this file.
+      const provisional = await resolveProvisionalPickup();
+
       const order = await confirmOrder({
-        pickupDate: pickupDate!,
-        pickupSlot: pickupSlotId!,
-        // Null, not undefined: "deliberately not scheduled" is a state the
-        // server stores, not a field that went missing.
-        deliveryDate: deliveryDate || null,
-        deliverySlot: deliverySlotId || null,
-        // Both optional: an empty note is simply not stored.
-        pickupNotes: pickupNotes.trim(),
-        serviceNotes: serviceNotes.trim(),
+        pickupDate: provisional.date,
+        pickupSlot: provisional.slotId,
+        /*
+         * NO DELIVERY IS BOOKED. Null, not undefined: "deliberately not
+         * scheduled" is a state the server stores, and it is already the
+         * supported way to place an order whose delivery comes later.
+         */
+        deliveryDate: null,
+        deliverySlot: null,
+        /*
+         * NO NOTES ARE SENT.
+         *
+         * `pickupNotes` and `serviceNotes` are gone from the Business payload
+         * entirely rather than sent empty. The server reads them with a
+         * helper that treats a missing field as no note, so their absence
+         * changes nothing about how the order is created — the columns simply
+         * take NULL, exactly as they already did for an order placed without
+         * notes. Nothing on the backend or in the schema was changed, and
+         * notes on existing orders are untouched.
+         */
       });
-      setPlacedOrder({
-        number: order.order_number,
-        pickupDate: formatLongDateIST(order.pickup?.date || pickupDate!),
-        pickupSlot: order.pickup?.slot_label || pickupLabel || '',
-        deliveryDate: order.delivery?.date
-          ? formatLongDateIST(order.delivery.date)
-          : deliveryDate
-            ? formatLongDateIST(deliveryDate)
-            : '',
-        deliverySlot: order.delivery?.slot_label || deliveryLabel || '',
-      });
+      setPlacedOrder({ number: order.order_number });
     } catch (err: any) {
       setError(err?.message || 'Failed to place order');
     }
   };
-
-  /** The read-only field that shows what a strip has selected. */
-  const dateField = (value: string | null, placeholder: string) => (
-    <View style={[styles.dateField, !value && styles.dateFieldEmpty]}>
-      <Ionicons
-        name="calendar-outline"
-        size={16}
-        color={value ? COLORS.PrimaryDark : COLORS.TextSecondary}
-      />
-      <Text style={[styles.dateFieldText, !value && styles.dateFieldTextEmpty]}>
-        {value ? formatShortDateIST(value) : placeholder}
-      </Text>
-    </View>
-  );
-
-  const slotsBusy = (loading: boolean) =>
-    loading ? (
-      <View style={styles.inlineLoading}>
-        <ActivityIndicator size="small" color={COLORS.Primary} />
-        <Text style={styles.hintTextSmall}>Loading times...</Text>
-      </View>
-    ) : null;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -334,7 +178,10 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
           <Ionicons name="arrow-back" size={22} color={COLORS.PrimaryDark} />
           <Text style={styles.backButtonText}>Back</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Pickup & Delivery</Text>
+        {/* Renamed with the booking sections: the page no longer schedules a
+            pickup or a delivery, so a title promising both would be the sort
+            of leftover label the removal was meant to get rid of. */}
+        <Text style={styles.headerTitle}>Review Order</Text>
       </View>
 
       <KeyboardAvoidingView
@@ -342,193 +189,34 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          {/* ================= PICKUP DETAILS ================= */}
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Pickup Details</Text>
+          {/* The "Pickup Details" and "Delivery Details" cards stood here.
+              Both are gone whole — heading, date strip and time row — rather
+              than emptied, so the summary is now the first card on the page
+              and there is no orphaned panel, divider or gap above it. */}
 
-            <Text style={styles.fieldLabel}>
-              Pickup Date <Text style={styles.required}>*</Text>
-            </Text>
-            {dateField(pickupDate, 'Select Date')}
-            <DateStrip
-              dates={pickupDays}
-              selected={pickupDate}
-              onSelect={handlePickupDate}
-              label="Pickup date"
-            />
-
-            {/* Times only exist once there is a day to put them on. */}
-            {pickupDate ? (
-              <>
-                <Text style={[styles.fieldLabel, styles.fieldLabelSpaced]}>
-                  Pickup Time <Text style={styles.required}>*</Text>
-                </Text>
-                {slotsBusy(isLoadingPickupSlots) || (
-                  <TimeSlotRow
-                    slots={pickupSlots}
-                    selectedId={pickupSlotId}
-                    onSelect={(id) => {
-                      setPickupSlotId(id);
-                      setError('');
-                    }}
-                    label="Pickup time"
-                    emptyText="No pickup times left today. Please choose a later date."
-                  />
-                )}
-              </>
-            ) : (
-              <Text style={styles.hintTextSmall}>Select a pickup date to see the times.</Text>
-            )}
-          </View>
-
-          {/* ================= DELIVERY DETAILS ================= */}
-          <View style={styles.card}>
-            <View style={styles.sectionHeadRow}>
-              <Text style={styles.sectionTitle}>Delivery Details</Text>
-              <Text style={styles.optionalBadge}>OPTIONAL</Text>
-            </View>
-            <Text style={styles.sectionHint}>
-              You can skip this and choose the delivery slot later from your order.
-            </Text>
-
-            {!pickupDate ? (
-              <Text style={styles.hintTextSmall}>
-                Choose a pickup date first — delivery starts the day after it.
-              </Text>
-            ) : (
-              <>
-                <Text style={styles.fieldLabel}>Delivery Date</Text>
-                {dateField(deliveryDate, 'Select Date')}
-                <DateStrip
-                  dates={deliveryDays}
-                  selected={deliveryDate}
-                  onSelect={handleDeliveryDate}
-                  label="Delivery date"
-                />
-
-                {deliveryDate ? (
-                  <TouchableOpacity
-                    style={styles.clearDelivery}
-                    onPress={() => {
-                      setDeliveryDate(null);
-                      setDeliverySlotId(null);
-                      setDeliverySlots([]);
-                      setError('');
-                    }}
-                    accessibilityLabel="Clear the delivery date and time"
-                  >
-                    <Ionicons name="close-circle-outline" size={14} color={COLORS.TextSecondary} />
-                    <Text style={styles.clearDeliveryText}>Clear delivery, schedule later</Text>
-                  </TouchableOpacity>
-                ) : null}
-
-                {deliveryDate ? (
-                  <>
-                    {/* Required only once a delivery date exists: at that
-                        point the delivery is being booked, so it needs both. */}
-                    <Text style={[styles.fieldLabel, styles.fieldLabelSpaced]}>
-                      Delivery Time <Text style={styles.required}>*</Text>
-                    </Text>
-                    {slotsBusy(isLoadingDeliverySlots) ||
-                      (availableDeliverySlots.length === 0 ? (
-                        // Every slot on this day falls inside the turnaround.
-                        // Saying why beats an empty row the user cannot act on.
-                        <Text style={styles.hintTextSmall}>
-                          No delivery times on this day are at least 24 hours after your
-                          pickup. Please choose a later delivery date.
-                        </Text>
-                      ) : (
-                        <TimeSlotRow
-                          slots={availableDeliverySlots}
-                          selectedId={deliverySlotId}
-                          onSelect={(id) => {
-                            setDeliverySlotId(id);
-                            setError('');
-                          }}
-                          label="Delivery time"
-                        />
-                      ))}
-                  </>
-                ) : (
-                  <Text style={styles.hintTextSmall}>
-                    Select a delivery date to see the times.
-                  </Text>
-                )}
-              </>
-            )}
-          </View>
-
-          {slotsError ? (
-            <View style={styles.errorBlock}>
-              <Text style={styles.errorText}>{slotsError}</Text>
-              <TouchableOpacity
-                style={styles.retryButton}
-                onPress={() => {
-                  if (pickupDate) loadSlots(pickupDate, 'pickup');
-                  if (deliveryDate) loadSlots(deliveryDate, 'delivery');
-                }}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="refresh" size={16} color={COLORS.Surface} />
-                <Text style={styles.retryText}>RETRY</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
-
-          {/* ================= NOTES ================= */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Pickup And Drop Notes</Text>
-            <TextInput
-              style={styles.noteInput}
-              value={pickupNotes}
-              onChangeText={setPickupNotes}
-              placeholder="Type Instruction"
-              placeholderTextColor={COLORS.TextSecondary}
-              multiline
-              maxLength={500}
-              textAlignVertical="top"
-              accessibilityLabel="Pickup and drop notes"
-            />
-
-            <Text style={[styles.cardTitle, styles.noteHeadingSpacing]}>
-              Laundry service Notes
-            </Text>
-            <TextInput
-              style={styles.noteInput}
-              value={serviceNotes}
-              onChangeText={setServiceNotes}
-              placeholder="Type Instruction"
-              placeholderTextColor={COLORS.TextSecondary}
-              multiline
-              maxLength={500}
-              textAlignVertical="top"
-              accessibilityLabel="Laundry service notes"
-            />
-          </View>
-
-          {/* What is about to be booked, in the order it was chosen. */}
+          {/* What is in the order. */}
+          {/* The Pickup and Delivery lines that sat above Items are gone with
+              the sections that fed them: with nothing chosen here, they could
+              only have printed a placeholder the business never picked. */}
           <View style={styles.summaryCard}>
-            <SummaryLine
-              label="Pickup"
-              value={
-                pickupDate ? `${formatShortDateIST(pickupDate)}${pickupLabel ? ` · ${pickupLabel}` : ''}` : null
-              }
-            />
-            <SummaryLine
-              label="Delivery"
-              value={
-                deliveryDate
-                  ? `${formatShortDateIST(deliveryDate)}${deliveryLabel ? ` · ${deliveryLabel}` : ''}`
-                  : null
-              }
-              /* Not an error: leaving it unset is a supported choice here. */
-              missingText="To be scheduled later"
-              missingIsOk
-            />
             <SummaryLine
               label="Items"
               value={cart?.items?.length ? String(cart.items.length) : '0'}
             />
+            {/* The "Total Weight" line stood here. Removed from this review
+                only: `cart.total_weight_kg` is still returned by the server
+                and still carried on the cart for the rest of the app. */}
+          </View>
+
+          {/* Says what happens next, in place of the booking the business used
+              to make here. Without it the page would simply stop asking for a
+              pickup with no explanation of who arranges one. */}
+          <View style={styles.scheduleNote}>
+            <Ionicons name="information-circle-outline" size={18} color={COLORS.Primary} />
+            <Text style={styles.scheduleNoteText}>
+              Your collection will be scheduled and confirmed by our team once your
+              order is accepted.
+            </Text>
           </View>
 
           {error ? (
@@ -541,11 +229,12 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
 
         <View style={styles.footer}>
           <TouchableOpacity
-            style={[styles.continueButton, (!isReady || isPlacingOrder) && styles.buttonDisabled]}
+            style={[styles.continueButton, isPlacingOrder && styles.buttonDisabled]}
             onPress={handleContinue}
             /* Disabled for the whole round trip, so a second tap cannot send a
-               second order. Left tappable while incomplete so pressing it
-               explains what is missing instead of doing nothing. */
+               second order. There is nothing left on this page to complete, so
+               it is otherwise always enabled — the cart's own rules are
+               enforced by the store and reported in the error row above. */
             disabled={isPlacingOrder}
             activeOpacity={0.85}
           >
@@ -556,7 +245,7 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
               </>
             ) : (
               <>
-                <Text style={styles.continueText}>Continue</Text>
+                <Text style={styles.continueText}>Place Order</Text>
                 <Ionicons name="arrow-forward" size={20} color={COLORS.Surface} />
               </>
             )}
@@ -564,14 +253,14 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
         </View>
       </KeyboardAvoidingView>
 
-      {/* The existing branded confirmation, now showing both dates. */}
+      {/* The existing branded confirmation. No pickup or delivery props are
+          passed any more: the modal already renders that block only when it
+          is given one, so it now shows the order number alone rather than a
+          collection time nobody chose. The component itself is unchanged and
+          still supports those props for any other caller. */}
       <OrderConfirmationModal
         visible={Boolean(placedOrder)}
         orderNumber={placedOrder?.number || ''}
-        pickupDate={placedOrder?.pickupDate}
-        pickupSlot={placedOrder?.pickupSlot}
-        deliveryDate={placedOrder?.deliveryDate}
-        deliverySlot={placedOrder?.deliverySlot}
         onViewOrders={() => {
           setPlacedOrder(null);
           navigation.navigate('BusinessOrders');
@@ -667,75 +356,35 @@ const styles = StyleSheet.create({
 
   content: { padding: SPACING.md, paddingBottom: SPACING.xl },
 
-  card: {
-    backgroundColor: COLORS.Surface,
-    borderRadius: BORDER_RADIUS.lg,
-    borderWidth: 1,
-    borderColor: COLORS.Border,
-    padding: SPACING.md,
-    marginBottom: SPACING.md,
-    ...SHADOWS.light,
-  },
-  /** The heading of one booking section, e.g. "Pickup Details". */
-  sectionTitle: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.lg,
-    fontWeight: '800',
-    color: COLORS.PrimaryDark,
-    marginBottom: SPACING.sm,
-  },
-  cardTitle: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.base,
-    fontWeight: '800',
-    color: COLORS.TextPrimary,
-    marginBottom: SPACING.sm,
-  },
-  fieldLabel: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.sm,
-    fontWeight: '700',
-    color: COLORS.TextPrimary,
-    marginBottom: SPACING.xs,
-  },
-  fieldLabelSpaced: { marginTop: SPACING.md },
-  required: { color: COLORS.Error },
+  /*
+   * The booking sections' styles are gone with the sections themselves:
+   * `card`, `sectionTitle`, `sectionHeadRow`, `optionalBadge`, `sectionHint`,
+   * `fieldLabel`, `fieldLabelSpaced`, `required`, the `dateField*` set,
+   * `clearDelivery*`, `hintTextSmall`, `inlineLoading`, `errorBlock`,
+   * `retryButton`/`retryText`, and the notes card's `cardTitle`, `noteInput`
+   * and `noteHeadingSpacing`. Every one of them was used only by the removed
+   * markup, so none is left behind as a dead rule.
+   */
 
-  // ---- The selected-date readout above each strip ----
-  dateField: {
+  /** What happens next, in place of the booking the business used to make. */
+  scheduleNote: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: SPACING.xs,
-    height: 40,
-    paddingHorizontal: SPACING.sm,
-    borderRadius: BORDER_RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.Primary,
-    backgroundColor: '#F1F9F4',
-    marginBottom: SPACING.sm,
-  },
-  dateFieldEmpty: { borderColor: COLORS.Border, backgroundColor: COLORS.Background },
-  dateFieldText: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.sm,
-    fontWeight: '700',
-    color: COLORS.PrimaryDark,
-  },
-  dateFieldTextEmpty: { fontWeight: '600', color: COLORS.TextSecondary },
-
-  // ---- Notes ----
-  noteInput: {
-    minHeight: 96,
-    borderRadius: BORDER_RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.Border,
-    backgroundColor: COLORS.Background,
+    alignItems: 'flex-start',
+    gap: SPACING.sm,
     padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: '#F1F9F4',
+    borderWidth: 1,
+    borderColor: COLORS.Accent,
+    marginBottom: SPACING.md,
+  },
+  scheduleNoteText: {
+    flex: 1,
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.sm,
+    lineHeight: 19,
     color: COLORS.TextPrimary,
   },
-  noteHeadingSpacing: { marginTop: SPACING.md },
 
   // ---- Summary ----
   summaryCard: {
@@ -770,61 +419,7 @@ const styles = StyleSheet.create({
   /* Absent on purpose reads as ordinary text, never as an error. */
   summaryValueOptional: { color: COLORS.TextSecondary, fontWeight: '600' },
 
-  sectionHeadRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
-  optionalBadge: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-    color: COLORS.TextSecondary,
-    backgroundColor: COLORS.Background,
-    borderRadius: BORDER_RADIUS.full,
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: 2,
-    overflow: 'hidden',
-  },
-  sectionHint: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.xs,
-    color: COLORS.TextSecondary,
-    marginTop: 2,
-    marginBottom: SPACING.sm,
-  },
-  clearDelivery: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    alignSelf: 'flex-start',
-    paddingVertical: SPACING.xs,
-  },
-  clearDeliveryText: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.xs,
-    color: COLORS.TextSecondary,
-    textDecorationLine: 'underline',
-  },
-
   // ---- States ----
-  inlineLoading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: SPACING.xs,
-    paddingVertical: SPACING.sm,
-  },
-  hintTextSmall: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.xs,
-    color: COLORS.TextSecondary,
-    paddingVertical: SPACING.xs,
-  },
-  errorBlock: {
-    alignItems: 'center',
-    gap: SPACING.sm,
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    backgroundColor: '#FDECEC',
-    marginBottom: SPACING.md,
-  },
   errorRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -840,24 +435,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.Error,
   },
-  retryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: SPACING.xs,
-    minHeight: 40,
-    paddingHorizontal: SPACING.lg,
-    borderRadius: BORDER_RADIUS.md,
-    backgroundColor: COLORS.Primary,
-  },
-  retryText: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.xs,
-    fontWeight: '800',
-    color: COLORS.Surface,
-    letterSpacing: 0.5,
-  },
-
   // ---- Footer ----
   footer: {
     padding: SPACING.md,

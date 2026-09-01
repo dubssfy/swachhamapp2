@@ -7,6 +7,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Image,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigationState } from '@react-navigation/native';
@@ -15,6 +16,9 @@ import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../const
 import businessOrderApi, { BusinessProfile } from '../../services/businessOrderApi';
 import { extractErrorMessage } from '../../services/api';
 import { useAuthStore } from '../../store/authStore';
+import { DEMO_MODE } from '../../demo/demoMode';
+import { resetDemoData } from '../../demo/demoBusinessOrderApi';
+import DemoBadge from '../../components/demo/DemoBadge';
 
 type Row = {
   key: string;
@@ -96,6 +100,8 @@ export default function BusinessProfileScreen({ navigation }: any) {
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  /** Demo builds only; always false in a production build. */
+  const [isResettingDemo, setIsResettingDemo] = useState(false);
   const { logout } = useAuthStore();
 
   const load = useCallback(async () => {
@@ -115,6 +121,48 @@ export default function BusinessProfileScreen({ navigation }: any) {
     const unsubscribe = navigation.addListener('focus', load);
     return unsubscribe;
   }, [navigation, load]);
+
+  /**
+   * RESET DEMO DATA — demo builds only.
+   *
+   * Throws away everything the demo has created on THIS PHONE and starts it
+   * over: an EMPTY order list, the demo profile, an empty cart, and numbering
+   * back at DEMO-1001. There are no sample orders to restore — the demo seeds
+   * none, so a reset leaves the Orders list blank until the next order is
+   * placed.
+   *
+   * It cannot reach anything else. The demo build has no connection to any
+   * server (the API client refuses every request), so "reset" is a local file
+   * being rewritten and nothing more — there is no production data within its
+   * reach to affect.
+   */
+  const handleResetDemo = () => {
+    Alert.alert(
+      'Reset demo data',
+      'Are you sure you want to reset the demo data?\n\nOrders created during this demonstration will be removed and the order list will start empty again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setIsResettingDemo(true);
+              await resetDemoData();
+              // The profile is part of what was reset, so it is re-read here;
+              // every other screen reloads when it is next focused.
+              await load();
+              Alert.alert('Demo data reset', 'The order list is empty and demo numbering starts again at DEMO-1001.');
+            } catch {
+              Alert.alert('Could not reset', 'Please try again.');
+            } finally {
+              setIsResettingDemo(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -144,6 +192,8 @@ export default function BusinessProfileScreen({ navigation }: any) {
               resizeMode="contain"
               accessibilityLabel="Swachham"
             />
+            {/* Renders nothing outside a demo build. */}
+            <DemoBadge tone="light" />
           </View>
 
           {isLoading ? (
@@ -196,6 +246,46 @@ export default function BusinessProfileScreen({ navigation }: any) {
             </TouchableOpacity>
           ))}
         </View>
+
+        {/* =================================================
+            DEMO CONTROLS
+
+            Present ONLY in a demo build. Its own quiet card
+            rather than a row inside "Your Information": it
+            is about the demonstration, not about the hotel's
+            account, and mixing the two would read as an
+            internal tool having been left switched on.
+        ================================================= */}
+        {DEMO_MODE ? (
+          <>
+            <Text style={styles.sectionTitle}>Demonstration</Text>
+            <View style={styles.listCard}>
+              <TouchableOpacity
+                style={styles.row}
+                activeOpacity={0.7}
+                onPress={handleResetDemo}
+                disabled={isResettingDemo}
+                accessibilityRole="button"
+                accessibilityLabel="Reset demo data"
+              >
+                <View style={styles.rowIconCircle}>
+                  {isResettingDemo ? (
+                    <ActivityIndicator size="small" color={COLORS.TextPrimary} />
+                  ) : (
+                    <Ionicons name="refresh-outline" size={22} color={COLORS.TextPrimary} />
+                  )}
+                </View>
+                <View style={styles.rowTextWrap}>
+                  <Text style={styles.rowTitle}>Reset Demo Data</Text>
+                  <Text style={styles.rowSubtitle}>
+                    Clear the orders placed in this demo and start again
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={COLORS.TextSecondary} />
+              </TouchableOpacity>
+            </View>
+          </>
+        ) : null}
 
         <TouchableOpacity style={styles.logoutButton} onPress={() => logout()} activeOpacity={0.8}>
           <Ionicons name="log-out-outline" size={20} color={COLORS.Error} />

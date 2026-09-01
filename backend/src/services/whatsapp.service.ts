@@ -200,6 +200,163 @@ export async function sendAdjustmentTemplate(params: {
 }
 
 /**
+ * WhatsApp's own ceiling for a media caption. Meta rejects the whole message
+ * when it is exceeded, so the text is cut here rather than at Meta.
+ */
+const MAX_CAPTION = 1024;
+
+/**
+ * Sends ONE image message carrying the photo AND its details in the caption.
+ *
+ * WHY THIS EXISTS ALONGSIDE THE TEMPLATE SENDERS. An approved template's body
+ * parameters are fixed at approval time, and the account's defect template —
+ * `defective_piece_notification` — has room for a name and an order number
+ * and nothing else. A defect report has to carry the item, the service, both
+ * quantities, the date and the reason, and there is no approved template on
+ * the account with those fields.
+ *
+ * A media message with a caption carries all of it in ONE message, photo
+ * included. Its limit is the 24-hour customer-service window: Meta delivers
+ * free-form messages only to a number that has written to the business number
+ * recently. Staff phones normally have; a customer's may not.
+ *
+ * So this is TRIED, and the caller falls back to the approved template when
+ * Meta refuses — which is why this never throws and reports the real reason
+ * instead. One message per recipient either way; the fallback is only ever
+ * reached when this one was NOT delivered.
+ */
+export async function sendImageWithCaption(params: {
+  to: string;
+  mediaId: string;
+  caption: string;
+  /** For the log line only. */
+  orderNumber: string;
+}): Promise<WhatsAppSendResult> {
+  if (!isWhatsAppConfigured()) {
+    return {
+      ok: false,
+      messageId: null,
+      error:
+        'WhatsApp is not configured on the server (WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_ACCESS_TOKEN).',
+    };
+  }
+
+  try {
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: params.to,
+      type: 'image',
+      image: { id: params.mediaId, caption: params.caption.slice(0, MAX_CAPTION) },
+    };
+
+    const response = await fetch(graphUrl('messages'), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const body: any = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = describeGraphError(response.status, body);
+      logger.warn(`[WhatsApp] captioned photo failed for order ${params.orderNumber}: ${error}`);
+      return { ok: false, messageId: null, error };
+    }
+
+    const messageId = body?.messages?.[0]?.id ? String(body.messages[0].id) : null;
+    logger.info(
+      `[WhatsApp] defect photo + details sent for order ${params.orderNumber} (${messageId})`
+    );
+    return { ok: true, messageId, error: null };
+  } catch (error: any) {
+    const message = error?.message || 'Unknown WhatsApp error';
+    logger.error(`[WhatsApp] captioned photo threw for order ${params.orderNumber}: ${message}`);
+    return { ok: false, messageId: null, error: String(message).slice(0, 500) };
+  }
+}
+
+/**
+ * Sends an IMAGE-HEADER template whose body parameters are supplied by the
+ * caller, for the full defect report.
+ *
+ * The template name comes from the caller for the same reason
+ * `sendAdjustmentTemplate`'s does: there is no such template on the account by
+ * default, so whoever sets WHATSAPP_DEFECT_DETAIL_TEMPLATE is naming one they
+ * have had approved. THE PARAMETER ORDER IS THE CONTRACT and is documented in
+ * .env.example so the approved template can be built to match.
+ *
+ * Never throws — a rejection comes back as `{ ok: false, error }`.
+ */
+export async function sendDefectDetailTemplate(params: {
+  to: string;
+  /** An APPROVED template name. Never defaulted — see above. */
+  templateName: string;
+  mediaId: string;
+  /** The body parameters, already in the template's own order. */
+  bodyParams: string[];
+  /** For the log line only. */
+  orderNumber: string;
+}): Promise<WhatsAppSendResult> {
+  if (!isWhatsAppConfigured()) {
+    return {
+      ok: false,
+      messageId: null,
+      error:
+        'WhatsApp is not configured on the server (WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_ACCESS_TOKEN).',
+    };
+  }
+
+  try {
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: params.to,
+      type: 'template',
+      template: {
+        name: params.templateName,
+        language: { code: config.WHATSAPP_TEMPLATE_LANG },
+        components: [
+          { type: 'header', parameters: [{ type: 'image', image: { id: params.mediaId } }] },
+          {
+            type: 'body',
+            parameters: params.bodyParams.map((text) => ({ type: 'text', text })),
+          },
+        ],
+      },
+    };
+
+    const response = await fetch(graphUrl('messages'), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const body: any = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = describeGraphError(response.status, body);
+      logger.warn(`[WhatsApp] defect detail send failed for order ${params.orderNumber}: ${error}`);
+      return { ok: false, messageId: null, error };
+    }
+
+    const messageId = body?.messages?.[0]?.id ? String(body.messages[0].id) : null;
+    logger.info(
+      `[WhatsApp] defect detail template sent for order ${params.orderNumber} (${messageId})`
+    );
+    return { ok: true, messageId, error: null };
+  } catch (error: any) {
+    const message = error?.message || 'Unknown WhatsApp error';
+    logger.error(`[WhatsApp] defect detail send threw for order ${params.orderNumber}: ${message}`);
+    return { ok: false, messageId: null, error: String(message).slice(0, 500) };
+  }
+}
+
+/**
  * Sends the defect template to one customer.
  *
  * Never throws: a failure is returned as `{ ok: false, error }` so the caller

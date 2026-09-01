@@ -232,9 +232,28 @@ export interface ListValidationOptions {
   error?: string;
 }
 
+/** One `<dataValidation>` element, in the form the schema wants it. */
+function validationElement(options: ListValidationOptions): string {
+  return (
+    `<dataValidation type="list" allowBlank="1" showInputMessage="1"` +
+    ` showErrorMessage="1" errorStyle="warning"` +
+    ` errorTitle="${escapeXml(options.errorTitle ?? 'Not in the list')}"` +
+    ` error="${escapeXml(options.error ?? 'Pick a value from the dropdown.')}"` +
+    ` sqref="${escapeXml(options.sqref)}">` +
+    `<formula1>${escapeXml(options.formula)}</formula1>` +
+    `</dataValidation>`
+  );
+}
+
 /**
- * Returns the workbook with an in-cell dropdown on `sqref`, or the workbook
- * exactly as given if it could not be patched.
+ * Returns the workbook with an in-cell dropdown on each `sqref`, or the
+ * workbook exactly as given if it could not be patched.
+ *
+ * ONE OR SEVERAL. A worksheet may carry only ONE `<dataValidations>` element,
+ * so every dropdown for a sheet has to be written in a single pass — calling
+ * this twice would either produce a second element (invalid) or be refused by
+ * the guard below. Passing an array is therefore how a sheet gets more than
+ * one dropdown; each entry keeps its own range, list and error text.
  *
  * `errorStyle="warning"` rather than the default `stop`: the list is a
  * snapshot taken when the template was built, and a Super Admin holding
@@ -246,11 +265,24 @@ export interface ListValidationOptions {
  * means "suppress the arrow", so writing `showDropDown="1"` would remove the
  * very control this exists to add.
  */
-export function addListValidation(workbook: Buffer, options: ListValidationOptions): Buffer {
+export function addListValidation(
+  workbook: Buffer,
+  options: ListValidationOptions | ListValidationOptions[]
+): Buffer {
+  const all = (Array.isArray(options) ? options : [options]).filter(
+    (option) => option.formula && option.sqref
+  );
+  if (all.length === 0) return workbook;
+
+  // Every dropdown in one call has to land on the same worksheet part, for
+  // the single-element reason above.
+  const sheetFile = all[0].sheetFile;
+  if (all.some((option) => option.sheetFile !== sheetFile)) return workbook;
+
   const entries = readZip(workbook);
   if (!entries) return workbook;
 
-  const sheet = entries.find((entry) => entry.name === options.sheetFile);
+  const sheet = entries.find((entry) => entry.name === sheetFile);
   if (!sheet) return workbook;
 
   const xml = sheet.data.toString('utf8');
@@ -260,14 +292,8 @@ export function addListValidation(workbook: Buffer, options: ListValidationOptio
   if (!xml.includes('</worksheet>')) return workbook;
 
   const validation =
-    `<dataValidations count="1">` +
-    `<dataValidation type="list" allowBlank="1" showInputMessage="1"` +
-    ` showErrorMessage="1" errorStyle="warning"` +
-    ` errorTitle="${escapeXml(options.errorTitle ?? 'Not in the list')}"` +
-    ` error="${escapeXml(options.error ?? 'Pick a value from the dropdown.')}"` +
-    ` sqref="${escapeXml(options.sqref)}">` +
-    `<formula1>${escapeXml(options.formula)}</formula1>` +
-    `</dataValidation>` +
+    `<dataValidations count="${all.length}">` +
+    all.map(validationElement).join('') +
     `</dataValidations>`;
 
   let at = -1;

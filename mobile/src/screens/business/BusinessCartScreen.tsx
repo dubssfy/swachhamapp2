@@ -67,7 +67,8 @@ export default function BusinessCartScreen({ navigation }: any) {
       .finally(() => setInitialLoad(false));
   }, [loadCart]);
 
-  // Reloading on focus is what makes Repeat Order land on a populated cart.
+  // Reloading on focus is what keeps the cart in step with anything added or
+  // changed on another screen before the user came back here.
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', refresh);
     refresh();

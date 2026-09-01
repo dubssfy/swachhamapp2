@@ -1,5 +1,7 @@
 import apiClient from './api';
 import { ApiResponse } from '../types';
+import { DEMO_MODE } from '../demo/demoMode';
+import demoBusinessOrderApi from '../demo/demoBusinessOrderApi';
 
 export interface BusinessCategory {
   id: string;
@@ -92,11 +94,18 @@ export interface BusinessTimeSlot {
 }
 
 /**
- * What the user picked on the Pickup & Delivery page, sent with the order.
+ * The schedule sent with an order.
  *
- * Pickup and delivery each carry their own date AND their own slot: they are
- * separate bookings on separate days, never one date shared between them.
- * The server re-validates every field.
+ * THE BUSINESS NO LONGER CHOOSES THIS. The Review Order page used to collect
+ * a pickup and an optional delivery; both sections are gone, and a Manager
+ * sets the collection when they accept the order. The Review page now sends a
+ * placeholder pickup purely because the endpoint still demands one, and no
+ * delivery at all.
+ *
+ * The shape is unchanged so the endpoint's contract is unchanged. Pickup and
+ * delivery each still carry their own date AND their own slot — they are
+ * separate bookings on separate days, never one date shared between them —
+ * and the server re-validates every field.
  */
 export interface BusinessPickupSchedule {
   /** YYYY-MM-DD in IST. */
@@ -113,10 +122,18 @@ export interface BusinessPickupSchedule {
   deliveryDate?: string | null;
   /** Delivery slot id, chosen independently of the pickup. Optional, as above. */
   deliverySlot?: string | null;
-  /** Optional note for the driver on both legs. */
-  pickupNotes?: string;
-  /** Optional note about the laundry itself. */
-  serviceNotes?: string;
+  /*
+   * `pickupNotes` and `serviceNotes` USED TO LIVE HERE and are gone.
+   *
+   * The Business order flow no longer collects them, so the app no longer has
+   * one to send. They are removed from the type as well as from the request
+   * body, which is what makes it a compile error rather than a silent
+   * omission if a screen tries to send one again.
+   *
+   * THE BACKEND IS UNCHANGED. It still accepts and stores both fields for
+   * other callers, reads a missing one as "no note", and every historical
+   * order keeps the notes it was placed with.
+   */
 }
 
 export interface BusinessOrderResult {
@@ -322,7 +339,16 @@ export type BusinessProfileUpdate = Partial<{
   alternateMobileNo: string | null;
 }>;
 
-export const businessOrderApi = {
+/**
+ * THE REAL CLIENT. Every call here goes to the production API and, through
+ * it, to the production database.
+ *
+ * It is exported under this name and then chosen — or not — by the single
+ * `DEMO_MODE` decision at the bottom of the file. Nothing in this object is
+ * conditional: there is no branch inside any method that a demo could slip
+ * through, and no demo code path that could reach one of these URLs.
+ */
+const realBusinessOrderApi = {
   getProfile: async (): Promise<ApiResponse<BusinessProfile>> => {
     const response = await apiClient.get<ApiResponse<BusinessProfile>>('/api/businesses/profile');
     return response.data;
@@ -540,12 +566,51 @@ export const businessOrderApi = {
         // Sent as null rather than omitted, so "not scheduled" is explicit.
         deliveryDate: schedule.deliveryDate || null,
         deliverySlot: schedule.deliverySlot || null,
-        pickupNotes: schedule.pickupNotes,
-        serviceNotes: schedule.serviceNotes,
+        /* No `pickupNotes` / `serviceNotes` key at all — the Business flow no
+           longer collects them. The endpoint treats an absent note as no
+           note, so the request is valid exactly as it was before. */
       }
     );
     return response.data;
   },
 };
+
+/**
+ * THE ONE PLACE THE TWO WORLDS ARE KEPT APART.
+ *
+ * Production build (`DEMO_MODE === false`):
+ *     REAL API  ->  REAL DATABASE
+ *
+ * Demo build (`DEMO_MODE === true`):
+ *     LOCAL MOCK DATA  ->  THE PHONE'S OWN STORAGE
+ *
+ * The choice is made ONCE, here, at module load, from a constant Metro inlines
+ * at build time — not per call, not from a setting, and not from anything a
+ * user can toggle. Every Business screen and the Business order store import
+ * this module and are completely unchanged; they cannot tell which
+ * implementation they were given, and there is no code path that mixes the
+ * two.
+ *
+ * `demoBusinessOrderApi` implements the same methods with the same signatures
+ * and response shapes, so this substitution is type-checked: a method added to
+ * the real client that the demo does not implement is a compile error, not a
+ * runtime surprise in front of a hotel.
+ */
+export type BusinessOrderApi = typeof realBusinessOrderApi;
+
+/**
+ * COMPILE-TIME PROOF that the demo implements the whole surface.
+ *
+ * A plain assignment, not a cast: if a method is added to the real client and
+ * the demo does not gain it — or gains it with a different signature or
+ * return shape — this line fails to compile. A cast would have silently
+ * accepted the gap and the demo would have crashed in front of a hotel on
+ * whichever screen called the missing method.
+ */
+const checkedDemoApi: BusinessOrderApi = demoBusinessOrderApi;
+
+export const businessOrderApi: BusinessOrderApi = DEMO_MODE
+  ? checkedDemoApi
+  : realBusinessOrderApi;
 
 export default businessOrderApi;

@@ -16,6 +16,7 @@ import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../const
 import BusinessHeader from '../../components/business/BusinessHeader';
 import businessOrderApi, { NearbyStore } from '../../services/businessOrderApi';
 import { extractErrorMessage } from '../../services/api';
+import { DEMO_MODE } from '../../demo/demoMode';
 
 type Status =
   | 'idle'
@@ -145,6 +146,30 @@ export default function StoreLocatorScreen({ navigation }: any) {
 
     try {
       setStatus('locating');
+
+      /*
+       * A DEMO BUILD DOES NOT ASK THE PHONE WHERE IT IS.
+       *
+       * Two reasons, both about the room the demo is shown in: a GPS fix
+       * indoors can take a long time or never arrive, and the map below draws
+       * from remote tiles that an offline phone cannot load. Neither has
+       * anything to teach a hotel about the product.
+       *
+       * So the demo goes straight to the store list — the substance of the
+       * screen — and leaves `coords` null, which is what keeps the map panel
+       * out rather than showing a grey square that failed to load.
+       */
+      if (DEMO_MODE) {
+        setStatus('loading');
+        const demoStores = await businessOrderApi.getNearbyStores({
+          latitude: 0,
+          longitude: 0,
+          radiusKm: 100,
+        });
+        setStores(demoStores.data);
+        setStatus('ready');
+        return;
+      }
 
       const servicesEnabled = await Location.hasServicesEnabledAsync();
       if (!servicesEnabled) {

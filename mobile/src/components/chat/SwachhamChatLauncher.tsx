@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Image, Animated, Easing } fro
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import { useChatStore } from '../../store/chatStore';
+import { DEMO_MODE } from '../../demo/demoMode';
 
 /**
  * The Swachham assistant launcher.
@@ -76,6 +77,21 @@ export default function SwachhamChatLauncher({ bottomOffset = 10 }: Props) {
   useEffect(() => {
     if (isChatOpen) setShowGreeting(false);
   }, [isChatOpen]);
+
+  /*
+   * THE ASSISTANT IS NOT PART OF THE DEMO.
+   *
+   * It answers from the server — there is no offline model in the app — so in
+   * a demo build every question would come back as a connection error, in
+   * front of the people being shown the product. Withholding the button is
+   * the honest offline behaviour; nothing else about the screen changes, and
+   * the assistant is untouched in production.
+   *
+   * Placed AFTER the hooks so the hook order is identical on every render.
+   * `DEMO_MODE` is a build-time constant, so within one build this branch is
+   * the same on every render anyway.
+   */
+  if (DEMO_MODE) return null;
 
   return (
     <View style={[styles.wrap, { bottom: bottomOffset }]} pointerEvents="box-none">

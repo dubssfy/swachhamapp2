@@ -1,19 +1,22 @@
 /**
- * Smoke test for the Item Name dropdown on the Backdated Walking Order
- * template.
+ * Smoke test for the Item Name AND Service Type dropdowns on the Backdated
+ * Walking Order template.
  *
- * The change was meant to be invisible to everything except the Item Name
- * cell, so that is what this checks:
+ * The change was meant to be invisible to everything except those two cells,
+ * so that is what this checks:
  *
- *   THE DROPDOWN IS REAL      the downloaded .xlsx really carries a
+ *   THE DROPDOWNS ARE REAL    the downloaded .xlsx really carries a
  *                             `dataValidation type="list"` over the Item Name
- *                             column, pointing at a defined name that resolves
- *                             to a hidden sheet of item names.
+ *                             column AND one over the Service Type column,
+ *                             each pointing at a defined name that resolves
+ *                             to its own hidden sheet.
  *
- *   THE LIST IS THE EXISTING  every name it offers is an item ALREADY priced
- *   CATALOGUE                 for this business at this laundry type -- the
- *                             same predicate the importer validates against.
- *                             No name is invented and none is renamed.
+ *   THE LISTS ARE THE         every name they offer is already in the
+ *   EXISTING DATA             application: an item priced for this business
+ *                             at this laundry type, and a service type those
+ *                             items are actually offered for -- the same
+ *                             predicates the importer validates against. No
+ *                             name is invented and none is renamed.
  *
  *   NOTHING ELSE MOVED        the four columns, their order, the sample rows,
  *                             the sheet name and the Instructions sheet are
@@ -206,6 +209,70 @@ async function main() {
     new RegExp(`Items!\\$A\\$1:\\$A\\$${offered.length}<`).test(workbookXml),
     `${offered.length} names`);
 
+  /* ================================================================
+   * 1b. THE SERVICE TYPE DROPDOWN — the second column
+   * ================================================================ */
+  console.log('\n1b. THE SERVICE TYPE DROPDOWN');
+
+  check('the sheet carries a SECOND list validation',
+    (sheetXml.match(/<dataValidation /g) || []).length === 2,
+    `${(sheetXml.match(/<dataValidation /g) || []).length} validation(s)`);
+  check('both live in one dataValidations element, correctly counted',
+    /<dataValidations count="2"/.test(sheetXml),
+    (sheetXml.match(/<dataValidations count="\d+"/) || ['none'])[0]);
+  check('over the Service Type column, from row 2',
+    /sqref="B2:B\d+"/.test(sheetXml),
+    (sheetXml.match(/sqref="B2:B\d+"/) || ['none'])[0]);
+  check('every row gets its own cell, not one shared choice',
+    // The same range the Item Name column covers: one dropdown per row.
+    (sheetXml.match(/sqref="A2:A(\d+)"/) || [])[1] ===
+      (sheetXml.match(/sqref="B2:B(\d+)"/) || [])[1],
+    `A2:A${(sheetXml.match(/sqref="A2:A(\d+)"/) || [])[1]}, ` +
+      `B2:B${(sheetXml.match(/sqref="B2:B(\d+)"/) || [])[1]}`);
+  check('its list is a defined name too',
+    /<formula1>SwachhamServiceTypes<\/formula1>/.test(sheetXml) &&
+      /<definedName name="SwachhamServiceTypes">/.test(workbookXml));
+  check('which resolves to its own hidden sheet',
+    /<definedName name="SwachhamServiceTypes">ServiceTypes!\$A\$1:\$A\$\d+<\/definedName>/
+      .test(workbookXml),
+    (workbookXml.match(/<definedName name="SwachhamServiceTypes">[^<]*/) || ['none'])[0]);
+  check('and that sheet is hidden',
+    /<sheet name="ServiceTypes"[^>]*state="hidden"/.test(workbookXml));
+
+  const offeredServices: string[] = XLSX.utils
+    .sheet_to_json<any[]>(book.Sheets['ServiceTypes'], { header: 1, blankrows: false, raw: true })
+    .map((row) => String(row[0]));
+
+  // The importer's own predicate: an active SERVICE_TYPE reachable through
+  // item_service_types from an item this business has an active price for.
+  const liveServices = await query<{ name: string }>(
+    `SELECT DISTINCT st.name
+       FROM services i
+       JOIN business_price_list p ON p.item_id = i.id
+       JOIN item_service_types m ON m.item_id = i.id
+       JOIN services st ON st.id = m.service_id
+      WHERE i.kind = 'ITEM' AND i.is_active = true
+        AND p.business_id = ? AND p.laundry_type = 'hotel' AND p.is_active = true
+        AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
+      ORDER BY st.name ASC`,
+    [businessId]
+  );
+  const liveServiceNames = liveServices.rows.map((r) => r.name);
+
+  check('every offered service is an existing service type',
+    offeredServices.every((name) => liveServiceNames.includes(name)),
+    `${offeredServices.length} offered, ` +
+      `${offeredServices.filter((n) => !liveServiceNames.includes(n)).length} invented`);
+  check('every service this business can be billed for is offered',
+    liveServiceNames.every((name) => offeredServices.includes(name)),
+    `${liveServiceNames.length} live`);
+  check('the range length matches the service list',
+    new RegExp(`ServiceTypes!\\$A\\$1:\\$A\\$${offeredServices.length}<`).test(workbookXml),
+    `${offeredServices.length} services`);
+  check('each service is offered exactly once',
+    new Set(offeredServices).size === offeredServices.length,
+    `${offeredServices.length} entries, ${new Set(offeredServices).size} distinct`);
+
   /*
    * BUSINESS ISOLATION, TESTED BY NAME rather than by item id.
    *
@@ -293,9 +360,32 @@ async function main() {
   );
   check('the downloaded template itself still parses', asDownloaded.status === 200,
     `status ${asDownloaded.status}`);
-  check('the hidden Items sheet is ignored by the importer',
+  check('both hidden list sheets are ignored by the importer',
     (asDownloaded.json?.data?.rows || []).length === rows.length - 1,
     `${(asDownloaded.json?.data?.rows || []).length} line(s) from ${rows.length - 1} sample row(s)`);
+
+  // A row whose Service Type came off the dropdown must still validate — the
+  // list is only useful if what it offers is what the importer accepts.
+  const fromDropdown = XLSX.utils.aoa_to_sheet([
+    HEADER,
+    [rows[1][0], offeredServices.includes(String(rows[1][1])) ? rows[1][1] : offeredServices[0], 3, 0],
+  ]);
+  const fromDropdownBook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(fromDropdownBook, fromDropdown, SHEET_NAME);
+  const picked = await api(
+    `/api/super-admin/business-account/${businessId}/walking-orders/preview`,
+    {
+      order_date: today,
+      laundry_type: 'hotel',
+      file_base64: (
+        XLSX.write(fromDropdownBook, { type: 'buffer', bookType: 'xlsx' }) as Buffer
+      ).toString('base64'),
+    }
+  );
+  check('a service picked from the dropdown validates', picked.status === 200,
+    `status ${picked.status}`);
+  check('with no errors', (picked.json?.data?.errors || []).length === 0,
+    JSON.stringify(picked.json?.data?.errors || []));
 
   const ordersAfter = await query<any>(`SELECT COUNT(*) AS n FROM orders`);
   check('no order was created by any of this',

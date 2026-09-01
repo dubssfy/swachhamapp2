@@ -78,10 +78,14 @@ export const LAUNDRY_TYPE_REQUIRED_MESSAGE = 'Please select Hotel Laundry or Gue
 export const CART_EMPTY_MESSAGE = 'Add at least one item to your cart before placing your order.';
 
 /**
- * The four things the Pickup & Delivery page must have before an order is
- * sent. The same wording comes back from the server when a request that
- * skipped the screen is refused, so a rejection reads identically wherever
- * the user meets it.
+ * The schedule rules `confirmOrder` still enforces before an order is sent.
+ *
+ * The Business flow no longer ASKS for any of this — the Review Order page
+ * has no pickup or delivery sections, and a Manager sets the collection on
+ * acceptance. These checks stay because they guard the payload rather than
+ * the screen: they are what stops a malformed schedule reaching the server,
+ * and the same wording comes back from the server when a request that skipped
+ * the app is refused, so a rejection reads identically wherever it is met.
  */
 export const PICKUP_DATE_REQUIRED_MESSAGE = 'Please select a pickup date.';
 export const PICKUP_TIME_REQUIRED_MESSAGE = 'Please select a pickup time.';

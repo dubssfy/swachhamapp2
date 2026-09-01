@@ -15,6 +15,8 @@ import BusinessHeader from '../../components/business/BusinessHeader';
 import CancelOrderModal from '../../components/business/CancelOrderModal';
 import businessOrderApi, { BusinessOrderTracking } from '../../services/businessOrderApi';
 import { extractErrorMessage } from '../../services/api';
+import { DEMO_MODE } from '../../demo/demoMode';
+import { advanceDemoOrderStatus, isDemoStatusFinal } from '../../demo/demoBusinessOrderApi';
 
 function formatWhen(value: string | null) {
   if (!value) return '';
@@ -37,6 +39,8 @@ export default function BusinessOrderTrackingScreen({ navigation, route }: any) 
   const [isCancelling, setIsCancelling] = useState(false);
   const [isCancelModalVisible, setIsCancelModalVisible] = useState(false);
   const [cancelError, setCancelError] = useState('');
+  /** Demo builds only; always false in a production build. */
+  const [isSimulating, setIsSimulating] = useState(false);
 
   const load = useCallback(
     async (refreshing = false) => {
@@ -58,6 +62,33 @@ export default function BusinessOrderTrackingScreen({ navigation, route }: any) 
   useEffect(() => {
     load();
   }, [load]);
+
+  /**
+   * SIMULATE NEXT STATUS — demo builds only.
+   *
+   * A presentation aid. A real order moves because a Sorter scans it and a
+   * rider collects it, none of which exists in a demo, so this steps the
+   * order one place along the SAME status flow the database uses and reloads
+   * the tracker. Nothing about it is a shortcut into anyone else's app: it
+   * writes one field in the demo's own file on this phone.
+   *
+   * It is deliberately at the BOTTOM of the page, in a plain outlined button
+   * marked "Demo", so it reads as part of the demonstration rather than as a
+   * staff control the hotel has been given by mistake.
+   */
+  const handleSimulateNext = async () => {
+    if (isSimulating) return;
+    try {
+      setIsSimulating(true);
+      setError('');
+      await advanceDemoOrderStatus(String(orderId));
+      await load();
+    } catch (err: any) {
+      setError(extractErrorMessage(err, 'Could not update the demo status'));
+    } finally {
+      setIsSimulating(false);
+    }
+  };
 
   /**
    * The button is hidden once the backend says cancellation is closed, but the
@@ -171,6 +202,28 @@ export default function BusinessOrderTrackingScreen({ navigation, route }: any) 
             >
               <Ionicons name="close-circle-outline" size={20} color={COLORS.Error} />
               <Text style={styles.cancelButtonText}>Cancel Order</Text>
+            </TouchableOpacity>
+          ) : null}
+
+          {/* Demo builds only — see `handleSimulateNext`. Hidden once the
+              order has reached the end of the flow or was cancelled, so the
+              button is never offered with nothing to do. */}
+          {DEMO_MODE && !isDemoStatusFinal(tracking.status) ? (
+            <TouchableOpacity
+              style={[styles.simulateButton, isSimulating && styles.simulateButtonDisabled]}
+              onPress={handleSimulateNext}
+              disabled={isSimulating}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Simulate the next order status"
+            >
+              {isSimulating ? (
+                <ActivityIndicator size="small" color={COLORS.Primary} />
+              ) : (
+                <Ionicons name="play-forward-outline" size={18} color={COLORS.Primary} />
+              )}
+              <Text style={styles.simulateButtonText}>Simulate Next Status</Text>
+              <Text style={styles.simulateButtonTag}>DEMO</Text>
             </TouchableOpacity>
           ) : null}
 
@@ -316,6 +369,34 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   cancelButtonDisabled: { opacity: 0.6 },
+  /* Demo builds only. Deliberately quieter than Cancel Order: a thin border
+     in the app's own green, and a small DEMO tag so nobody reads it as a
+     staff control. */
+  simulateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.sm,
+    height: 48,
+    borderRadius: BORDER_RADIUS.md,
+    backgroundColor: COLORS.Surface,
+    borderWidth: 1,
+    borderColor: COLORS.Primary,
+    marginBottom: SPACING.md,
+  },
+  simulateButtonDisabled: { opacity: 0.6 },
+  simulateButtonText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '600',
+    color: COLORS.Primary,
+  },
+  simulateButtonTag: {
+    fontSize: 10,
+    letterSpacing: 1,
+    fontWeight: '700',
+    color: COLORS.TextSecondary,
+  },
   cancelButtonText: {
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.base,

@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import SwachhamChatLauncher from '../../components/chat/SwachhamChatLauncher';
+import DemoBadge from '../../components/demo/DemoBadge';
 import SectionHeading from '../../components/SectionHeading';
 import { useAuthStore } from '../../store/authStore';
 import businessApi from '../../services/businessApi';
@@ -244,6 +245,10 @@ export default function HomeScreen({ navigation }: any) {
       {/* Line 1 is the establishment, and it is BUSINESS ONLY — see
           `isBusinessUser`. A customer sees their own name and nothing else. */}
       <View style={styles.header}>
+        {/* Renders nothing in a production build. This screen draws its own
+            banner rather than using BusinessHeader, so the marker is placed
+            here too — it is the first screen after signing in. */}
+        <DemoBadge style={styles.demoBadge} />
         {isBusinessUser ? (
           <Text style={styles.establishmentName} numberOfLines={1}>
             {establishmentName}
@@ -391,6 +396,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.xs,
     paddingBottom: SPACING.xs,
+  },
+  /* Demo builds only; nothing is rendered here in production. */
+  demoBadge: {
+    marginBottom: SPACING.xs,
   },
   establishmentName: {
     fontFamily: TYPOGRAPHY.fontFamily,

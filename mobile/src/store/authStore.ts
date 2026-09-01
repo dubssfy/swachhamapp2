@@ -5,6 +5,8 @@ import authApi from '../services/authApi';
 import type { SignInResult, BusinessSignInTarget } from '../services/authApi';
 import { extractErrorMessage } from '../services/api';
 import { User, LoginPayload, RegisterPayload, BusinessRegisterPayload } from '../types';
+import { DEMO_MODE } from '../demo/demoMode';
+import { DEMO_CREDENTIALS_MESSAGE, DEMO_TOKEN, DEMO_USER, isDemoCredential } from '../demo/demoAuth';
 
 interface AuthState {
   user: User | null;
@@ -17,6 +19,11 @@ interface AuthState {
   businessRegister: (payload: BusinessRegisterPayload) => Promise<void>;
   customerLogin: (payload: LoginPayload) => Promise<void>;
   businessLogin: (payload: LoginPayload) => Promise<void>;
+  /**
+   * DEMO BUILD ONLY. Checks the demo credentials on the device and opens a
+   * local session. Refuses outright in a production build.
+   */
+  demoLogin: (email: string, password: string) => Promise<void>;
   /** Staff sign-in. Username, not email — see authApi.sorterLogin. */
   sorterLogin: (payload: { username: string; password: string }) => Promise<void>;
   
@@ -237,6 +244,42 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch (error: any) {
       const message = error?.response?.data?.message || error?.message || 'Login failed';
       throw new Error(message);
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  /**
+   * DEMO SIGN-IN.
+   *
+   * No request, no OTP, no server. The credentials are compared on the device
+   * and, when they match, a local session is written with the demo user — the
+   * navigator then mounts the Business stack exactly as it does for a real
+   * business account.
+   *
+   * The session is stored so that closing and reopening the app keeps the
+   * hotel signed in, which is what makes the demo usable as an app rather
+   * than as a single sitting.
+   *
+   * The guard on the first line is not decoration: `demoLogin` is unreachable
+   * in a production build — no screen calls it — and if it ever were called
+   * there, it refuses rather than fabricating a session.
+   */
+  demoLogin: async (email: string, password: string) => {
+    if (!DEMO_MODE) throw new Error('Demo sign-in is not available in this build.');
+    try {
+      set({ isLoading: true });
+      if (!isDemoCredential(email, password)) {
+        throw new Error(DEMO_CREDENTIALS_MESSAGE);
+      }
+      await SecureStore.setItemAsync(TOKEN_KEY, DEMO_TOKEN);
+      await SecureStore.setItemAsync(USER_KEY, JSON.stringify(DEMO_USER));
+      set({
+        token: DEMO_TOKEN,
+        user: DEMO_USER,
+        userType: 'business',
+        isAuthenticated: true,
+      });
     } finally {
       set({ isLoading: false });
     }
@@ -486,6 +529,31 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   restoreSession: async () => {
+    /*
+     * A DEMO SESSION IS RESTORED ENTIRELY FROM THE DEVICE.
+     *
+     * The path below asks the server who the token belongs to. In a demo
+     * build there is no server to ask and no real token to ask about, so the
+     * stored demo user is simply put back — which is what lets the hotel
+     * close the app and reopen it, offline, still signed in.
+     */
+    if (DEMO_MODE) {
+      try {
+        set({ isLoading: true });
+        const token = await SecureStore.getItemAsync(TOKEN_KEY);
+        if (token === DEMO_TOKEN) {
+          set({ token, user: DEMO_USER, userType: 'business', isAuthenticated: true });
+        } else {
+          set({ token: null, user: null, userType: null, isAuthenticated: false });
+        }
+      } catch {
+        set({ token: null, user: null, userType: null, isAuthenticated: false });
+      } finally {
+        set({ isLoading: false });
+      }
+      return;
+    }
+
     try {
       set({ isLoading: true });
       const token = await SecureStore.getItemAsync(TOKEN_KEY);
@@ -562,10 +630,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: async () => {
     try {
       set({ isLoading: true });
-      try {
-        await authApi.logout();
-      } catch (error) {
-        console.log('⚠️ Backend logout failed.');
+      // A demo session exists only on this device, so there is no server-side
+      // session to end; the stored keys below are the whole of it.
+      if (!DEMO_MODE) {
+        try {
+          await authApi.logout();
+        } catch (error) {
+          console.log('⚠️ Backend logout failed.');
+        }
       }
       await SecureStore.deleteItemAsync(TOKEN_KEY);
       await SecureStore.deleteItemAsync(USER_KEY);

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Animated, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, TYPOGRAPHY } from '../../constants/theme';
 import { useAuthStore } from '../../store/authStore';
+import { DEMO_MODE } from '../../demo/demoMode';
 
 /**
  * ============================================================
@@ -58,7 +59,20 @@ export default function SplashScreen({ navigation }: any) {
 
     if (!sessionRestored.current) {
       sessionRestored.current = true;
-      if (RESTORE_SESSION_ON_LAUNCH) {
+      /*
+       * A DEMO BUILD ALWAYS RESTORES.
+       *
+       * The switch above is a testing aid for the real app, and it currently
+       * signs every cold start out. A demo must not do that: the hotel is
+       * meant to close the app, reopen it — offline, possibly the next day —
+       * and find their demo orders where they left them. The demo session is
+       * local to the device and grants nothing, so there is nothing to wipe
+       * for safety's sake either.
+       *
+       * Written as `DEMO_MODE ||` so a production build reads exactly as it
+       * did before: with the flag false, this line is the old one.
+       */
+      if (DEMO_MODE || RESTORE_SESSION_ON_LAUNCH) {
         restoreSession();
       } else {
         clearStoredSession();
@@ -76,7 +90,15 @@ export default function SplashScreen({ navigation }: any) {
     if (sessionRestored.current && !isLoading) {
       const timer = setTimeout(() => {
         if (!isAuthenticated) {
-          navigation.replace('PermissionScreen');
+          /*
+           * A demo build goes straight to its own sign-in.
+           *
+           * The permission gate exists to settle the service area before an
+           * order can be placed, and it is a step towards a server. A demo
+           * places no real order and reaches no server, so it would be a
+           * locked door in front of a hotel with the data switched off.
+           */
+          navigation.replace(DEMO_MODE ? 'DemoLoginScreen' : 'PermissionScreen');
         }
       }, SPLASH_HOLD_MS);
       return () => clearTimeout(timer);

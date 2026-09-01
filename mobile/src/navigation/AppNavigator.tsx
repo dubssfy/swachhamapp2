@@ -20,6 +20,11 @@ import {
   useAuthStore,
 } from '../store/authStore';
 
+import { DEMO_MODE } from '../demo/demoMode';
+
+import DemoLoginScreen
+  from '../screens/demo/DemoLoginScreen';
+
 
 // =========================================================
 // AUTH / ONBOARDING SCREENS
@@ -803,6 +808,36 @@ export default function AppNavigator() {
         : null;
 
 
+  /*
+   * =========================================================
+   * WHAT A DEMO BUILD MOUNTS
+   *
+   * A demo APK is a BUSINESS-ONLY app. The hotel gets exactly two
+   * destinations — the demo sign-in, and the Business section — and every
+   * other stack is left unregistered.
+   *
+   * UNREGISTERED, NOT HIDDEN. React Navigation can only navigate to a screen
+   * that exists in the navigator, so a `navigate('SuperAdmin')` from anywhere
+   * in a demo build is a no-op rather than a way in. There is no Admin,
+   * Super Admin, Manager, Sorter, Rider or Customer screen to reach, no
+   * registration form, and no staff login link — because in this build those
+   * screens are not part of the app at all.
+   *
+   * `showEntryScreen` covers the production entry sequence (permission gate,
+   * mobile OTP, password step, registration, the staff and super-admin
+   * logins). All of it needs a server, so none of it belongs in an offline
+   * demo.
+   *
+   * The splash is kept in BOTH builds: it restores any saved session and is
+   * where the app's branding lands first. It hands over to the demo sign-in
+   * instead of the permission gate when the flag is on.
+   * =========================================================
+   */
+  const showEntryScreen = !DEMO_MODE && !isAuthenticated;
+  /** A signed-in stack for a role the demo never has. */
+  const showRole = (target: string) => !DEMO_MODE && isAuthenticated && role === target;
+
+
   return (
 
     /* The bag overlay wraps the navigator so it is drawn above every screen
@@ -829,12 +864,35 @@ export default function AppNavigator() {
             permission gate below is still never bypassed.
         ================================================= */}
 
+        {/* The splash belongs to BOTH builds: it is where the session is
+            restored and where the branding lands. In a demo build it hands
+            over to the demo sign-in rather than to the permission gate. */}
         {!isAuthenticated && (
 
           <Stack.Screen
             name="SplashScreen"
             component={
               SplashScreen
+            }
+          />
+
+        )}
+
+
+        {/* =================================================
+            DEMO SIGN-IN
+
+            The demo build's ONLY entry point, and the only
+            screen below that a demo build registers besides
+            the Business section itself.
+        ================================================= */}
+
+        {DEMO_MODE && !isAuthenticated && (
+
+          <Stack.Screen
+            name="DemoLoginScreen"
+            component={
+              DemoLoginScreen
             }
           />
 
@@ -852,7 +910,7 @@ export default function AppNavigator() {
             Camera = granted
         ================================================= */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
 
           <Stack.Screen
             name="PermissionScreen"
@@ -872,7 +930,7 @@ export default function AppNavigator() {
             both permissions have been granted.
         ================================================= */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
 
           <Stack.Screen
             name="MobileVerificationScreen"
@@ -887,7 +945,7 @@ export default function AppNavigator() {
         {/* Password step, for the roles the server says need one.
             Customers never reach it. */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
 
           <Stack.Screen
             name="SignInPasswordScreen"
@@ -907,7 +965,7 @@ export default function AppNavigator() {
             only after successful OTP verification.
         ================================================= */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
 
           <Stack.Screen
             name="LoginScreen"
@@ -925,7 +983,7 @@ export default function AppNavigator() {
             Only available from Customer Login.
         ================================================= */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
 
           <Stack.Screen
             name="CustomerRegisterScreen"
@@ -941,7 +999,7 @@ export default function AppNavigator() {
             BUSINESS REGISTRATION
         ================================================= */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
 
           <Stack.Screen
             name="BusinessRegisterScreen"
@@ -959,7 +1017,7 @@ export default function AppNavigator() {
             Only available from Customer Login.
         ================================================= */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
 
           <Stack.Screen
             name="ForgotPasswordScreen"
@@ -975,7 +1033,7 @@ export default function AppNavigator() {
             RESET PASSWORD
         ================================================= */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
 
           <Stack.Screen
             name="ResetPasswordScreen"
@@ -991,8 +1049,7 @@ export default function AppNavigator() {
             CUSTOMER APPLICATION
         ================================================= */}
 
-        {isAuthenticated &&
-          role === 'customer' && (
+        {showRole('customer') && (
 
           <Stack.Screen
             name="Customer"
@@ -1011,7 +1068,7 @@ export default function AppNavigator() {
             the customer login screen.
         ================================================= */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
 
           <Stack.Screen
             name="SorterLoginScreen"
@@ -1027,14 +1084,14 @@ export default function AppNavigator() {
             SUPER ADMIN
         ================================================= */}
 
-        {!isAuthenticated && (
+        {showEntryScreen && (
           <Stack.Screen
             name="SuperAdminLogin"
             component={SuperAdminLoginScreen}
           />
         )}
 
-        {isAuthenticated && role === 'super_admin' && (
+        {showRole('super_admin') && (
           <Stack.Screen
             name="SuperAdmin"
             component={SuperAdminStack}
@@ -1051,7 +1108,7 @@ export default function AppNavigator() {
             Super Admin one at all.
         ================================================= */}
 
-        {isAuthenticated && role === 'manager' && (
+        {showRole('manager') && (
           <Stack.Screen
             name="Manager"
             component={ManagerStack}
@@ -1063,8 +1120,7 @@ export default function AppNavigator() {
             SORTER APPLICATION
         ================================================= */}
 
-        {isAuthenticated &&
-          role === 'sorter' && (
+        {showRole('sorter') && (
 
           <Stack.Screen
             name="Sorter"
@@ -1084,7 +1140,7 @@ export default function AppNavigator() {
             navigate into the Sorter or Manager one.
         ================================================= */}
 
-        {isAuthenticated && role === 'rider' && (
+        {showRole('rider') && (
 
           <Stack.Screen
             name="Rider"
@@ -1096,6 +1152,12 @@ export default function AppNavigator() {
 
         {/* =================================================
             BUSINESS APPLICATION
+
+            The one signed-in stack a demo build mounts, and
+            it is NOT gated on the flag: the demo signs in as
+            a business account, so this is the same section,
+            the same screens and the same navigation the real
+            app gives a business — served from local data.
         ================================================= */}
 
         {isAuthenticated &&

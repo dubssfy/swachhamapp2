@@ -57,6 +57,10 @@ export type DefectWhatsAppStatus = 'PENDING' | 'SENT' | 'FAILED';
 export interface DefectRecord {
   id: string;
   order_id: string;
+  /** The line it is about, or null when it is about the whole order. */
+  order_item_id: string | null;
+  /** Pieces reported defective with this photo; null when none was given. */
+  defective_quantity: number | null;
   /** Server-relative URL, e.g. /uploads/defects/....jpg */
   photo_url: string;
   description: string | null;
@@ -76,6 +80,83 @@ export interface DefectRecord {
   sorter_whatsapp_error: string | null;
   sorter_whatsapp_sent_at: string | null;
   sorter_whatsapp_to: string | null;
+  /**
+   * The Manager and Super Admin copies of the same message.
+   *
+   * A NULL status is NOT a failure here: it means the order has no such
+   * recipient — no Manager took it on, or no Super Admin has a number on
+   * file — and the matching `_error` says which. Only FAILED means Meta was
+   * asked and refused.
+   */
+  manager_whatsapp_status: DefectWhatsAppStatus | null;
+  manager_whatsapp_message_id: string | null;
+  manager_whatsapp_error: string | null;
+  manager_whatsapp_sent_at: string | null;
+  manager_whatsapp_to: string | null;
+  super_admin_whatsapp_status: DefectWhatsAppStatus | null;
+  super_admin_whatsapp_message_id: string | null;
+  super_admin_whatsapp_error: string | null;
+  super_admin_whatsapp_sent_at: string | null;
+  super_admin_whatsapp_to: string | null;
+}
+
+/** One copy of a defect notification, as the screens read it. */
+export interface DefectCopy {
+  role: 'customer' | 'manager' | 'super_admin' | 'sorter';
+  label: string;
+  status: DefectWhatsAppStatus | null;
+  error: string | null;
+  to: string | null;
+}
+
+/**
+ * The four copies of one defect notification, in the order they are sent.
+ *
+ * Derived here rather than in each screen, so the order detail and the
+ * capture screen report the same thing in the same words.
+ */
+export function defectCopies(defect: DefectRecord): DefectCopy[] {
+  return [
+    {
+      role: 'customer',
+      label: 'Customer',
+      status: defect.whatsapp_status ?? null,
+      error: defect.whatsapp_error,
+      to: defect.whatsapp_to,
+    },
+    {
+      role: 'manager',
+      label: 'Manager',
+      status: defect.manager_whatsapp_status ?? null,
+      error: defect.manager_whatsapp_error,
+      to: defect.manager_whatsapp_to,
+    },
+    {
+      role: 'super_admin',
+      label: 'Super Admin',
+      status: defect.super_admin_whatsapp_status ?? null,
+      error: defect.super_admin_whatsapp_error,
+      to: defect.super_admin_whatsapp_to,
+    },
+    {
+      role: 'sorter',
+      label: 'Sorter',
+      status: defect.sorter_whatsapp_status ?? null,
+      error: defect.sorter_whatsapp_error,
+      to: defect.sorter_whatsapp_to,
+    },
+  ];
+}
+
+/**
+ * True when every copy that HAS a recipient was accepted by Meta.
+ *
+ * A null status is a copy with nobody to send to, which is why Retry is not
+ * offered for it: there is nothing a retry could change until an account
+ * gains a number.
+ */
+export function defectFullyDelivered(defect: DefectRecord): boolean {
+  return defectCopies(defect).every((copy) => copy.status === 'SENT' || copy.status === null);
 }
 
 export interface SorterOrderItem {
@@ -414,7 +495,15 @@ export const sorterApi = {
    */
   reportDefect: async (
     orderId: string,
-    payload: { photoBase64: string; mimeType?: string; description?: string }
+    payload: {
+      photoBase64: string;
+      mimeType?: string;
+      description?: string;
+      /** The line this is about, when it came from Mark as Defective. */
+      orderItemId?: string | null;
+      /** Pieces reported defective with this photo. */
+      defectiveQuantity?: number | null;
+    }
   ): Promise<ApiResponse<DefectRecord>> => {
     try {
       const response = await apiClient.post<ApiResponse<DefectRecord>>(
@@ -423,6 +512,10 @@ export const sorterApi = {
           photoBase64: payload.photoBase64,
           mimeType: payload.mimeType || 'image/jpeg',
           description: payload.description,
+          // Both optional on the server: a report without them is still
+          // accepted and described against the order as a whole.
+          orderItemId: payload.orderItemId ?? null,
+          defectiveQuantity: payload.defectiveQuantity ?? null,
         },
         // A photo takes longer than a JSON call, and the server also has to
         // hand it to Meta before replying.

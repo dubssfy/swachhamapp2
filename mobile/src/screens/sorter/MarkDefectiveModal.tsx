@@ -43,6 +43,7 @@ export default function MarkDefectiveModal({
   saving,
   onCancel,
   onSave,
+  onReportPiece,
 }: {
   visible: boolean;
   /** Null while closing, so the modal can animate out without flashing empty. */
@@ -51,6 +52,14 @@ export default function MarkDefectiveModal({
   saving: boolean;
   onCancel: () => void;
   onSave: (defectiveQuantity: number, reason: string) => void;
+  /**
+   * REPORT THE PIECE ITSELF — the photo, and the WhatsApp notification that
+   * carries it. Reached from HERE rather than from a button of its own, so
+   * the details the report is about are the ones just typed above: the same
+   * line, the same count, the same reason. The parent saves the adjustment
+   * first and then opens the camera.
+   */
+  onReportPiece: (defectiveQuantity: number, reason: string) => void;
 }) {
   // Seeded from what the line already carries, so opening the form on an
   // adjusted line offers the CURRENT figure to correct rather than a blank
@@ -186,6 +195,28 @@ export default function MarkDefectiveModal({
                 )}
               </TouchableOpacity>
             </View>
+
+            {/* THE DEFECTIVE PIECE ITSELF. Saves the figures above, then
+                opens the camera — one action, so the photo and the count it
+                belongs to can never describe different things. */}
+            <TouchableOpacity
+              style={[styles.reportButton, !canSave && styles.buttonDisabled]}
+              onPress={() => {
+                setTouched(true);
+                if (validation.value === null) return;
+                onReportPiece(validation.value, reason.trim());
+              }}
+              disabled={!canSave}
+              accessibilityRole="button"
+              accessibilityLabel="Report the defective piece with a photo"
+            >
+              <Ionicons name="camera" size={18} color={COLORS.Primary} />
+              <Text style={styles.reportText}>REPORT DEFECTIVE PIECE (PHOTO)</Text>
+            </TouchableOpacity>
+            <Text style={styles.reportHint}>
+              Saves the figures above, then takes the photo and sends the report to the
+              customer, the manager and the super admin on WhatsApp.
+            </Text>
           </ScrollView>
         </View>
       </KeyboardAvoidingView>
@@ -314,4 +345,30 @@ const styles = StyleSheet.create({
   },
   save: { backgroundColor: COLORS.Primary },
   saveText: { fontFamily: TYPOGRAPHY.fontFamily, fontWeight: '700', color: COLORS.Surface },
+  reportButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.sm,
+    marginTop: SPACING.md,
+    paddingVertical: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 2,
+    borderColor: COLORS.Primary,
+    backgroundColor: COLORS.Surface,
+  },
+  reportText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '700',
+    color: COLORS.Primary,
+    letterSpacing: 0.5,
+  },
+  reportHint: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+    marginTop: SPACING.xs,
+    marginBottom: SPACING.sm,
+  },
 });

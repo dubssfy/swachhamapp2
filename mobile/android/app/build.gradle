@@ -96,6 +96,28 @@ android {
         versionName "1.0.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
+
+        /*
+         * THE BUSINESS DEMO BUILD.
+         *
+         * This project keeps its `android/` directory in source control, so
+         * EAS builds it directly and never runs prebuild — which means the
+         * application id comes from THIS line and not from app.config.js.
+         * The demo therefore takes its own id here.
+         *
+         * A different application id makes the demo a DIFFERENT APP to
+         * Android: it installs alongside the real Swachham app rather than
+         * replacing it, keeps its own storage, and can be uninstalled without
+         * touching the other.
+         *
+         * INERT UNLESS THE VARIABLE IS SET. `EXPO_PUBLIC_DEMO_MODE` is set by
+         * the `demo` profile in eas.json and by nothing else, so every other
+         * build — production included — produces exactly the id it always
+         * has.
+         */
+        if (System.getenv('EXPO_PUBLIC_DEMO_MODE') == '1') {
+            applicationIdSuffix '.demo'
+        }
     }
     signingConfigs {
         debug {

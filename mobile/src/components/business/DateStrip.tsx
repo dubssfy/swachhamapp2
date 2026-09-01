@@ -6,9 +6,11 @@ import { formatDayMonthIST, formatLongDateIST, relativeDayCaption } from '../../
 /**
  * A horizontally scrolling strip of selectable dates.
  *
- * Used by both Pickup Details and Delivery Details, so the two date pickers
- * are the same control with different ranges — the pickup strip starts at
- * today in IST, the delivery strip at the day after the chosen pickup.
+ * CURRENTLY UNUSED. It was the date picker in the Business flow's "Pickup
+ * Details" and "Delivery Details" sections, which have been removed — a
+ * Manager now sets the collection when they accept the order. The component
+ * is kept, unchanged, because that Manager-side scheduling is the next thing
+ * to need exactly this control; nothing about it is business-specific.
  *
  * Every date it is given is selectable. Deciding WHICH dates may be offered
  * is the caller's job (via `istDates`), so this component never has to know

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
+import DemoBadge from '../demo/DemoBadge';
 
 interface Props {
   /**
@@ -68,6 +69,10 @@ export default function BusinessHeader({ title, subtitle, onBack, action }: Prop
           accessibilityLabel="Swachham"
         />
         {action ? <View style={styles.actionWrap}>{action}</View> : null}
+        {/* The demo marker, tucked at the leading edge of the brand row so it
+            is present on every Business screen without taking a line of its
+            own. It renders NOTHING in a production build. */}
+        <DemoBadge style={styles.demoBadge} />
       </View>
 
       {/* Back on the left (unchanged), HOME on the right of the same row. The
@@ -139,6 +144,14 @@ const styles = StyleSheet.create({
   brandBanner: {
     width: '100%',
     height: 70,
+  },
+  /* Absolutely positioned so adding it cannot move the banner by a pixel:
+     the brand row centres its logo, and a badge in the flow would have
+     shifted it. Demo builds only — in production nothing is rendered here. */
+  demoBadge: {
+    position: 'absolute',
+    left: SPACING.md,
+    bottom: SPACING.xs,
   },
   actionWrap: {
     position: 'absolute',

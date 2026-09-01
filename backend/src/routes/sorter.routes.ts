@@ -15,6 +15,10 @@ import {
   reportDefect,
   retryWhatsApp,
   listDefectsForOrder,
+  statusOf,
+  errorOf,
+  ROLE_LABEL,
+  DEFECT_RECIPIENT_ROLES,
   DefectRecord,
 } from '../services/defect.service';
 import {
@@ -348,33 +352,48 @@ function toSorterView(result: AdjustResult) {
 const defectPhotoBody = express.json({ limit: '12mb' });
 
 /**
- * True only when Meta accepted every copy of the notification.
+ * True only when Meta accepted every copy it was actually asked to deliver.
  *
- * Both recipients must be SENT. A partial delivery is not a success: the
- * HTTP status has to reflect that something did not reach its recipient,
- * and the per-copy detail in the body says which.
+ * Every recipient that EXISTS must be SENT. A partial delivery is not a
+ * success: the HTTP status has to reflect that something did not reach its
+ * recipient, and the per-copy detail in the body says which.
+ *
+ * A NULL status is not a failure — it means the order has no such recipient
+ * (no Manager took it on, no Super Admin has a number on file), and a
+ * deployment without one of those roles must not have every defect report
+ * report itself as undelivered. The reason is still carried in that copy's
+ * error column and shown in the app.
  */
 function isFullyDelivered(defect: DefectRecord): boolean {
-  return defect.whatsapp_status === 'SENT' && defect.sorter_whatsapp_status === 'SENT';
+  return DEFECT_RECIPIENT_ROLES.every((role) => {
+    const status = statusOf(defect, role);
+    return status === 'SENT' || status === null;
+  });
 }
 
 /** Names the copies that did not arrive, and why, for the error message. */
 function undeliveredSummary(defect: DefectRecord): string {
   const parts: string[] = [];
-  if (defect.whatsapp_status !== 'SENT') {
-    parts.push(`Customer: ${defect.whatsapp_error || 'not sent'}`);
-  }
-  if (defect.sorter_whatsapp_status !== 'SENT') {
-    parts.push(`Sorter: ${defect.sorter_whatsapp_error || 'not sent'}`);
+  for (const role of DEFECT_RECIPIENT_ROLES) {
+    const status = statusOf(defect, role);
+    if (status === 'SENT' || status === null) continue;
+    parts.push(`${ROLE_LABEL[role]}: ${errorOf(defect, role) || 'not sent'}`);
   }
   return parts.join(' | ');
 }
 
 /**
- * Records a defect against an order and notifies the customer on WhatsApp.
+ * Records a defect against an order and notifies everyone who needs to know
+ * on WhatsApp — the customer, the Manager, the Super Admin and the reporting
+ * Sorter.
+ *
+ * `orderItemId` and `defectiveQuantity` are OPTIONAL and additive: a report
+ * that names the line it is about gets that line's item, service type and
+ * quantities into the message, and one that does not is still accepted and
+ * described against the order as a whole, exactly as before.
  *
  * The photo is stored first, so a WhatsApp failure never loses it: the reply
- * still carries the saved record, with whatsapp_status telling the app what
+ * still carries the saved record, with each copy's status telling the app what
  * actually happened.
  */
 router.post(
@@ -383,11 +402,17 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const authReq = req as AuthenticatedRequest;
-      const { photoBase64, mimeType, description, notify } = req.body || {};
+      const { photoBase64, mimeType, description, notify, orderItemId, defectiveQuantity } =
+        req.body || {};
 
       if (typeof photoBase64 !== 'string' || photoBase64.length === 0) {
         return next(new AppError('A defect photo is required', 400));
       }
+
+      // Coerced here rather than trusted: the service re-checks that the line
+      // belongs to this order, and a non-numeric quantity becomes "not given"
+      // instead of reaching the row.
+      const quantity = Number(defectiveQuantity);
 
       const defect = await reportDefect({
         orderId: req.params.id,
@@ -395,6 +420,11 @@ router.post(
         photoBase64,
         mimeType: typeof mimeType === 'string' && mimeType ? mimeType : 'image/jpeg',
         description: typeof description === 'string' ? description.slice(0, 500) : null,
+        orderItemId:
+          orderItemId === null || orderItemId === undefined || orderItemId === ''
+            ? null
+            : String(orderItemId),
+        defectiveQuantity: Number.isInteger(quantity) && quantity > 0 ? quantity : null,
         notify: notify !== false,
       });
 

@@ -96,10 +96,31 @@ interface AppConfig {
    * template exists — see .env.example for the parameter order it must use.
    */
   WHATSAPP_ADJUSTMENT_TEMPLATE: string;
+  /**
+   * An APPROVED IMAGE-HEADER template for the FULL defective-piece report —
+   * item, service, quantities, date and reason behind the photo.
+   *
+   * Empty by default and deliberately so, exactly like the adjustment
+   * template above: the account's defect template has room for a name and an
+   * order number only. While this is empty the report is delivered as a
+   * captioned photo, which carries the same detail inside the 24-hour
+   * customer-service window, and falls back to the approved defect template
+   * when Meta refuses that. See .env.example for the parameter order.
+   */
+  WHATSAPP_DEFECT_DETAIL_TEMPLATE: string;
   WHATSAPP_TEMPLATE_LANG: string;
   WHATSAPP_DEFAULT_COUNTRY_CODE: string;
   /** Fallback for the Sorter copy when the sorter account has no mobile. */
   WHATSAPP_SORTER_NUMBER: string;
+  /**
+   * Fallbacks for the Manager and Super Admin copies of a defect report,
+   * used ONLY when no such account has a mobile number on file. The account's
+   * own number is always preferred, so neither of these is a hardcoded
+   * recipient — they are a last resort for a deployment that has not filled
+   * one in yet.
+   */
+  WHATSAPP_MANAGER_NUMBER: string;
+  WHATSAPP_SUPER_ADMIN_NUMBER: string;
 
   // --- The processing facility ---
   //
@@ -235,11 +256,15 @@ const config: AppConfig = {
   // Cloud API resolves, and it stays configurable.
   WHATSAPP_DEFECT_TEMPLATE: optionalEnv('WHATSAPP_DEFECT_TEMPLATE', 'defective_piece_notification'),
   WHATSAPP_ADJUSTMENT_TEMPLATE: optionalEnv('WHATSAPP_ADJUSTMENT_TEMPLATE', ''),
+  WHATSAPP_DEFECT_DETAIL_TEMPLATE: optionalEnv('WHATSAPP_DEFECT_DETAIL_TEMPLATE', ''),
   WHATSAPP_TEMPLATE_LANG: optionalEnv('WHATSAPP_TEMPLATE_LANG', 'en'),
   // Indian numbers are stored as 10 digits; Meta needs them in E.164.
   WHATSAPP_DEFAULT_COUNTRY_CODE: optionalEnv('WHATSAPP_DEFAULT_COUNTRY_CODE', '91'),
   // Optional: used only when the reporting sorter has no number on file.
   WHATSAPP_SORTER_NUMBER: optionalEnv('WHATSAPP_SORTER_NUMBER', ''),
+  // Optional: used only when no Manager / Super Admin account has one.
+  WHATSAPP_MANAGER_NUMBER: optionalEnv('WHATSAPP_MANAGER_NUMBER', ''),
+  WHATSAPP_SUPER_ADMIN_NUMBER: optionalEnv('WHATSAPP_SUPER_ADMIN_NUMBER', ''),
 
   // The Swachham processing facility in Dapoli. Defaults are the real
   // coordinates, so a deployment that configures nothing still dispatches

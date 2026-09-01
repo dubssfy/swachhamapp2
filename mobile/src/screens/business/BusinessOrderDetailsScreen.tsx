@@ -18,7 +18,6 @@ import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../const
 import BusinessHeader from '../../components/business/BusinessHeader';
 import businessOrderApi, { BusinessOrderDetail } from '../../services/businessOrderApi';
 import { extractErrorMessage } from '../../services/api';
-import { useBusinessOrderStore } from '../../store/businessOrderStore';
 import {
   generateOrderPdf,
   buildPdfBaseName,
@@ -44,8 +43,6 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
    * re-rendered the disabled buttons — cannot both start a generation.
    */
   const pdfBusyRef = useRef(false);
-  const [isRepeating, setIsRepeating] = useState(false);
-  const { repeatIntoCart } = useBusinessOrderStore();
 
   const load = useCallback(async () => {
     try {
@@ -65,28 +62,6 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
   }, [load]);
 
 
-
-  /**
-   * Copies this order's items/selections into the cart. The business then
-   * reviews and confirms, so the repeat goes through the normal validated
-   * create-order flow and receives its own new order number.
-   */
-  const handleRepeatOrder = async () => {
-    if (isRepeating) return;
-    try {
-      setIsRepeating(true);
-      setError('');
-      // The store is populated from the rebuilt cart the server returns, so the
-      // Cart shows the repeated items the moment it opens. No order is created
-      // here — the new order number is issued when the business confirms.
-      await repeatIntoCart(String(orderId));
-      navigation.navigate('BusinessCart');
-    } catch (err: any) {
-      setError(err?.message || 'Failed to repeat order');
-    } finally {
-      setIsRepeating(false);
-    }
-  };
 
   /**
    * The PDF is always built from a fresh read of the order, so the document
@@ -307,9 +282,10 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
                   </Text>
                 ) : null}
               </View>
-              {/* The line's quantity, as the count it is billed on. No
-                  weight: the business orders and is billed by the piece. */}
-              <Text style={styles.itemCount}>x{item.quantity}</Text>
+              {/* No trailing "x<qty>" badge. The quantity is still read from
+                  the order and still printed in the meta line above ("2 pcs"),
+                  on the defective/pending lines, and in the PDF — only this
+                  duplicate prefix display is gone. */}
             </View>
           ))}
           <View style={styles.summaryRow}>
@@ -378,22 +354,6 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
             <>
               <Ionicons name="download-outline" size={20} color={COLORS.Surface} />
               <Text style={styles.primaryButtonText}>Download PDF</Text>
-            </>
-          )}
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.secondaryButton, isRepeating && styles.buttonDisabled]}
-          onPress={handleRepeatOrder}
-          disabled={isRepeating}
-          activeOpacity={0.85}
-        >
-          {isRepeating ? (
-            <ActivityIndicator size="small" color={COLORS.Primary} />
-          ) : (
-            <>
-              <Ionicons name="repeat-outline" size={20} color={COLORS.Primary} />
-              <Text style={styles.secondaryButtonText}>Repeat Order</Text>
             </>
           )}
         </TouchableOpacity>
@@ -516,12 +476,6 @@ const styles = StyleSheet.create({
     color: '#8A5200',
     fontWeight: '600',
     marginTop: 2,
-  },
-  itemCount: {
-    fontFamily: TYPOGRAPHY.fontFamily,
-    fontSize: TYPOGRAPHY.sizes.sm,
-    fontWeight: '600',
-    color: COLORS.PrimaryDark,
   },
   summaryRow: {
     flexDirection: 'row',

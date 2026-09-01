@@ -13,7 +13,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
-import sorterApi, { DefectRecord } from '../../services/sorterApi';
+import sorterApi, {
+  DefectRecord,
+  defectCopies,
+  defectFullyDelivered,
+} from '../../services/sorterApi';
 import { extractErrorMessage } from '../../services/api';
 
 /**
@@ -23,6 +27,13 @@ import { extractErrorMessage } from '../../services/api';
  * SEND, and a photo that has been taken is never thrown away by a failed
  * send: it stays on screen with a retry, so evidence is not lost to a bad
  * network moment.
+ *
+ * REACHED ONLY FROM MARK AS DEFECTIVE, which is what lets the report say what
+ * it is about: the line, its name, its service, the pieces the order was
+ * placed for and the pieces found damaged all arrive as route params and go
+ * up with the photo, so the WhatsApp message names them instead of describing
+ * the order in general. They are all OPTIONAL — a screen opened without them
+ * still files a report against the order, exactly as it always did.
  *
  * Camera permission is requested here and nowhere else, so opening the
  * dashboard or an order never prompts for the camera. A Sorter who does not
@@ -39,7 +50,25 @@ type Phase = 'camera' | 'preview' | 'sent';
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 
 export default function SorterDefectCaptureScreen({ route, navigation }: any) {
-  const { orderId, orderNumber } = route.params || {};
+  const {
+    orderId,
+    orderNumber,
+    orderItemId = null,
+    itemName = null,
+    serviceType = null,
+    totalQuantity = null,
+    defectiveQuantity = null,
+    reason = '',
+  } = route.params || {};
+
+  /**
+   * What goes up with the photo, and what the summary shows.
+   *
+   * Read straight from the params — the figures the server just stored — so
+   * the screen, the request and the WhatsApp message all quote one set of
+   * numbers rather than three that could drift.
+   */
+  const hasItemContext = Boolean(orderItemId);
 
   const cameraRef = useRef<CameraView | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
@@ -117,6 +146,14 @@ export default function SorterDefectCaptureScreen({ route, navigation }: any) {
       const response = await sorterApi.reportDefect(String(orderId), {
         photoBase64,
         mimeType: 'image/jpeg',
+        // The line and the count the report is about. Both optional on the
+        // server, so a screen opened without them still files a report.
+        orderItemId: orderItemId ? String(orderItemId) : null,
+        defectiveQuantity:
+          defectiveQuantity === null || defectiveQuantity === undefined
+            ? null
+            : Number(defectiveQuantity),
+        description: reason ? String(reason) : undefined,
       });
       setDefect(response.data);
       setPhase('sent');
@@ -232,14 +269,36 @@ export default function SorterDefectCaptureScreen({ route, navigation }: any) {
 
   // ---- Preview and result ----
 
-  const whatsappSent = defect?.whatsapp_status === 'SENT';
-  const sorterWhatsappSent = defect?.sorter_whatsapp_status === 'SENT';
-  // Retry stays offered until both copies are accepted by Meta.
-  const bothWhatsappSent = whatsappSent && sorterWhatsappSent;
+  // Retry stays offered until every copy that has a recipient is accepted by
+  // Meta. A copy with nobody to send to is not a failure and no retry can
+  // change it — see defectCopies.
+  const allWhatsappSent = defect ? defectFullyDelivered(defect) : false;
 
   return (
     <Screen title="Report Defect" onBack={() => navigation.goBack()}>
       <ScrollView contentContainerStyle={styles.scroll}>
+        {/* WHAT THIS REPORT IS ABOUT — the same figures that go up with the
+            photo and into the WhatsApp message, shown before it is sent so
+            the Sorter can see them rather than trust them. */}
+        {hasItemContext ? (
+          <View style={styles.detailsBlock}>
+            <Text style={styles.sectionLabel}>DEFECTIVE PIECE DETAILS</Text>
+            <DetailRow label="Order ID" value={`#${orderNumber}`} />
+            <DetailRow label="Item" value={itemName || '—'} />
+            <DetailRow label="Service Type" value={serviceType || '—'} />
+            <DetailRow
+              label="Total Quantity"
+              value={totalQuantity === null ? '—' : String(totalQuantity)}
+            />
+            <DetailRow
+              label="Defective Quantity"
+              value={defectiveQuantity === null ? '—' : String(defectiveQuantity)}
+              strong
+            />
+            {reason ? <DetailRow label="Reason" value={String(reason)} /> : null}
+          </View>
+        ) : null}
+
         <Text style={styles.sectionLabel}>PHOTO PREVIEW</Text>
         {photoUri ? (
           <Image source={{ uri: photoUri }} style={styles.preview} resizeMode="contain" />
@@ -254,42 +313,42 @@ export default function SorterDefectCaptureScreen({ route, navigation }: any) {
               <Text style={styles.resultText}>Photo saved against order #{orderNumber}</Text>
             </View>
 
-            {/* Two copies of the same message, reported independently. */}
-            <View style={styles.resultRow}>
-              <Ionicons
-                name={whatsappSent ? 'checkmark-circle' : 'alert-circle'}
-                size={22}
-                color={whatsappSent ? COLORS.Success : COLORS.Error}
-              />
-              <Text style={styles.resultText}>
-                {whatsappSent
-                  ? `Customer WhatsApp: sent${defect.whatsapp_to ? ` (${defect.whatsapp_to})` : ''}`
-                  : 'Customer WhatsApp: failed to send'}
-              </Text>
-            </View>
-
-            {!whatsappSent && defect.whatsapp_error ? (
-              <Text style={styles.whatsappError}>{defect.whatsapp_error}</Text>
-            ) : null}
-
-            <View style={styles.resultRow}>
-              <Ionicons
-                name={sorterWhatsappSent ? 'checkmark-circle' : 'alert-circle'}
-                size={22}
-                color={sorterWhatsappSent ? COLORS.Success : COLORS.Error}
-              />
-              <Text style={styles.resultText}>
-                {sorterWhatsappSent
-                  ? `Your WhatsApp: sent${defect.sorter_whatsapp_to ? ` (${defect.sorter_whatsapp_to})` : ''}`
-                  : defect.sorter_whatsapp_status
-                  ? 'Your WhatsApp: failed to send'
-                  : 'Your WhatsApp: not attempted'}
-              </Text>
-            </View>
-
-            {!sorterWhatsappSent && defect.sorter_whatsapp_error ? (
-              <Text style={styles.whatsappError}>{defect.sorter_whatsapp_error}</Text>
-            ) : null}
+            {/* One copy per recipient, each reported independently: one
+                failing says nothing about the others. */}
+            {defectCopies(defect).map((copy) => {
+              const ok = copy.status === 'SENT';
+              // No recipient at all — neither sent nor failed.
+              const absent = copy.status === null;
+              const color = ok
+                ? COLORS.Success
+                : absent
+                ? COLORS.TextSecondary
+                : COLORS.Error;
+              return (
+                <View key={copy.role}>
+                  <View style={styles.resultRow}>
+                    <Ionicons
+                      name={
+                        ok ? 'checkmark-circle' : absent ? 'remove-circle-outline' : 'alert-circle'
+                      }
+                      size={22}
+                      color={color}
+                    />
+                    <Text style={[styles.resultText, { color }]}>
+                      {copy.label} WhatsApp:{' '}
+                      {ok
+                        ? `sent${copy.to ? ` (${copy.to})` : ''}`
+                        : absent
+                        ? 'no recipient'
+                        : 'failed to send'}
+                    </Text>
+                  </View>
+                  {!ok && copy.error ? (
+                    <Text style={styles.whatsappError}>{copy.error}</Text>
+                  ) : null}
+                </View>
+              );
+            })}
           </View>
         ) : null}
 
@@ -307,7 +366,7 @@ export default function SorterDefectCaptureScreen({ route, navigation }: any) {
                 ) : (
                   <>
                     <Ionicons name="logo-whatsapp" size={24} color={COLORS.Surface} />
-                    <Text style={styles.bigButtonText}>SEND TO CUSTOMER</Text>
+                    <Text style={styles.bigButtonText}>SEND DEFECT REPORT</Text>
                   </>
                 )}
               </TouchableOpacity>
@@ -324,7 +383,7 @@ export default function SorterDefectCaptureScreen({ route, navigation }: any) {
             </>
           ) : null}
 
-          {phase === 'sent' && !bothWhatsappSent ? (
+          {phase === 'sent' && !allWhatsappSent ? (
             <TouchableOpacity
               style={[styles.bigButton, isSending && styles.buttonDisabled]}
               onPress={retryWhatsApp}
@@ -351,7 +410,8 @@ export default function SorterDefectCaptureScreen({ route, navigation }: any) {
                   // rather than letting a stray tap message the customer again.
                   Alert.alert(
                     'Report another defect?',
-                    'This creates a new defect report and sends another WhatsApp message to the customer.',
+                    'This creates a new defect report and sends another WhatsApp message to ' +
+                      'every recipient.',
                     [
                       { text: 'Cancel', style: 'cancel' },
                       { text: 'Continue', onPress: retake },
@@ -372,6 +432,26 @@ export default function SorterDefectCaptureScreen({ route, navigation }: any) {
         </View>
       </ScrollView>
     </Screen>
+  );
+}
+
+/** One line of the details summary. */
+function DetailRow({
+  label,
+  value,
+  strong,
+}: {
+  label: string;
+  value: string;
+  strong?: boolean;
+}) {
+  return (
+    <View style={styles.detailRow}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={[styles.detailValue, strong && styles.detailValueStrong]} numberOfLines={2}>
+        {value}
+      </Text>
+    </View>
   );
 }
 
@@ -480,6 +560,34 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     marginBottom: SPACING.md,
   },
+
+  detailsBlock: {
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    gap: SPACING.xs,
+    marginBottom: SPACING.md,
+    ...SHADOWS.light,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: SPACING.md,
+  },
+  detailLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+  },
+  detailValue: {
+    flex: 1,
+    textAlign: 'right',
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextPrimary,
+  },
+  detailValueStrong: { fontWeight: '700', color: COLORS.Error },
 
   resultBlock: {
     backgroundColor: COLORS.Surface,

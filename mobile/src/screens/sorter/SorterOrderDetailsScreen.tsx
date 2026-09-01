@@ -22,6 +22,8 @@ import sorterApi, {
   ScanStatus,
   ScanStageName,
   DefectRecord,
+  defectCopies,
+  defectFullyDelivered,
 } from '../../services/sorterApi';
 import MarkDefectiveModal from './MarkDefectiveModal';
 import PendingItemsModal from './PendingItemsModal';
@@ -183,23 +185,50 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
    * actually stored rather than a locally patched copy that could drift from
    * it — particularly if another Sorter adjusted the same order meanwhile.
    */
-  const saveAdjustment = async (defectiveQuantity: number, reason: string) => {
-    if (!defectiveFor || savingAdjustment) return;
-    setSavingAdjustment(true);
-    setError('');
+  /**
+   * The API call both defective actions share.
+   *
+   * Returns the saved line, or null when the server refused it — the caller
+   * then knows not to move on. The error is surfaced here, so neither caller
+   * has to repeat that.
+   */
+  const persistAdjustment = async (
+    item: SorterOrderItem,
+    defectiveQuantity: number,
+    reason: string
+  ) => {
     try {
       const response = await sorterApi.adjustDefectiveQuantity(
         String(orderId),
-        defectiveFor.id,
+        item.id,
         defectiveQuantity,
         reason
       );
       setDefectiveFor(null);
       await load();
+      return response.data.item;
+    } catch (err: any) {
+      // The server's message is the useful one — it names which rule was
+      // broken, or why the order can no longer be adjusted.
+      setError(extractErrorMessage(err, 'Could not save the defective quantity'));
+      Alert.alert(
+        'Not saved',
+        extractErrorMessage(err, 'Could not save the defective quantity')
+      );
+      return null;
+    }
+  };
+
+  const saveAdjustment = async (defectiveQuantity: number, reason: string) => {
+    if (!defectiveFor || savingAdjustment) return;
+    setSavingAdjustment(true);
+    setError('');
+    try {
+      const saved = await persistAdjustment(defectiveFor, defectiveQuantity, reason);
+      if (!saved) return;
 
       // Pieces only. No amount is shown, and none is sent — see the note at
       // the top of MarkDefectiveModal.
-      const saved = response.data.item;
       Alert.alert(
         'Defective adjustment saved',
         `${saved.item_name}
@@ -215,14 +244,45 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
           { text: 'Send WhatsApp', onPress: sendAdjustmentWhatsApp },
         ]
       );
-    } catch (err: any) {
-      // The server's message is the useful one — it names which rule was
-      // broken, or why the order can no longer be adjusted.
-      setError(extractErrorMessage(err, 'Could not save the defective quantity'));
-      Alert.alert(
-        'Not saved',
-        extractErrorMessage(err, 'Could not save the defective quantity')
-      );
+    } finally {
+      setSavingAdjustment(false);
+    }
+  };
+
+  /**
+   * MARK AS DEFECTIVE -> REPORT THE DEFECTIVE PIECE.
+   *
+   * The figures are saved first and the camera opens second, so the photo and
+   * the count it belongs to are always the same submission. The capture
+   * screen is handed the LINE — its id, name and quantities — which is what
+   * lets the WhatsApp message name the item, its service and both quantities
+   * instead of describing the order in general.
+   *
+   * This is the only way into the defect camera now: a standalone button
+   * could be tapped without any of this context, and the report it produced
+   * was the one that could not say what was wrong with what.
+   */
+  const reportDefectivePiece = async (defectiveQuantity: number, reason: string) => {
+    if (!defectiveFor || savingAdjustment || !order) return;
+    const item = defectiveFor;
+    setSavingAdjustment(true);
+    setError('');
+    try {
+      const saved = await persistAdjustment(item, defectiveQuantity, reason);
+      if (!saved) return;
+
+      navigation.navigate('SorterDefectCaptureScreen', {
+        orderId,
+        orderNumber: order.order_number,
+        orderItemId: item.id,
+        itemName: saved.item_name,
+        // The server's own figures, not the ones typed — it is the authority
+        // on what was stored, and the message quotes what was stored.
+        totalQuantity: saved.original_quantity,
+        defectiveQuantity: saved.defective_quantity,
+        serviceType: item.laundry_service_name,
+        reason,
+      });
     } finally {
       setSavingAdjustment(false);
     }
@@ -406,18 +466,21 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
       setRetryingDefectId(defect.id);
       setError('');
       const response = await sorterApi.retryDefectWhatsApp(String(orderId), defect.id);
-      const customerOk = response.data.whatsapp_status === 'SENT';
-      const sorterOk = response.data.sorter_whatsapp_status === 'SENT';
-      if (customerOk && sorterOk) {
-        Alert.alert('WhatsApp sent', 'The customer and you have both been notified.');
+      if (defectFullyDelivered(response.data)) {
+        Alert.alert('WhatsApp sent', 'Every recipient of this report has been notified.');
       } else {
         // Say which copy is still outstanding rather than a blanket failure.
         Alert.alert(
           'WhatsApp not fully delivered',
-          [
-            customerOk ? 'Customer: sent' : `Customer: ${response.data.whatsapp_error || 'failed'}`,
-            sorterOk ? 'Sorter: sent' : `Sorter: ${response.data.sorter_whatsapp_error || 'failed'}`,
-          ].join('\n')
+          defectCopies(response.data)
+            .map((copy) =>
+              copy.status === 'SENT'
+                ? `${copy.label}: sent`
+                : copy.status === null
+                ? `${copy.label}: no recipient`
+                : `${copy.label}: ${copy.error || 'failed'}`
+            )
+            .join('\n')
         );
       }
       await load();
@@ -763,10 +826,11 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
           {order.defects && order.defects.length > 0 ? (
             order.defects.map((defect) => {
               const reported = formatDateTime(defect.reported_at);
-              const sent = defect.whatsapp_status === 'SENT';
-              const sorterSent = defect.sorter_whatsapp_status === 'SENT';
-              // Retry stays available until BOTH copies are accepted.
-              const bothSent = sent && sorterSent;
+              // Retry stays available until every copy that HAS a recipient
+              // is accepted. A copy with nobody to send to is not a failure
+              // and no retry can change it — see defectCopies.
+              const copies = defectCopies(defect);
+              const allSent = defectFullyDelivered(defect);
               return (
                 <View key={defect.id} style={styles.defectItem}>
                   <View style={styles.defectHeaderRow}>
@@ -784,50 +848,53 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
 
                   <Text style={styles.defectMeta}>
                     {reported.date} {reported.time}
+                    {defect.defective_quantity
+                      ? ` · ${defect.defective_quantity} piece(s) defective`
+                      : ''}
                   </Text>
-
-                  {/* Customer copy and Sorter copy are reported separately:
-                      one failing says nothing about the other. */}
-                  <View style={styles.defectStatusRow}>
-                    <Ionicons
-                      name={sent ? 'checkmark-circle' : 'alert-circle'}
-                      size={18}
-                      color={sent ? COLORS.Success : COLORS.Error}
-                    />
-                    <Text style={[styles.defectStatusText, { color: sent ? COLORS.Success : COLORS.Error }]}>
-                      {sent ? 'Customer WhatsApp: Sent' : 'Customer WhatsApp: Failed to send'}
-                    </Text>
-                  </View>
-
-                  {!sent && defect.whatsapp_error ? (
-                    <Text style={styles.defectError}>{defect.whatsapp_error}</Text>
+                  {defect.description ? (
+                    <Text style={styles.defectMeta}>Reason: {defect.description}</Text>
                   ) : null}
 
-                  <View style={styles.defectStatusRow}>
-                    <Ionicons
-                      name={sorterSent ? 'checkmark-circle' : 'alert-circle'}
-                      size={18}
-                      color={sorterSent ? COLORS.Success : COLORS.Error}
-                    />
-                    <Text
-                      style={[
-                        styles.defectStatusText,
-                        { color: sorterSent ? COLORS.Success : COLORS.Error },
-                      ]}
-                    >
-                      {sorterSent
-                        ? 'Sorter WhatsApp: Sent'
-                        : defect.sorter_whatsapp_status
-                        ? 'Sorter WhatsApp: Failed to send'
-                        : 'Sorter WhatsApp: Not attempted'}
-                    </Text>
-                  </View>
+                  {/* Every copy is reported separately: one failing says
+                      nothing about the others. */}
+                  {copies.map((copy) => {
+                    const ok = copy.status === 'SENT';
+                    // No recipient at all — neither sent nor failed, and
+                    // shown as the plain fact it is rather than an alarm.
+                    const absent = copy.status === null;
+                    const color = ok
+                      ? COLORS.Success
+                      : absent
+                      ? COLORS.TextSecondary
+                      : COLORS.Error;
+                    return (
+                      <View key={copy.role}>
+                        <View style={styles.defectStatusRow}>
+                          <Ionicons
+                            name={
+                              ok
+                                ? 'checkmark-circle'
+                                : absent
+                                ? 'remove-circle-outline'
+                                : 'alert-circle'
+                            }
+                            size={18}
+                            color={color}
+                          />
+                          <Text style={[styles.defectStatusText, { color }]}>
+                            {copy.label} WhatsApp:{' '}
+                            {ok ? 'Sent' : absent ? 'No recipient' : 'Failed to send'}
+                          </Text>
+                        </View>
+                        {!ok && copy.error ? (
+                          <Text style={styles.defectError}>{copy.error}</Text>
+                        ) : null}
+                      </View>
+                    );
+                  })}
 
-                  {!sorterSent && defect.sorter_whatsapp_error ? (
-                    <Text style={styles.defectError}>{defect.sorter_whatsapp_error}</Text>
-                  ) : null}
-
-                  {!bothSent ? (
+                  {!allSent ? (
                     <TouchableOpacity
                       style={[
                         styles.retryButtonSmall,
@@ -854,19 +921,15 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
             <Text style={styles.defectEmpty}>No defect reported for this order.</Text>
           )}
 
-          <TouchableOpacity
-            style={styles.defectButton}
-            onPress={() =>
-              navigation.navigate('SorterDefectCaptureScreen', {
-                orderId,
-                orderNumber: order.order_number,
-              })
-            }
-            activeOpacity={0.85}
-          >
-            <Ionicons name="camera" size={22} color={COLORS.Surface} />
-            <Text style={styles.defectButtonText}>REPORT DEFECTIVE PIECE</Text>
-          </TouchableOpacity>
+          {/* NO BUTTON HERE ANY MORE. Reporting a defective piece starts from
+              MARK DEFECTIVE on the item it concerns, so the report always
+              knows which line, how many pieces and why — the things a
+              standalone camera button could never supply. */}
+          <Text style={styles.defectHint}>
+            {defectsLocked
+              ? 'This order has been accepted, so its defective pieces are locked.'
+              : 'To report a defective piece, use MARK DEFECTIVE on the item above.'}
+          </Text>
         </View>
 
         <TouchableOpacity
@@ -923,6 +986,7 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
         saving={savingAdjustment}
         onCancel={() => setDefectiveFor(null)}
         onSave={saveAdjustment}
+        onReportPiece={reportDefectivePiece}
       />
 
       {/* Which items are pending, asked only after the Sorter says some are. */}
@@ -1354,6 +1418,12 @@ const styles = StyleSheet.create({
     fontSize: TYPOGRAPHY.sizes.sm,
     color: COLORS.TextSecondary,
     marginTop: SPACING.xs,
+  },
+  defectHint: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+    marginTop: SPACING.md,
   },
   retryButtonSmall: {
     flexDirection: 'row',

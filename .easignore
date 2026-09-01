@@ -1,0 +1,73 @@
+# WHAT EAS BUILD DOES NOT UPLOAD.
+#
+# EAS archives from the REPOSITORY ROOT (the build log shows the project at
+# `/home/expo/workingdir/build/mobile`), so this file belongs here and its
+# paths are repo-relative. When a .easignore exists it REPLACES .gitignore as
+# the upload filter, so this is written as a deliberate superset of every
+# ignore file in the repo — the root one, backend/.gitignore and the nested
+# mobile/android/.gitignore.
+#
+# WHY IT EXISTS.
+#
+# The demo is built with EAS_NO_VCS=1, because `mobile/src/demo/` and
+# `mobile/app.config.js` are untracked and a git-based upload would ship a
+# build with the whole demo layer missing. In that mode the CLI does not
+# honour NESTED ignore files, and `mobile/android/.gitignore` is the ONLY
+# place `build/` is listed — the root .gitignore covers
+# `android/app/build/` and `android/.gradle/` but not `android/build/`.
+#
+# So a local Windows build's `mobile/android/build/generated/autolinking/`
+# was uploaded. React Native's settings plugin caches autolinking there and
+# reuses it whenever the adjacent package.json.sha / package-lock.json.sha
+# still match — which they did. The Linux builder therefore resolved
+# react-native-gesture-handler, -safe-area-context, -screens, -svg and
+# -webview at `C:\Users\...` paths that do not exist on it, and Gradle failed
+# with "No matching variant ... No variants exist" for exactly those five.
+#
+# The mobile/android entries below are what prevent that recurring after any
+# local `expo run:android`.
+
+# ---- Dependencies. The builder runs `npm ci` itself. ----
+node_modules/
+mobile/node_modules/
+backend/node_modules/
+
+# ---- Secrets. The demo's only env var (EXPO_PUBLIC_DEMO_MODE) comes from
+#      the `demo` profile in eas.json, never from a file. ----
+.env
+.env.*
+!.env.example
+backend/.env
+
+# ---- Not part of an Android build. `mobile-temp/` is a 319 MB scratch copy
+#      of the app and `backend/` is the server; neither is compiled here. ----
+mobile-temp/
+backend/
+database/
+
+# ---- Expo / Metro ----
+.expo/
+.expo-shared/
+dist/
+web-build/
+mobile/.tmp-rn/
+
+# ---- NATIVE BUILD OUTPUT. All regenerated on the builder; uploading a local
+#      machine's copy is what broke the two builds described above. ----
+mobile/android/build/
+mobile/android/.gradle/
+mobile/android/.cxx/
+mobile/android/app/build/
+mobile/android/app/.cxx/
+mobile/android/local.properties
+mobile/android/.idea/
+mobile/android/*.iml
+mobile/android/*.hprof
+mobile/ios/build/
+mobile/ios/Pods/
+*.jsbundle
+
+# ---- Logs and OS noise ----
+*.log
+.DS_Store
+Thumbs.db
