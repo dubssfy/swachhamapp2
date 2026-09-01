@@ -38,8 +38,8 @@ const MARGIN = 20;
  * The item-name column, at its widest and its narrowest.
  *
  * It gives width back to the date columns as the period lengthens — a month
- * of dates is worth more than the tail of a long item name. A name too long
- * for the column WRAPS, and its row grows to hold it; see `rowHeight`.
+ * of dates is worth more than the tail of a long item name, and names
+ * ellipsis rather than wrap, so the row height never changes.
  */
 const ITEM_W_MAX = 148;
 /**
@@ -73,50 +73,14 @@ const DATE_W_MIN = 18;
 
 /** The three closing columns, on the final block only. */
 const TOTAL_W = 36;
-/**
- * 50, from 44.
- *
- * The heading is "Rate (INR)", which is 38.7pt at the 8pt bold the header row
- * uses. At 44 the text box was `RATE_W - 6` = 38pt -- narrower by seven tenths
- * of a point -- so PDFKit wrapped it, put "(INR)" on a second line and drew
- * that line outside the 20pt header band. The column printed as "Rate " with
- * the currency simply gone.
- *
- * Widened rather than the label shortened, because "(INR)" is what tells the
- * reader the figures are rupees: these fonts are WinAnsi and have no rupee
- * glyph, so the heading is the only place the currency can be stated. The six
- * points come out of the date columns, which are sized from what is left.
- */
-const RATE_W = 50;
+const RATE_W = 44;
 const AMOUNT_W = 60;
 
 /** Below this column width the grid switches to its dense font and day-only heads. */
 const DENSE_BELOW = 30;
 
 const HEAD_H = 20;
-
-/**
- * The MINIMUM height of a body row. A row with a long item name grows past
- * this; see `rowHeight`.
- */
 const ROW_H = 17;
-
-/**
- * How many rows must fit under a heading for it to be worth starting the
- * table on this page at all. One heading alone at the foot of a page, with
- * its rows overleaf, reads as a mistake.
- */
-const MIN_ROWS_AFTER_HEAD = 2;
-
-/**
- * Space above and below the item name inside its cell.
- *
- * 3.5 rather than 5 so that a ONE-LINE row still measures out at exactly
- * ROW_H: 9.8pt of text plus 7pt of padding is 16.8, which `Math.max` rounds
- * up to the 17 the sheet has always used. The existing density is therefore
- * unchanged, and only a row whose name actually wraps grows.
- */
-const ROW_PAD_Y = 3.5;
 /**
  * The air between one date block and the next.
  *
@@ -301,37 +265,35 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
       .text('Order Summary Details', detailX, detailY);
     detailY = doc.y + 3;
 
-    /**
-     * One label/value row of the top-right details block.
-     *
-     * THE ROW ADVANCES BY WHAT WAS ACTUALLY DRAWN, not by a fixed 12pt.
-     *
-     * It used to be `detailY += 12` whatever the value was. A long Address
-     * wraps to two or three lines inside its column, so the step of 12 left
-     * the rows underneath drawn ON TOP of it — "Invoice No." landed on the
-     * address's second line and "Type" on its third.
-     *
-     * `doc.y` after a `text` call is the bottom of what that call rendered, so
-     * taking the lower of the label and the value and adding the gap gives a
-     * row that is exactly as tall as its contents. A single-line row measures
-     * 9.8pt of type plus ROW_GAP, which is the 12pt this block has always
-     * used — so nothing moves except a row that genuinely needed the space.
-     */
-    const DETAIL_ROW_GAP = 2.2;
     const detail = (label: string, value: string) => {
-      const top = detailY;
+      const valueX = detailX + 112;
+      const valueW = right - valueX;
+      const text = value || EMPTY;
+
       doc.fillColor(THEME.TEXT).font('Helvetica').fontSize(8.5)
-        .text(label, detailX, top, { width: 108 });
-      const labelBottom = doc.y;
-
+        .text(label, detailX, detailY, { width: 108 });
       doc.font('Helvetica-Bold')
-        .text(value || EMPTY, detailX + 112, top, {
-          width: right - (detailX + 112),
-          align: 'right',
-        });
-      const valueBottom = doc.y;
+        .text(text, valueX, detailY, { width: valueW, align: 'right' });
 
-      detailY = Math.max(labelBottom, valueBottom) + DETAIL_ROW_GAP;
+      /*
+       * A VALUE THAT WRAPPED TAKES THE ROWS IT NEEDS.
+       *
+       * The row used to advance a flat 12pt however many lines the value
+       * actually ran to. A long business address wraps to three lines inside
+       * `valueW`, so the next two labels were written straight over lines two
+       * and three of it — the address read as truncated because it was
+       * overprinted, not because it was cut.
+       *
+       * Stepping by the lines drawn keeps the 12pt rhythm for every one-line
+       * row exactly as before, and lets only a wrapping value grow. Both
+       * heights are measured the same way, so their ratio is the line count.
+       */
+      const lines = Math.max(
+        1,
+        Math.round(doc.heightOfString(text, { width: valueW }) /
+                   doc.heightOfString('M', { width: valueW }))
+      );
+      detailY += 12 * lines;
     };
 
     detail('Business:', report.business.name);
@@ -375,23 +337,13 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
           });
         });
         if (isLastBlock) {
-          /*
-           * `lineBreak: false` ON ALL THREE.
-           *
-           * A heading that does not fit used to WRAP, and the second line was
-           * drawn below the 20pt band -- over the first data row, with the
-           * text that mattered ("(INR)") off the heading entirely. Kept on one
-           * line it can only ever be shortened by the ellipsis, which is
-           * visible as a problem rather than silently losing a word.
-           */
-          const headCell = { align: 'right' as const, lineBreak: false, ellipsis: true };
-          doc.text('Total', closingX, top + 6, { width: TOTAL_W - 6, ...headCell });
+          doc.text('Total', closingX, top + 6, { width: TOTAL_W - 6, align: 'right' });
           // PDFKit's built-in fonts are WinAnsi and have no rupee glyph, so
           // the currency is stated in the heading rather than per figure.
-          doc.text('Rate (INR)', closingX + TOTAL_W, top + 6, { width: RATE_W - 6, ...headCell });
+          doc.text('Rate (INR)', closingX + TOTAL_W, top + 6, { width: RATE_W - 6, align: 'right' });
           doc.text('Amount (INR)', closingX + TOTAL_W + RATE_W, top + 6, {
             width: AMOUNT_W - 6,
-            ...headCell,
+            align: 'right',
           });
         }
         return top + HEAD_H;
@@ -400,22 +352,38 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
       /*
        * WHERE A BLOCK STARTS.
        *
-       * IT STARTS HERE, UNDER THE HEADER, and flows onto the next page when it
-       * runs out of room. The row loop below already breaks pages and repeats
-       * the heading, so a table longer than a page needs no help.
-       *
-       * THIS USED TO MOVE THE WHOLE TABLE TO A FRESH PAGE whenever it would
-       * not fit in the space left below the header -- "keep the block
-       * together". For any real order that is always, because the table is
-       * taller than a page on its own, so the sheet opened on a page carrying
-       * nothing but the title, the logo and the supplier block, and the
-       * summary itself began on page 2. That is the blank first page.
-       *
-       * The only reason left to start on a new page is that there is not room
-       * for the heading and at least one row -- a heading stranded at the foot
-       * of a page with its rows overleaf.
+       * Each block is its own table, so one is not begun in the last inch of
+       * a page and split after two rows — it takes a fresh page whenever the
+       * whole block would fit on one. A block taller than a page still
+       * splits, and the row loop below repeats the heading when it does.
        */
-      if (y + HEAD_H + MIN_ROWS_AFTER_HEAD * ROW_H > bottomLimit) {
+      const blockH =
+        (blocks.length > 1 ? 12 : 0) +
+        HEAD_H +
+        report.rows.length * ROW_H +
+        (ROW_H + 2) +
+        BLOCK_GAP +
+        // The last block must leave room for the notes and signature under
+        // it, or the table fits and the footer alone takes a second page.
+        (isLastBlock ? FOOT_H : 0);
+      const fitsOnAFreshPage = blockH <= bottomLimit - MARGIN;
+
+      /*
+       * THE FIRST BLOCK NEVER TAKES A FRESH PAGE, because it is already on
+       * one. Only the header sits above it, so moving it along left page one
+       * holding nothing but the header and started the grid on page two —
+       * the blank first page. The block is no more likely to fit whole for
+       * having been moved; it just splits a page later.
+       *
+       * For every later block the rule is unchanged: a block that would fit
+       * whole on a fresh page takes one rather than being split. Either way a
+       * block with no room for its heading and two rows still moves on, so a
+       * heading can never be orphaned at the foot of a page.
+       */
+      if (
+        y + blockH > bottomLimit &&
+        ((blockIndex > 0 && fitsOnAFreshPage) || y + HEAD_H + ROW_H * 2 > bottomLimit)
+      ) {
         doc.addPage();
         y = MARGIN;
       }
@@ -432,60 +400,22 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
 
       y = head(y);
 
-      /*
-       * HOW TALL ONE ROW HAS TO BE.
-       *
-       * The item name WRAPS inside its column, so a long one takes two or
-       * three lines and the row has to grow to hold them. Measured with the
-       * same font and width the name is then drawn at, so the space reserved
-       * and the space used are the same number.
-       *
-       * The name used to be drawn with `lineBreak: false, ellipsis: true` and
-       * the row was a fixed 17pt -- but PDFKit wrapped it anyway, and the
-       * second line was written 10pt lower, over the row underneath. That is
-       * the overlap: "Double Duvet / Cover" landed on top of the next item.
-       */
-      const rowHeight = (name: string): number => {
-        doc.font('Helvetica').fontSize(8.5);
-        const textH = doc.heightOfString(name || EMPTY, {
-          width: ITEM_W - 12,
-          align: 'left',
-        });
-        return Math.max(ROW_H, Math.ceil(textH) + ROW_PAD_Y * 2);
-      };
-
       report.rows.forEach((row, index) => {
-        const name = row.item_name || EMPTY;
-        const thisRowH = rowHeight(name);
-
-        /*
-         * A continued table keeps its headings, so page two is still
-         * readable. Measured against THIS row's height, so a tall wrapped row
-         * is never half-drawn at the foot of a page.
-         */
-        if (y + thisRowH > bottomLimit) {
+        // A continued table keeps its headings, so page two is still readable.
+        if (y + ROW_H > bottomLimit) {
           doc.addPage();
           y = MARGIN;
           y = head(y);
         }
 
         if (index % 2 === 1) {
-          doc.rect(left, y, tableW, thisRowH).fill(THEME.ZEBRA);
+          doc.rect(left, y, tableW, ROW_H).fill(THEME.ZEBRA);
         }
 
         doc.fillColor(THEME.TEXT).font('Helvetica').fontSize(8.5);
-        /*
-         * WRAPPED, AND CLIPPED TO ITS OWN CELL.
-         *
-         * `width` keeps every line inside the Item Name column, so the name
-         * can never reach the first date column. `height` bounds it to the
-         * row that was measured for it, and `ellipsis` closes the one case
-         * measurement cannot: a single unbroken word longer than the column.
-         */
-        doc.text(name, left + 6, y + ROW_PAD_Y, {
+        doc.text(row.item_name || EMPTY, left + 6, y + 5, {
           width: ITEM_W - 12,
-          height: thisRowH - ROW_PAD_Y,
-          align: 'left',
+          lineBreak: false,
           ellipsis: true,
         });
 
@@ -496,27 +426,23 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
           figure(
             value ? String(value) : EMPTY,
             left + ITEM_W + i * DATE_W,
-            y + ROW_PAD_Y,
+            y + 5,
             DATE_W - 3,
             gridFont
           );
         });
 
         if (isLastBlock) {
-          figure(row.total ? String(row.total) : EMPTY,
-            closingX, y + ROW_PAD_Y, TOTAL_W - 6, 8.5, true);
-          figure(row.rate ? inr(row.rate) : EMPTY,
-            closingX + TOTAL_W, y + ROW_PAD_Y, RATE_W - 6, 8.5);
+          figure(row.total ? String(row.total) : EMPTY, closingX, y + 5, TOTAL_W - 6, 8.5, true);
+          figure(row.rate ? inr(row.rate) : EMPTY, closingX + TOTAL_W, y + 5, RATE_W - 6, 8.5);
           figure(
             row.amount ? inr(row.amount) : EMPTY,
-            closingX + TOTAL_W + RATE_W, y + ROW_PAD_Y, AMOUNT_W - 6, 8.5, true
+            closingX + TOTAL_W + RATE_W, y + 5, AMOUNT_W - 6, 8.5, true
           );
         }
         doc.font('Helvetica').fontSize(8.5);
 
-        // The rule closes THIS row, wherever its bottom turned out to be, so
-        // the grid lines stay under the text that belongs to them.
-        y += thisRowH;
+        y += ROW_H;
         doc.strokeColor(THEME.RULE).lineWidth(0.5)
           .moveTo(left, y).lineTo(left + tableW, y).stroke();
       });
