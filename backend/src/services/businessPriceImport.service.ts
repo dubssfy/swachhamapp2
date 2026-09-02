@@ -10,6 +10,7 @@ import {
   LaundryType,
   BusinessPriceRow,
 } from './priceList.service';
+import { catalogueScope, categoryLabel, guestCategoryFilter, isGuest } from './guestCatalogue';
 
 /**
  * BULK PRICE UPDATE FOR THE BUSINESS PRICE LIST.
@@ -294,20 +295,31 @@ interface ServiceTypeRow {
 }
 
 /**
- * The BUSINESS category tree, and the service types.
+ * The category tree THIS LAUNDRY TYPE PRICES, and the service types.
  *
- * SCOPED TO 'BUSINESS'. `service_categories` holds the customer tree beside
- * the business one, so without this a sheet naming "Men's Wear" would file a
- * new item into the CUSTOMER catalogue from the Business Price List. Same
- * predicate `listBusinessPrices` applies to its items.
+ * SCOPED, AND SCOPED THE SAME WAY `listBusinessPrices` IS. `service_categories`
+ * holds the customer tree beside the business one, so without a filter a
+ * Hotel sheet naming "Men's Wear" would file a new item into the CUSTOMER
+ * catalogue -- and a Guest sheet naming "Bath Linen" would file one into the
+ * business catalogue that the Guest list could never show.
+ *
+ * The names are the GUEST names for a Guest upload -- Men's, Women's, Kids --
+ * because those are the names the template wrote into the Main Category
+ * column, and this map is what that column is matched against. Reading the
+ * stored "Others" here would reject every Kids row in a sheet this service
+ * produced itself.
  */
-async function loadStructure(): Promise<{
+async function loadStructure(laundryType: LaundryType): Promise<{
   categories: CategoryRow[];
   services: ServiceTypeRow[];
 }> {
-  const categories = await query<CategoryRow>(
-    `SELECT id, name, parent_id FROM service_categories
-      WHERE kind = 'ITEM_CATEGORY' AND is_active = true AND scope = 'BUSINESS'`
+  const categories = await query<CategoryRow & { slug: string | null }>(
+    `SELECT c.id, c.name, c.slug, c.parent_id
+       FROM service_categories c
+       LEFT JOIN service_categories gp ON gp.id = c.parent_id
+      WHERE c.kind = 'ITEM_CATEGORY' AND c.is_active = true AND c.scope = ?
+        ${isGuest(laundryType) ? `AND ${guestCategoryFilter('c', 'gp')}` : ''}`,
+    [catalogueScope(laundryType)]
   );
   const services = await query<ServiceTypeRow>(
     `SELECT id, name, code FROM services
@@ -316,7 +328,7 @@ async function loadStructure(): Promise<{
   return {
     categories: categories.rows.map((row) => ({
       id: String(row.id),
-      name: row.name,
+      name: categoryLabel(laundryType, row.slug, row.name) ?? row.name,
       parent_id: row.parent_id === null ? null : String(row.parent_id),
     })),
     services: services.rows.map((row) => ({
@@ -654,7 +666,7 @@ export async function previewBusinessPriceUpload(
   };
 
   /* Names to ids, once, for the structure a row may point at. */
-  const { categories, services } = await loadStructure();
+  const { categories, services } = await loadStructure(laundryType);
   const mainByName = new Map<string, CategoryRow>();
   const subsByParent = new Map<string, CategoryRow[]>();
   for (const category of categories) {

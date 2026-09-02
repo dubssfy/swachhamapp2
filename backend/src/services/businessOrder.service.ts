@@ -9,6 +9,7 @@ import { generateGarmentsForOrder } from './garment.service';
 import { OrderSchedule, resolveDeliverySchedule } from './pickupSlot.service';
 import { resolveBusinessPrices, priceKey } from './priceList.service';
 import { normaliseMobileOrNull } from './businessContact.service';
+import { catalogueScope, guestCategoryFilter, isGuest } from './guestCatalogue';
 
 const LAUNDRY_TYPE_CODE: Record<string, string> = { hotel: 'H', guest: 'G' };
 
@@ -921,10 +922,20 @@ async function repeatOrder(
   }
 
   const placeholders = itemIds.map(() => '?').join(', ');
+  /*
+   * Re-validated against the catalogue THE ORIGINAL ORDER'S laundry type
+   * reads -- Hotel from the business catalogue, Guest from the three customer
+   * garment categories. An item that has since left that catalogue is skipped
+   * exactly as a deactivated one is, so a repeat can never stage a line the
+   * new order could not price.
+   */
   const validResult = await query<{ id: string }>(
-    `SELECT id FROM services
-     WHERE id IN (${placeholders}) AND scope = 'BUSINESS' AND kind = 'ITEM' AND is_active = true`,
-    itemIds
+    `SELECT i.id FROM services i
+       LEFT JOIN service_categories c ON c.id = i.category_id
+       LEFT JOIN service_categories p ON p.id = c.parent_id
+     WHERE i.id IN (${placeholders}) AND i.scope = ? AND i.kind = 'ITEM' AND i.is_active = true
+       ${isGuest(order.laundry_type) ? `AND ${guestCategoryFilter('c', 'p')}` : ''}`,
+    [...itemIds, catalogueScope(order.laundry_type)]
   );
   const validIds = new Set(validResult.rows.map((row) => String(row.id)));
   const usableItems = order.items.filter(

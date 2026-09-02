@@ -69,6 +69,19 @@ interface AppConfig {
   COMPANY_BANK_ACCOUNT: string;
   COMPANY_BANK_IFSC: string;
   COMPANY_BANK_HOLDER: string;
+  /**
+   * The VPA the invoice's UPI QR pays, as `name@handle`.
+   *
+   * Part of the SAME supplier payment details as the `COMPANY_BANK_*` values
+   * above, so the QR and the printed "Pay To" block name one account rather
+   * than two. Empty means UPI is not configured: the invoice then prints
+   * "UPI payment unavailable" instead of a QR, which is why there is no
+   * default — a placeholder VPA baked in here would render a scannable code
+   * that paid the wrong person.
+   */
+  COMPANY_UPI_ID: string;
+  /** Payee name the UPI app shows. Falls back to the bank account holder. */
+  COMPANY_UPI_NAME: string;
   COMPANY_INVOICE_TERMS: string;
 
   // --- Outbound email (SMTP) ---
@@ -242,6 +255,12 @@ const config: AppConfig = {
   COMPANY_BANK_ACCOUNT: optionalEnv('COMPANY_BANK_ACCOUNT', '1330651100001861'),
   COMPANY_BANK_IFSC: optionalEnv('COMPANY_BANK_IFSC', 'IBKL0001330'),
   COMPANY_BANK_HOLDER: optionalEnv('COMPANY_BANK_HOLDER', 'SWACHHAM'),
+  // NO DEFAULT, on purpose. Every other company value can fall back to the
+  // real one printed on the reference invoice; a UPI id cannot, because a
+  // guessed VPA is a QR that collects money into someone else's account.
+  // Unset simply means the invoice shows "UPI payment unavailable".
+  COMPANY_UPI_ID: optionalEnv('COMPANY_UPI_ID', ''),
+  COMPANY_UPI_NAME: optionalEnv('COMPANY_UPI_NAME', ''),
   COMPANY_INVOICE_TERMS: optionalEnv(
     'COMPANY_INVOICE_TERMS',
     'Thank you for doing business with us.'

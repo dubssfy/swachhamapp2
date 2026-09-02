@@ -3,6 +3,7 @@ import { config } from '../config/env';
 import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
 import { periodForBusiness, BillingCycle } from './billingCycle.service';
+import { buildInvoiceUpiPayment, UpiPayment } from './upiPayment.service';
 
 /**
  * Business-wise GST invoices.
@@ -216,6 +217,13 @@ export interface GstInvoice {
     bank_account: string | null;
     bank_ifsc: string | null;
     bank_holder: string | null;
+    /**
+     * The supplier's VPA — the same account as `bank_account`, reached over
+     * UPI. Null when none is configured. It sits here, beside the other
+     * "Pay To" details, because that is what it is: one more way to pay the
+     * account the invoice already names.
+     */
+    upi_id: string | null;
     terms: string | null;
   };
 
@@ -232,6 +240,18 @@ export interface GstInvoice {
 
   lines: InvoiceLine[];
   orders: InvoiceOrderRef[];
+
+  /**
+   * The scan-to-pay block: the UPI intent for THIS invoice, and the QR that
+   * carries it.
+   *
+   * Built from the supplier's configured VPA and `totals.grand_total`, so the
+   * amount a scan pre-fills is the amount the Total row prints — the same
+   * number, not a second calculation. When no valid VPA is configured it
+   * reports `available: false` with a message to print in the QR's place;
+   * every other field on this invoice is unaffected either way.
+   */
+  upi_payment: UpiPayment;
 
   totals: {
     /**
@@ -591,6 +611,30 @@ export async function buildInvoice(
   // same inputs — regenerating the same invoice does not mint a new number.
   const invoiceNumber = invoiceNumberFor(String(business.id), from, to, laundryType ?? null);
 
+  /*
+   * THE FINAL PAYABLE FIGURE, NAMED ONCE.
+   *
+   * It was computed inline in `totals` twice — once for `grand_total` and
+   * once for the words. Hoisting it means the QR below cannot encode an
+   * amount arrived at by a third, separately-written expression: there is now
+   * one figure, and the Total row, the amount in words and the scan all read
+   * it.
+   */
+  const grandTotal = money(taxableValue + totalTax);
+
+  /*
+   * The scan-to-pay QR. Awaited rather than fired off, because the invoice is
+   * a single object handed to the PDF renderer and the app alike — a QR that
+   * arrived after the document was drawn would print on neither.
+   *
+   * It cannot fail the invoice: `buildInvoiceUpiPayment` reports its problems
+   * as an unavailable state instead of throwing.
+   */
+  const upiPayment = await buildInvoiceUpiPayment({
+    amount: grandTotal,
+    reference: displayInvoiceNumber(invoiceNumber),
+  });
+
   logger.info(
     `[Invoice] built ${invoiceNumber}: ${orders.length} order(s), ${lines.length} line(s), ` +
       `type ${typeLabel ?? 'all'}, taxable ${taxableValue}`
@@ -615,6 +659,10 @@ export async function buildInvoice(
       bank_account: config.COMPANY_BANK_ACCOUNT || null,
       bank_ifsc: config.COMPANY_BANK_IFSC || null,
       bank_holder: config.COMPANY_BANK_HOLDER || null,
+      // The VPA actually used for the QR, not the raw setting: an unset or
+      // malformed one reports as absent here too, so the printed details and
+      // the QR can never disagree about whether UPI is on offer.
+      upi_id: upiPayment.vpa,
       terms: config.COMPANY_INVOICE_TERMS || null,
     },
 
@@ -644,6 +692,8 @@ export async function buildInvoice(
       amount: money(row.subtotal),
     })),
 
+    upi_payment: upiPayment,
+
     totals: {
       subtotal,
       discount_percent: discountPercent,
@@ -654,9 +704,9 @@ export async function buildInvoice(
       sgst,
       igst,
       total_tax: totalTax,
-      grand_total: money(taxableValue + totalTax),
+      grand_total: grandTotal,
       intra_state: intraState,
-      amount_in_words: amountInWords(money(taxableValue + totalTax)),
+      amount_in_words: amountInWords(grandTotal),
     },
   };
 }

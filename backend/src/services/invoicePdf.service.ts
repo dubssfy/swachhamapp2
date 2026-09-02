@@ -1,9 +1,12 @@
 import PDFDocument from 'pdfkit';
 import { GstInvoice } from './gstInvoice.service';
+import { qrPngBuffer } from './upiPayment.service';
 import {
   THEME,
   LOGO_SIZE,
   logoPath,
+  watermarkPath,
+  WATERMARK_OPACITY,
   inr,
   dmy,
   periodFileNamePart,
@@ -51,6 +54,59 @@ const BAND = THEME.BAND;
 const MARGIN = 36;
 
 /**
+ * Draws the faint brand mark behind everything else on the current page.
+ *
+ * CALLED FROM `pageAdded`, WHICH IS WHY IT IS THE FIRST THING ON EVERY PAGE.
+ * PDFKit paints in call order with no z-index, so "behind the content" means
+ * "before the content" — and a page that PDFKit creates on its own, when a
+ * table overflows, fires the same event and so gets the same watermark. There
+ * is no page in the document this can miss.
+ *
+ * It is drawn INSIDE `save`/`restore` and puts `doc.x`/`doc.y` back where it
+ * found them, because those two are not part of the graphics state: leaving
+ * them moved would shift the first thing written on the new page.
+ */
+function drawWatermark(doc: PDFKit.PDFDocument): void {
+  const mark = watermarkPath();
+  if (!mark) return;
+
+  const { width: pw, height: ph } = doc.page;
+  // Big enough to read as the brand, short of the margins so it never tucks
+  // under the header band or the tear-off strip.
+  const box = Math.min(pw, ph) * 0.55;
+  const x = doc.x;
+  const y = doc.y;
+
+  try {
+    doc.save();
+    doc.opacity(WATERMARK_OPACITY);
+    /*
+     * `fit` scales INSIDE the box and never stretches, so the mark keeps its
+     * own proportions whatever box it is given; `align`/`valign` then centre
+     * what that produced. Passing a width and a height instead is what would
+     * distort it.
+     */
+    doc.image(mark, (pw - box) / 2, (ph - box) / 2, {
+      fit: [box, box],
+      align: 'center',
+      valign: 'center',
+    });
+    doc.opacity(1);
+    doc.restore();
+  } catch {
+    // A missing or unreadable mark must never cost the invoice its page.
+    try {
+      doc.restore();
+    } catch {
+      /* nothing to unwind */
+    }
+  }
+
+  doc.x = x;
+  doc.y = y;
+}
+
+/**
  * The tax invoice's file name.
  *
  *   "The_Taj_Mumbai_01-Aug-2026_to_15-Aug-2026_Hotel_Laundry.pdf"
@@ -77,9 +133,76 @@ export function invoiceFileName(invoice: GstInvoice): string {
   return `${name}_${period}${type}.pdf`;
 }
 
+/**
+ * The "UPI | SCAN TO PAY" badge printed directly under the QR.
+ *
+ * DRAWN, NOT SHIPPED AS AN IMAGE. A bitmap of a badge would need an asset in
+ * the repository, would blur when the PDF is zoomed or printed at anything
+ * but its native size, and would have to be kept in step with the palette by
+ * hand. Vector primitives stay sharp at any resolution — which matters here,
+ * because this label sits right beneath the one thing on the page that has to
+ * survive being photographed.
+ *
+ * It names the rail so the reader knows what to scan it WITH: a bare QR on an
+ * invoice could as easily be a tracking link. The tricolour arrow is the UPI
+ * mark's, in the national colours it is always drawn in.
+ *
+ * Returns the y the badge ends at, so the caller can lay out beneath it.
+ */
+function drawUpiBadge(doc: PDFKit.PDFDocument, x: number, y: number): number {
+  const HEIGHT = 15;
+  const LABEL = 'SCAN TO PAY';
+  const ARROW_W = 7;
+
+  // Measured, not guessed: the badge is exactly as wide as its own contents,
+  // so a change of wording or type size cannot leave text overhanging.
+  doc.font('Helvetica-BoldOblique').fontSize(8);
+  const upiW = doc.widthOfString('UPI');
+  doc.font('Helvetica-Bold').fontSize(6.5);
+  const leftW = 6 + upiW + 3 + ARROW_W + 5;
+  const rightW = doc.widthOfString(LABEL) + 14;
+
+  /*
+   * The pill, then the green half painted INSIDE a clip of the same rounded
+   * shape — so the badge's outer corners stay rounded while the join between
+   * the two halves stays a straight edge.
+   */
+  doc.save();
+  doc.roundedRect(x, y, leftW + rightW, HEIGHT, 3.5).fill('#ECEFEF');
+  doc.roundedRect(x, y, leftW + rightW, HEIGHT, 3.5).clip();
+  doc.rect(x + leftW, y, rightW, HEIGHT).fill('#16D08A');
+  doc.restore();
+
+  doc.fillColor('#5F6B6C').font('Helvetica-BoldOblique').fontSize(8)
+    .text('UPI', x + 6, y + 4.2, { lineBreak: false });
+
+  // The arrow: saffron above, green below, apex to the right, with a hairline
+  // of the badge's own grey left between them.
+  const ax = x + 6 + upiW + 3;
+  const ay = y + 3.4;
+  const apex = ay + 4.1;
+  doc.moveTo(ax, ay).lineTo(ax + ARROW_W, apex).lineTo(ax, apex - 0.5).fill('#FF9933');
+  doc.moveTo(ax, apex + 0.5).lineTo(ax + ARROW_W, apex).lineTo(ax, ay + 8.2).fill('#138808');
+
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(6.5)
+    .text(LABEL, x + leftW, y + 4.6, { width: rightW, align: 'center', lineBreak: false });
+
+  return y + HEIGHT;
+}
+
 export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: MARGIN });
+    /*
+     * NO AUTOMATIC FIRST PAGE, so the watermark handler can be attached
+     * before any page exists. PDFKit creates the first page during
+     * construction, which would fire `pageAdded` before there is a listener
+     * for it — page one would be the single page in the document with no
+     * watermark. Adding it by hand below means every page, first included,
+     * goes through the identical path.
+     */
+    const doc = new PDFDocument({ size: 'A4', margin: MARGIN, autoFirstPage: false });
+    doc.on('pageAdded', () => drawWatermark(doc));
+    doc.addPage();
     const chunks: Buffer[] = [];
 
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -400,27 +523,97 @@ ${line.ordered_quantity} ordered, ${line.defective_quantity} defective — ` +
 
     y = Math.max(doc.y, summaryY) + 14;
 
-    // Terms, and the bank block the reference prints as "Pay To".
+    // Terms, with the QR + "Pay To" pair on its own row beneath them.
     doc.fillColor(BLUE).font('Helvetica-Bold').fontSize(8.5)
       .text('Terms And Conditions', left, y);
     if (invoice.supplier.terms) {
       doc.fillColor(TEXT).font('Helvetica').fontSize(8.5)
         .text(invoice.supplier.terms, left, doc.y + 2, { width: width / 2 - 14 });
     }
-    const termsBottom = doc.y;
+    /*
+     * THE SCAN-TO-PAY QR, AT THE LEFT MARGIN UNDER THE TERMS, with the bank
+     * details beside it — the two ways of paying, read as one block.
+     *
+     * `qrPngBuffer` decodes the very PNG the invoice object carries, so the
+     * printed code is byte-identical to the one the app previews. Nothing is
+     * encoded here.
+     *
+     * 72pt is about 25mm on paper. The intent encodes to a version-6 symbol
+     * (41 modules), so each module prints at roughly 0.6mm — comfortably
+     * above the ~0.4mm a phone camera needs, with margin for a page that has
+     * been folded or photocopied.
+     */
+    const QR_SIZE = 72;
+    const qrPng = qrPngBuffer(invoice.upi_payment);
+    let leftBottom = doc.y;
+    /*
+     * The top of the QR/Pay To row, fixed BEFORE either is drawn so both
+     * start from it. Deriving it inside the QR branch would leave "Pay To"
+     * without a row to align to on an invoice that has no QR.
+     */
+    const qrTop = leftBottom + 10;
 
-    if (invoice.supplier.bank_account) {
-      doc.fillColor(BLUE).font('Helvetica-Bold').fontSize(8.5).text('Pay To:', mid + 10, y);
+    if (qrPng) {
+      try {
+        // A white plate under the code. The quiet zone is already inside the
+        // PNG; this guarantees it stays white even if the block is ever drawn
+        // over a tint.
+        doc.rect(left - 3, qrTop - 3, QR_SIZE + 6, QR_SIZE + 6).fill('#FFFFFF');
+        doc.image(qrPng, left, qrTop, { fit: [QR_SIZE, QR_SIZE] });
+        leftBottom = drawUpiBadge(doc, left, qrTop + QR_SIZE + 4);
+      } catch {
+        // A QR that will not draw must never cost the invoice its page.
+        leftBottom = doc.y;
+      }
+    } else {
+      /*
+       * WHEN THERE IS NO QR, THE INVOICE SAYS SO rather than leaving a gap
+       * the reader has to interpret — in the column the QR would have taken,
+       * so "Pay To" stays exactly where it is either way.
+       */
+      doc.fillColor(MUTED).font('Helvetica').fontSize(7)
+        .text(invoice.upi_payment.message || 'UPI payment unavailable', left, qrTop, {
+          width: QR_SIZE + 12,
+        });
+      leftBottom = doc.y;
+    }
+
+    const termsBottom = leftBottom;
+
+    /*
+     * "PAY TO" SITS IMMEDIATELY RIGHT OF THE QR, not out at the page's far
+     * side.
+     *
+     * The two are the same instruction — here is how to pay us — and putting
+     * half a page of white between them read as two unrelated blocks. Beside
+     * the code they are one, and the bank lines get the whole remaining width
+     * instead of half of it, so the long bank name stops wrapping.
+     */
+    const payToLeft = left + QR_SIZE + 18;
+    const bankWidth = right - payToLeft;
+
+    if (invoice.supplier.bank_account || invoice.upi_payment.available) {
+      // Level with the top of the QR, so the two line up as one block.
+      doc.fillColor(BLUE).font('Helvetica-Bold').fontSize(8.5).text('Pay To:', payToLeft, qrTop);
+
       doc.fillColor(TEXT).font('Helvetica').fontSize(8.5);
       const bank = [
         invoice.supplier.bank_name ? `Bank Name: ${invoice.supplier.bank_name}` : null,
-        `Bank Account No.: ${invoice.supplier.bank_account}`,
+        invoice.supplier.bank_account ? `Bank Account No.: ${invoice.supplier.bank_account}` : null,
         invoice.supplier.bank_ifsc ? `Bank IFSC code: ${invoice.supplier.bank_ifsc}` : null,
         invoice.supplier.bank_holder ? `Account Holder's Name: ${invoice.supplier.bank_holder}` : null,
+        /*
+         * THE VPA IN TEXT AS WELL AS IN THE CODE. A QR that will not scan —
+         * a creased printout, a camera that cannot focus — leaves the payer
+         * with an identifier they can type, which is the whole point of
+         * printing the bank details beside it too.
+         */
+        invoice.supplier.upi_id ? `UPI ID: ${invoice.supplier.upi_id}` : null,
       ].filter(Boolean) as string[];
+
       let bankY = doc.y + 2;
       bank.forEach((line) => {
-        doc.text(line, mid + 10, bankY, { width: right - (mid + 10) });
+        doc.text(line, payToLeft, bankY, { width: bankWidth });
         bankY = doc.y;
       });
     }
@@ -430,10 +623,15 @@ ${line.ordered_quantity} ordered, ${line.defective_quantity} defective — ` +
     // Signature block.
     doc.fillColor(TEXT).font('Helvetica-Bold').fontSize(9)
       .text(`For: ${invoice.supplier.legal_name}`, mid, y, { width: right - mid, align: 'right' });
+    /*
+     * The gap between the company name and the signatory line is the space a
+     * signature is actually written in, so it is sized for a pen rather than
+     * for the type: 48pt is a comfortable 17mm.
+     */
     doc.font('Helvetica').fontSize(8).fillColor(MUTED)
-      .text('Authorized Signatory', mid, y + 32, { width: right - mid, align: 'right' });
+      .text('Authorized Signatory', mid, y + 48, { width: right - mid, align: 'right' });
 
-    y += 52;
+    y += 68;
 
     // =================================================================
     // ACKNOWLEDGMENT — the tear-off strip at the foot of the reference

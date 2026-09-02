@@ -706,8 +706,15 @@ export function BusinessPriceModal({
 
                 {/* Category -> Sub-category -> Item, dependent. Items already
                     priced at this laundry type are left out, so a selection
-                    here can never produce a duplicate. */}
+                    here can never produce a duplicate.
+
+                    The laundry type is passed down because the two rates price
+                    DIFFERENT catalogues: Hotel the establishment's own linen,
+                    Guest the customer garment categories shown as Men's,
+                    Women's and Kids. Without it the picker would offer items
+                    this list cannot show. */}
                 <CategoryItemPicker
+                  laundryType={laundryType}
                   excludeItemIds={pricedItemIds}
                   selectedItemId={pickedItemId}
                   onSelectItem={(id, item) => {

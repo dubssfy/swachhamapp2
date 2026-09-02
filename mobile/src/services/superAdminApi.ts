@@ -1223,6 +1223,16 @@ const superAdminApi = {
       categoryId?: string;
       /** Sub-category — narrower. */
       subcategoryId?: string;
+      /**
+       * WHICH PRICE LIST IS ASKING.
+       *
+       * Hotel Laundry prices the business catalogue; Guest Laundry prices the
+       * customer garment categories. Sent by the Business Price List so its
+       * picker cannot offer an item its own list would then refuse to show.
+       * The Customer Price List omits it and gets the whole catalogue, which
+       * is the behaviour this call has always had.
+       */
+      laundryType?: LaundryTypeValue;
     } = {}
   ): Promise<PriceableItem[]> => {
     const res = await apiClient.get<ApiResponse<PriceableItem[]>>(
@@ -1233,6 +1243,7 @@ const superAdminApi = {
           unpriced: options.unpriced ? 'true' : undefined,
           category_id: options.categoryId,
           subcategory_id: options.subcategoryId,
+          laundry_type: options.laundryType,
         },
       }
     );
@@ -1263,9 +1274,17 @@ const superAdminApi = {
     return res.data.data;
   },
 
-  getPriceCategories: async (): Promise<ItemCategory[]> => {
+  /**
+   * The Category -> Sub-category tree for the pickers.
+   *
+   * `laundryType` narrows it to that price list's catalogue and names the
+   * Guest categories as the Guest list names them (Men's / Women's / Kids).
+   * Omitted, every item category comes back, as before.
+   */
+  getPriceCategories: async (laundryType?: LaundryTypeValue): Promise<ItemCategory[]> => {
     const res = await apiClient.get<ApiResponse<ItemCategory[]>>(
-      '/api/super-admin/prices/categories'
+      '/api/super-admin/prices/categories',
+      { params: { laundry_type: laundryType } }
     );
     return res.data.data;
   },

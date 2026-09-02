@@ -1,6 +1,7 @@
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { lookupBusinessPrice } from './priceList.service';
+import { catalogueScope, guestCategoryFilter, isGuest } from './guestCatalogue';
 
 export type LaundryType = 'hotel' | 'guest';
 export type OrderType = 'standard' | 'quick';
@@ -190,16 +191,47 @@ async function addItem(
     throw new AppError('Invalid service type', 400);
   }
 
+  const cartId = await getOrCreateCartId(businessUserId);
+
+  /*
+   * WHICH CATALOGUE THIS CART IS ORDERING FROM.
+   *
+   * Hotel Laundry adds the establishment's own linen; Guest Laundry adds from
+   * the three customer garment categories. Read before the item is validated,
+   * because it is what decides whether the item is addable at all.
+   *
+   * Null falls back to Hotel -- the same default `priceScope` applies when
+   * nothing has been chosen -- so an existing Hotel cart is unaffected. In
+   * practice the app calls `setCartContext` with the laundry type before the
+   * catalogue is opened, so a real Guest cart always has one.
+   */
+  const cartType = await query<{ laundry_type: string | null }>(
+    `SELECT laundry_type FROM carts WHERE id = ?`,
+    [cartId]
+  );
+  const laundryType = cartType.rows[0]?.laundry_type ?? null;
+
+  /*
+   * THE ITEM MUST BELONG TO THAT CATALOGUE.
+   *
+   * Enforced here as well as in the catalogue queries, so a direct API call
+   * cannot put a banquet tablecloth in a Guest order or a guest's saree in a
+   * Hotel one. `createOrder` refuses an unpriced item independently, but an
+   * item priced at both rates would otherwise slip through.
+   */
   const itemResult = await query<{ id: string; is_active: boolean }>(
-    `SELECT id, is_active FROM services WHERE id = ? AND scope = 'BUSINESS' AND kind = 'ITEM'`,
-    [itemId]
+    `SELECT i.id, i.is_active
+       FROM services i
+       LEFT JOIN service_categories c ON c.id = i.category_id
+       LEFT JOIN service_categories p ON p.id = c.parent_id
+      WHERE i.id = ? AND i.scope = ? AND i.kind = 'ITEM'
+        ${isGuest(laundryType) ? `AND ${guestCategoryFilter('c', 'p')}` : ''}`,
+    [itemId, catalogueScope(laundryType)]
   );
   const item = itemResult.rows[0];
   if (!item || !item.is_active) {
     throw new AppError('Item not found or unavailable', 404);
   }
-
-  const cartId = await getOrCreateCartId(businessUserId);
 
   // The line keeps its own service. Adding the same item again tops up the
   // quantity and re-states the service that was asked for.
@@ -216,15 +248,13 @@ async function addItem(
     `SELECT business_id FROM business_users WHERE id = ?`,
     [businessUserId]
   );
-  const cartType = await query<{ laundry_type: string | null }>(
-    `SELECT laundry_type FROM carts WHERE id = ?`,
-    [cartId]
-  );
   const stagedPrice = owner.rows[0]
     ? await lookupBusinessPrice(
         owner.rows[0].business_id,
         itemId,
-        cartType.rows[0]?.laundry_type ?? null,
+        // The type read above, so the staged figure and the scope check
+        // cannot be answering two different questions.
+        laundryType,
         // The service chosen for THIS line, so a staged figure reflects the
         // rate the order will actually be billed at when the item is priced
         // differently for Wash & Fold and Dry Clean.
@@ -267,6 +297,35 @@ async function setCartContext(
 
   const cartId = await getOrCreateCartId(businessUserId);
   await query(`UPDATE carts SET ${fields.join(', ')}, updated_at = NOW() WHERE id = ?`, [...values, cartId]);
+
+  /*
+   * LINES THAT THE NEW LAUNDRY TYPE CANNOT ORDER ARE DROPPED.
+   *
+   * Hotel and Guest now read different catalogues, so switching the type can
+   * leave a cart holding items the chosen type has no catalogue for -- a
+   * banquet tablecloth on a Guest order. Those lines are removed here rather
+   * than carried to checkout, where `createOrder` would refuse the whole
+   * order with a price error that names the item but not the reason.
+   *
+   * NARROW BY CONSTRUCTION. The DELETE names the ONE cart and removes ONLY
+   * lines outside the newly chosen catalogue; a line the new type can order
+   * is kept with its quantity and service intact. Choosing the type the cart
+   * already had removes nothing, which is the common case and is why an
+   * ordinary Hotel cart never notices this.
+   */
+  if (laundryType !== undefined) {
+    await query(
+      `DELETE ci FROM cart_items ci
+         JOIN services i ON i.id = ci.service_id
+         LEFT JOIN service_categories c ON c.id = i.category_id
+         LEFT JOIN service_categories p ON p.id = c.parent_id
+        WHERE ci.cart_id = ?
+          AND (i.scope <> ?
+               ${isGuest(laundryType) ? `OR NOT ${guestCategoryFilter('c', 'p')}` : ''})`,
+      [cartId, catalogueScope(laundryType)]
+    );
+  }
+
   return getCart(businessUserId);
 }
 

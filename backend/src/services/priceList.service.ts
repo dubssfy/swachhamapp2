@@ -1,6 +1,7 @@
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
+import { catalogueScope, categoryLabel, guestCategoryFilter, isGuest } from './guestCatalogue';
 
 /**
  * Price lists, and the one place a price is ever resolved.
@@ -900,6 +901,13 @@ interface BusinessPriceQueryRow
   /** The item's base-rate row, when it has one. See `expandBaseRateLines`. */
   base_price_id?: string | number | null;
   base_is_active?: unknown;
+  /**
+   * The category slugs, selected by the LISTING only and never returned:
+   * `toBusinessPriceRow` uses them to apply the Guest label and drops them.
+   * Absent on the single-row select, where no relabelling is needed.
+   */
+  category_slug?: string | null;
+  parent_category_slug?: string | null;
   // `service_label`, `is_inherited` and `effective_price` are all derived in
   // `toBusinessPriceRow`; none of them is selected.
 }
@@ -993,8 +1001,28 @@ function toBusinessPriceRow(
   businessId: string,
   laundryType: LaundryType
 ): BusinessPriceRow {
+  // Removed from the row rather than passed through: the slugs exist to
+  // resolve the Guest label and are not part of the API shape.
+  const { category_slug, parent_category_slug, ...rest } = row;
   return {
-    ...row,
+    ...rest,
+    /*
+     * WHAT THE CATEGORY IS CALLED ON THIS RATE CARD.
+     *
+     * At the Guest rate the customer "Others" category reads "Kids", which is
+     * what is in it. Applied here rather than in the SQL so ONE function
+     * decides it for the screen, the printed rate card AND the Excel template
+     * -- and, because the upload matches the sheet against this same listing,
+     * the round trip cannot disagree with itself about a category's name.
+     *
+     * A no-op for Hotel Laundry and for any category with no Guest label.
+     */
+    category_name: categoryLabel(laundryType, category_slug, row.category_name),
+    parent_category_name: categoryLabel(
+      laundryType,
+      parent_category_slug,
+      row.parent_category_name
+    ),
     parent_category_id:
       row.parent_category_id === null || row.parent_category_id === undefined
         ? null
@@ -1058,20 +1086,29 @@ async function listBusinessPrices(
   const laundryType = parseOptionalLaundryType(options.laundryType) ?? 'hotel';
 
   /*
-   * BUSINESS ITEMS ONLY.
+   * ONE LAUNDRY TYPE, ONE CATALOGUE.
    *
    * `services` holds the customer catalogue and the business catalogue in one
-   * table, told apart by `scope`. Without this filter the customer items show
-   * up on the BUSINESS price list -- which is what happened the moment the
-   * customer catalogue stopped being empty: 83 retail items appeared on a
-   * screen that prices hotel and banquet linen, none of them priceable for a
-   * business.
+   * table, told apart by `scope`, and the laundry type decides which of them
+   * is being priced:
+   *
+   *   HOTEL LAUNDRY   scope='BUSINESS' -- the establishment's own linen. The
+   *                   literal this condition held before, so the Hotel price
+   *                   list is byte-for-byte the list it was.
+   *
+   *   GUEST LAUNDRY   scope='CUSTOMER', restricted to the three garment
+   *                   categories -- what a guest actually hands in. See
+   *                   guestCatalogue.ts.
+   *
+   * Without a filter of some kind BOTH catalogues appear on every price list,
+   * which is what happened the moment the customer catalogue stopped being
+   * empty: 83 retail items turned up on a screen that prices banquet linen.
    *
    * Only items under a live category. See LIVE_CATEGORY_PREDICATE.
    */
   const conditions: string[] = [
     `i.kind = 'ITEM'`,
-    `i.scope = 'BUSINESS'`,
+    `i.scope = ?`,
     LIVE_CATEGORY_PREDICATE,
   ];
   /*
@@ -1079,13 +1116,22 @@ async function listBusinessPrices(
    *   1. the projected business_id
    *   2. the per-service price join   (business, laundry type)
    *   3. the base-rate join           (business, laundry type)
-   * then whatever WHERE conditions are appended.
+   * then whatever WHERE conditions are appended -- the first of which is the
+   * catalogue scope above.
    */
   const values: unknown[] = [
     businessId,
     businessId, laundryType,
     businessId, laundryType,
+    catalogueScope(laundryType),
   ];
+
+  // Guest Laundry is the three customer garment categories and nothing else,
+  // so Household never reaches the Guest rate card, its PDF or its
+  // spreadsheet. No parameters: the slugs are frozen constants.
+  if (isGuest(laundryType)) {
+    conditions.push(guestCategoryFilter('c', 'pc'));
+  }
 
   if (!options.includeInactiveItems) {
     conditions.push('i.is_active = true');
@@ -1103,8 +1149,9 @@ async function listBusinessPrices(
 
   const result = await query<BusinessPriceQueryRow>(
     `SELECT p.id, ? AS business_id, i.id AS item_id, i.name AS item_name,
-            i.category_id, c.name AS category_name,
+            i.category_id, c.name AS category_name, c.slug AS category_slug,
             c.parent_id AS parent_category_id, pc.name AS parent_category_name,
+            pc.slug AS parent_category_slug,
             i.unit,
             /*
              * THE CUSTOMER PRICE FOR THIS LINE'S SERVICE, AS A SUB-QUERY.
@@ -1212,8 +1259,9 @@ async function listBusinessPrices(
 
 const BUSINESS_PRICE_SELECT = `
      SELECT p.id, p.business_id, p.item_id, p.laundry_type, i.name AS item_name,
-            i.category_id, c.name AS category_name,
+            i.category_id, c.name AS category_name, c.slug AS category_slug,
             c.parent_id AS parent_category_id, pc.name AS parent_category_name,
+            pc.slug AS parent_category_slug,
             i.unit,
             /* The same sub-query as the listing, keyed on the service this
                stored row prices. See the note there. */
@@ -1490,8 +1538,9 @@ export interface PriceableItem {
  * renders.
  */
 const PRICEABLE_ITEM_SELECT = `
-  SELECT i.id, i.name, i.category_id, c.name AS category_name,
+  SELECT i.id, i.name, i.category_id, c.name AS category_name, c.slug AS category_slug,
          c.parent_id AS parent_category_id, pc.name AS parent_category_name,
+         pc.slug AS parent_category_slug,
          i.unit, i.scope,
          i.is_active,
          /* EXISTS, not a join: an item priced for two services would
@@ -1504,10 +1553,22 @@ const PRICEABLE_ITEM_SELECT = `
     LEFT JOIN service_categories c ON c.id = i.category_id
     LEFT JOIN service_categories pc ON pc.id = c.parent_id`;
 
-function toPriceableItem(row: any): PriceableItem {
+function toPriceableItem(row: any, laundryType?: LaundryType): PriceableItem {
+  // The slugs resolve the Guest label and are not part of the API shape.
+  const { category_slug, parent_category_slug, ...rest } = row;
   return {
-    ...row,
+    ...rest,
     id: String(row.id),
+    // A no-op unless the picker was opened for Guest Laundry, where the
+    // customer "Others" category is offered as "Kids" -- the same name the
+    // Guest price list and the Guest catalogue use, so the item is added to
+    // the category the admin thinks they are adding it to.
+    category_name: categoryLabel(laundryType, category_slug, row.category_name),
+    parent_category_name: categoryLabel(
+      laundryType,
+      parent_category_slug,
+      row.parent_category_name
+    ),
     category_id: row.category_id === null ? null : String(row.category_id),
     parent_category_id:
       row.parent_category_id === null ? null : String(row.parent_category_id),
@@ -1531,12 +1592,38 @@ async function listPriceableItems(
     categoryId?: string;
     /** Sub-category id. Narrower than `categoryId`. */
     subcategoryId?: string;
+    /**
+     * WHICH PRICE LIST IS ASKING.
+     *
+     * Given, the picker offers only items that price list can actually price:
+     * the business catalogue for Hotel Laundry, the three customer garment
+     * categories for Guest. Without it the picker offers BOTH catalogues,
+     * which is what it did before -- and is still what the Customer Price
+     * List wants, since a customer price may be set for any item.
+     */
+    laundryType?: LaundryType;
   } = {}
 ): Promise<PriceableItem[]> {
   // Only items under a live category, so the picker cannot offer an item
   // that the price tables no longer list. See LIVE_CATEGORY_PREDICATE.
   const conditions: string[] = [`i.kind = 'ITEM'`, LIVE_CATEGORY_PREDICATE];
   const values: unknown[] = [];
+
+  /*
+   * THE SAME PREDICATE `listBusinessPrices` APPLIES.
+   *
+   * Without it the Business Price List's "Add New Entry" picker offers items
+   * from a catalogue its own list cannot show, so the price is saved and then
+   * appears nowhere -- and, worse, a Guest price could be set against banquet
+   * linen from the Guest screen.
+   */
+  if (options.laundryType) {
+    conditions.push('i.scope = ?');
+    values.push(catalogueScope(options.laundryType));
+    if (isGuest(options.laundryType)) {
+      conditions.push(guestCategoryFilter('c', 'pc'));
+    }
+  }
 
   // Category matches the item's own category OR its parent, so choosing a
   // top-level category returns everything beneath it.
@@ -1570,7 +1657,7 @@ async function listPriceableItems(
     values
   );
 
-  return result.rows.map(toPriceableItem);
+  return result.rows.map((row) => toPriceableItem(row, options.laundryType));
 }
 
 /** One catalogue item in the same shape the pickers already read. */
@@ -1607,24 +1694,54 @@ export interface CategoryNode {
  * chosen cannot be filled. `item_count` is still reported so the picker can
  * say how full each one is.
  */
-async function listItemCategories(): Promise<CategoryNode[]> {
+async function listItemCategories(laundryType?: LaundryType): Promise<CategoryNode[]> {
+  /*
+   * NARROWED TO ONE PRICE LIST'S CATALOGUE WHEN ASKED.
+   *
+   * Omitting `laundryType` returns EVERY active item category, both scopes --
+   * exactly what this returned before, and what the Customer Price List
+   * picker still reads. The Business Price List passes the type it is showing
+   * so its Category dropdown offers only categories that list can price:
+   * the business tree for Hotel, and the three garment categories -- named
+   * Men's, Women's and Kids -- for Guest.
+   */
+  const conditions: string[] = [`c.kind = 'ITEM_CATEGORY'`, `c.is_active = true`];
+  const values: unknown[] = [];
+
+  if (laundryType) {
+    conditions.push('c.scope = ?');
+    values.push(catalogueScope(laundryType));
+    if (isGuest(laundryType)) {
+      // A sub-category of a Guest category qualifies through its parent.
+      conditions.push(guestCategoryFilter('c', 'gp'));
+    }
+  }
+
   const result = await query<any>(
-    `SELECT c.id, c.name, c.scope, c.parent_id,
+    `SELECT c.id, c.name, c.slug, c.scope, c.parent_id,
             (SELECT COUNT(*) FROM services i
                JOIN service_categories ic ON ic.id = i.category_id
               WHERE i.kind = 'ITEM' AND i.is_active = true
                 AND (i.category_id = c.id OR ic.parent_id = c.id)) AS item_count
        FROM service_categories c
-      WHERE c.kind = 'ITEM_CATEGORY' AND c.is_active = true
-      ORDER BY c.parent_id IS NULL DESC, c.display_order ASC, c.name ASC`
+       LEFT JOIN service_categories gp ON gp.id = c.parent_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY c.parent_id IS NULL DESC, c.display_order ASC, c.name ASC`,
+    values
   );
-  return result.rows.map((row) => ({
-    ...row,
-    id: String(row.id),
-    parent_id: row.parent_id === null ? null : String(row.parent_id),
-    is_top_level: row.parent_id === null,
-    item_count: Number(row.item_count),
-  }));
+  return result.rows.map((row) => {
+    const { slug, ...rest } = row;
+    return {
+      ...rest,
+      // "Others" is offered as "Kids" on the Guest price list, matching the
+      // heading the list itself prints. Untouched everywhere else.
+      name: categoryLabel(laundryType, slug, row.name),
+      id: String(row.id),
+      parent_id: row.parent_id === null ? null : String(row.parent_id),
+      is_top_level: row.parent_id === null,
+      item_count: Number(row.item_count),
+    };
+  });
 }
 
 /**

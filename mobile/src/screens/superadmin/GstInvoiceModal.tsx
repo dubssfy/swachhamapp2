@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   View, Text, Modal, TouchableOpacity, ActivityIndicator, Platform, Alert, ScrollView,
-  TextInput,
+  TextInput, Image,
 } from 'react-native';
 // The legacy entry point, the same one the order-PDF code uses: SDK 54's new
 // API replaced cacheDirectory with a different file object model.
@@ -324,6 +324,63 @@ export default function GstInvoiceModal({ visible, businessId, businessName, onC
                 <Text style={[sa.cardLine, { fontWeight: '800' }]}>
                   Grand total: INR {Number(preview.totals?.grand_total ?? 0).toFixed(2)}
                 </Text>
+
+                {/* THE SCAN-TO-PAY QR, exactly as the PDF prints it.
+                    The image is the PNG the server put on the invoice, so
+                    what is previewed here and what is printed, downloaded,
+                    shared or handed to a printer are the same code — there
+                    is no second encoder in the app to drift from it.
+                    The server decides whether there is one at all; this only
+                    shows what it sent, including the reason when it did
+                    not. */}
+                {preview.upi_payment?.available && preview.upi_payment?.qr_data_url ? (
+                  <View style={{ alignItems: 'flex-start', marginTop: SPACING.sm }}>
+                    <Image
+                      source={{ uri: preview.upi_payment.qr_data_url }}
+                      style={{ width: 160, height: 160 }}
+                      /* `contain` on a square image in a square box leaves the
+                         QR's proportions untouched; a stretched QR does not
+                         scan. */
+                      resizeMode="contain"
+                      accessibilityLabel="UPI payment QR code"
+                    />
+                    {/* THE SAME BADGE THE PDF PRINTS UNDER THE CODE, so the
+                        preview and the document a customer receives read
+                        alike. Two Views rather than an image, for the same
+                        reason the PDF draws it: no asset to keep in step. */}
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        borderRadius: 4,
+                        overflow: 'hidden',
+                        marginTop: 6,
+                      }}
+                    >
+                      <View style={{ backgroundColor: '#ECEFEF', paddingHorizontal: 8, paddingVertical: 3 }}>
+                        <Text style={{ color: '#5F6B6C', fontWeight: '800', fontSize: 11, fontStyle: 'italic' }}>
+                          UPI
+                        </Text>
+                      </View>
+                      <View style={{ backgroundColor: '#16D08A', paddingHorizontal: 10, paddingVertical: 3 }}>
+                        <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 11 }}>
+                          SCAN TO PAY
+                        </Text>
+                      </View>
+                    </View>
+                    {/* On screen there is room to state the amount and the
+                        payee outright; both are inside the QR either way. */}
+                    <Text style={sa.cardMeta}>
+                      {preview.upi_payment.amount != null
+                        ? `Opens for INR ${Number(preview.upi_payment.amount).toFixed(2)}`
+                        : 'Amount entered in the UPI app'}
+                      {preview.upi_payment.vpa ? ` — ${preview.upi_payment.vpa}` : ''}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={[sa.cardMeta, { marginTop: SPACING.sm }]}>
+                    {preview.upi_payment?.message || 'UPI payment unavailable'}
+                  </Text>
+                )}
               </View>
             )}
 

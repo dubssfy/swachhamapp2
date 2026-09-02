@@ -5,7 +5,9 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING } from '../../constants/theme';
 import { sa } from './styles';
-import superAdminApi, { ItemCategory, PriceableItem } from '../../services/superAdminApi';
+import superAdminApi, {
+  ItemCategory, PriceableItem, LaundryTypeValue,
+} from '../../services/superAdminApi';
 
 /**
  * The dependent Category -> Sub-category -> Item selection, used by BOTH
@@ -48,6 +50,18 @@ interface Props {
    * a caller that only reads the catalogue can turn it off.
    */
   allowCreate?: boolean;
+  /**
+   * WHICH CATALOGUE TO OFFER, when the caller is a business price list.
+   *
+   * Hotel Laundry prices the establishment's own linen; Guest Laundry prices
+   * the three customer garment categories, shown as Men's / Women's / Kids.
+   * Passing it keeps the picker and the list it is adding to in agreement —
+   * without it the picker could offer an item the list would never display.
+   *
+   * The Customer Price List leaves it off and sees the whole catalogue, since
+   * a customer price may be set against any item.
+   */
+  laundryType?: LaundryTypeValue;
 }
 
 export default function CategoryItemPicker({
@@ -56,6 +70,7 @@ export default function CategoryItemPicker({
   selectedItemId,
   onSelectItem,
   allowCreate = true,
+  laundryType,
 }: Props) {
   const [categories, setCategories] = useState<ItemCategory[]>([]);
   const [items, setItems] = useState<PriceableItem[]>([]);
@@ -67,10 +82,26 @@ export default function CategoryItemPicker({
   const [creating, setCreating] = useState(false);
 
   const loadCategories = useCallback(() => {
-    superAdminApi.getPriceCategories().then(setCategories).catch(() => setCategories([]));
-  }, []);
+    superAdminApi
+      .getPriceCategories(laundryType)
+      .then(setCategories)
+      .catch(() => setCategories([]));
+  }, [laundryType]);
 
   useEffect(() => { loadCategories(); }, [loadCategories]);
+
+  /*
+   * SWITCHING LAUNDRY TYPE CLEARS THE SELECTION.
+   *
+   * Hotel and Guest offer different categories, so a category id chosen under
+   * one is not a category that exists under the other. Left in place it would
+   * hold the dropdown on a value the new list has no row for, and the Item
+   * level would sit permanently locked.
+   */
+  useEffect(() => {
+    setCategoryId('');
+    setSubcategoryId('');
+  }, [laundryType]);
 
   const tops = useMemo(() => categories.filter((c) => c.is_top_level), [categories]);
   const subs = useMemo(
@@ -102,6 +133,7 @@ export default function CategoryItemPicker({
         categoryId: subcategoryId ? undefined : categoryId,
         subcategoryId: subcategoryId || undefined,
         unpriced: unpricedOnly,
+        laundryType,
       })
       .then((list) => {
         setItems(list);
@@ -112,7 +144,7 @@ export default function CategoryItemPicker({
         return [] as PriceableItem[];
       })
       .finally(() => setLoading(false));
-  }, [categoryId, subcategoryId, categorySettled, unpricedOnly]);
+  }, [categoryId, subcategoryId, categorySettled, unpricedOnly, laundryType]);
 
   useEffect(() => { loadItems(); }, [loadItems]);
 

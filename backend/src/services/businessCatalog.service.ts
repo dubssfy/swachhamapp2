@@ -1,5 +1,19 @@
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
+import { catalogueScope, categoryLabel, guestCategoryFilter, isGuest } from './guestCatalogue';
+
+/**
+ * WHICH CATALOGUE, AND WHY IT DEPENDS ON THE LAUNDRY TYPE.
+ *
+ * Hotel Laundry browses the BUSINESS catalogue -- the establishment's own
+ * linen. Guest Laundry browses the CUSTOMER one, restricted to its three
+ * garment categories, because what a guest hands in is clothes. The rule and
+ * the reasoning live in `guestCatalogue.ts`; every statement below asks it
+ * rather than naming a scope itself, so the two can never drift apart.
+ *
+ * `catalogueScope('hotel')` is the literal 'BUSINESS' these queries held
+ * before, so Hotel Laundry is untouched.
+ */
 
 /**
  * PRICE-GATED CATALOGUE.
@@ -94,12 +108,28 @@ export interface BusinessItem {
 
 interface ItemRow extends Omit<BusinessItem, 'service_types'> {
   service_types: string | null;
+  /**
+   * The item's category slug and its parent's, selected only so the Guest
+   * label can be applied. Neither reaches the API: both are destructured away
+   * below, so the item shape the app reads is unchanged.
+   */
+  category_slug: string | null;
+  parent_category_slug: string | null;
 }
 
 /** MySQL returns a SET as a comma string; the API exposes it as an array. */
-function toItem(row: ItemRow): BusinessItem {
+function toItem(row: ItemRow, laundryType: 'hotel' | 'guest'): BusinessItem {
+  const { category_slug, parent_category_slug, ...item } = row;
   return {
-    ...row,
+    ...item,
+    // Same relabelling the category list applies, so an item's stated category
+    // matches the card it was opened from. A no-op for Hotel Laundry.
+    category_name: categoryLabel(laundryType, category_slug, row.category_name) ?? row.category_name,
+    parent_category_name: categoryLabel(
+      laundryType,
+      parent_category_slug,
+      row.parent_category_name
+    ),
     weight_kg: row.weight_kg === null ? null : Number(row.weight_kg),
     order_count: Number(row.order_count ?? 0),
     service_types: (row.service_types || '').split(',').filter(Boolean),
@@ -197,16 +227,22 @@ async function getMainCategories(
                     WHERE s.parent_id = c.id AND s.is_active = true) AS has_subcategories,
             ${ITEM_COUNT_SQL} AS item_count
        FROM service_categories c
-      WHERE c.scope = 'BUSINESS' AND c.kind = 'ITEM_CATEGORY'
+      WHERE c.scope = ? AND c.kind = 'ITEM_CATEGORY'
         AND c.parent_id IS NULL AND c.is_active = true
+        ${isGuest(scope.laundryType) ? `AND ${guestCategoryFilter('c')}` : ''}
      HAVING item_count > 0
       ORDER BY c.display_order ASC, c.name ASC`,
-    [scope.businessId, scope.laundryType, st, st]
+    // ITEM_COUNT_SQL sits in the SELECT list, so its four parameters come
+    // before the WHERE clause's scope.
+    [scope.businessId, scope.laundryType, st, st, catalogueScope(scope.laundryType)]
   );
 
   return attachPreviews(
     result.rows.map((row) => ({
       ...row,
+      // "Others" reads as "Kids" at the Guest rate, and only there. The stored
+      // name is untouched -- see guestCatalogue.ts.
+      name: categoryLabel(scope.laundryType, row.slug, row.name) ?? row.name,
       has_subcategories: Boolean(row.has_subcategories),
       item_count: Number(row.item_count),
       preview_items: [],
@@ -230,16 +266,20 @@ async function getSubCategories(
             FALSE AS has_subcategories,
             ${ITEM_COUNT_SQL} AS item_count
        FROM service_categories c
-      WHERE c.scope = 'BUSINESS' AND c.kind = 'ITEM_CATEGORY'
+      WHERE c.scope = ? AND c.kind = 'ITEM_CATEGORY'
         AND c.parent_id = ? AND c.is_active = true
      HAVING item_count > 0
       ORDER BY c.display_order ASC, c.name ASC`,
-    [scope.businessId, scope.laundryType, st, st, parentId]
+    // The Guest three are top-level, so the restriction is already applied by
+    // `parentId` -- a sub-category can only be reached through the parent the
+    // caller was shown.
+    [scope.businessId, scope.laundryType, st, st, catalogueScope(scope.laundryType), parentId]
   );
 
   return attachPreviews(
     result.rows.map((row) => ({
       ...row,
+      name: categoryLabel(scope.laundryType, row.slug, row.name) ?? row.name,
       has_subcategories: false,
       item_count: Number(row.item_count),
       preview_items: [],
@@ -275,8 +315,9 @@ const ORDER_FREQUENCY = `(
      AND obu.business_id = ?)`;
 
 const ITEM_SELECT = `
-  SELECT i.id, i.category_id, c.name AS category_name,
+  SELECT i.id, i.category_id, c.name AS category_name, c.slug AS category_slug,
          c.parent_id AS parent_category_id, p.name AS parent_category_name,
+         p.slug AS parent_category_slug,
          i.name, i.unit, i.standard_size, i.weight_kg, i.weight_unit,
          (SELECT GROUP_CONCAT(st.code ORDER BY st.display_order)
             FROM item_service_types m
@@ -312,8 +353,9 @@ async function getItemsByCategory(
 
   const result = await query<ItemRow>(
     `${ITEM_SELECT}
-     WHERE i.scope = 'BUSINESS' AND i.kind = 'ITEM' AND i.is_active = true
+     WHERE i.scope = ? AND i.kind = 'ITEM' AND i.is_active = true
        AND (i.category_id = ? OR c.parent_id = ?)
+       ${isGuest(scope.laundryType) ? `AND ${guestCategoryFilter('c', 'p')}` : ''}
        AND ${PRICED_FOR_BUSINESS}
        AND (? IS NULL OR EXISTS (
              SELECT 1 FROM item_service_types m
@@ -322,9 +364,18 @@ async function getItemsByCategory(
      ORDER BY ${FREQUENT_FIRST}, i.display_order ASC, i.name ASC`,
     // The leading businessId belongs to ORDER_FREQUENCY inside ITEM_SELECT,
     // which is why it comes before the WHERE clause's own parameters.
-    [scope.businessId, categoryId, categoryId, scope.businessId, scope.laundryType, st, st]
+    [
+      scope.businessId,
+      catalogueScope(scope.laundryType),
+      categoryId,
+      categoryId,
+      scope.businessId,
+      scope.laundryType,
+      st,
+      st,
+    ]
   );
-  return result.rows.map(toItem);
+  return result.rows.map((row) => toItem(row, scope.laundryType));
 }
 
 async function searchItems(params: {
@@ -335,17 +386,25 @@ async function searchItems(params: {
 }): Promise<BusinessItem[]> {
   const serviceType = assertServiceType(params.serviceType);
   const conditions: string[] = [
-    `i.scope = 'BUSINESS'`,
+    `i.scope = ?`,
     `i.kind = 'ITEM'`,
     `i.is_active = true`,
     PRICED_FOR_BUSINESS,
   ];
-  // ORDER_FREQUENCY's businessId first, then PRICED_FOR_BUSINESS's pair.
+  // ORDER_FREQUENCY's businessId first, then the catalogue scope this
+  // laundry type reads, then PRICED_FOR_BUSINESS's pair.
   const values: unknown[] = [
     params.scope.businessId,
+    catalogueScope(params.scope.laundryType),
     params.scope.businessId,
     params.scope.laundryType,
   ];
+
+  // Guest Laundry offers three of the customer categories and nothing else,
+  // so a search cannot reach a Household item through the search box either.
+  if (isGuest(params.scope.laundryType)) {
+    conditions.push(guestCategoryFilter('c', 'p'));
+  }
 
   if (params.categoryId) {
     conditions.push('(i.category_id = ? OR c.parent_id = ?)');
@@ -379,10 +438,20 @@ async function searchItems(params: {
      LIMIT 200`,
     values
   );
-  return result.rows.map(toItem);
+  return result.rows.map((row) => toItem(row, params.scope.laundryType));
 }
 
-/** The single parent service category ("Laundry"). */
+/**
+ * The single parent service category ("Laundry").
+ *
+ * DELIBERATELY NOT SCOPED BY LAUNDRY TYPE, unlike everything above. The two
+ * functions below return the SERVICES -- Wash & Iron, Dry Clean, Wash & Fold --
+ * not the item catalogue, and there is exactly one set of those. All three
+ * rows are stored scope='BUSINESS' and the CUSTOMER items map to those same
+ * ids through `item_service_types`, so a Guest order is offered the same three
+ * services by the same rows. Switching these to 'CUSTOMER' for Guest would
+ * return nothing at all.
+ */
 async function getServiceCategory(): Promise<{ id: string; name: string; slug: string } | null> {
   const result = await query<{ id: string; name: string; slug: string }>(
     `SELECT id, name, slug

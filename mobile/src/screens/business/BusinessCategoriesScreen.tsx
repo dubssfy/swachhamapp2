@@ -48,11 +48,17 @@ const ORDER_ICONS: Record<OrderType, keyof typeof Ionicons.glyphMap> = {
 
 /** Icon fallback per main-category slug, used when no artwork is mapped. */
 const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
+  // Hotel Laundry
   'room-linen': 'bed-outline',
   'spa-and-pool': 'water-outline',
   'f-and-b-service': 'restaurant-outline',
   'f-and-b-production': 'flame-outline',
   uniforms: 'shirt-outline',
+  // Guest Laundry — the customer garment categories. All three have artwork
+  // in CATEGORY_IMAGES, so these are only ever reached if a file is missing.
+  'mens-wear': 'shirt-outline',
+  'womens-wear': 'woman-outline',
+  others: 'happy-outline',
 };
 
 /**

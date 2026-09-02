@@ -28,7 +28,7 @@ import {
   previewBusinessPriceUpload,
   applyBusinessPriceUpload,
 } from '../services/businessPriceImport.service';
-import { parseLaundryType } from '../services/priceList.service';
+import { parseLaundryType, parseOptionalLaundryType } from '../services/priceList.service';
 import { sendSuccess } from '../utils/response';
 import { AppError } from '../utils/appError';
 import { AuthenticatedRequest } from '../middleware/auth';
@@ -92,7 +92,13 @@ function sendPriceListPdf(res: Response, document: PriceListDocument, pdf: Buffe
  * CATALOGUE  — what can be priced
  * =================================================================== */
 
-// GET /api/super-admin/prices/items?search=&unpriced=true&category_id=&subcategory_id=
+// GET /api/super-admin/prices/items
+//       ?search=&unpriced=true&category_id=&subcategory_id=&laundry_type=
+//
+// `laundry_type` narrows the picker to the catalogue THAT price list prices:
+// the business one for Hotel Laundry, the three customer garment categories
+// for Guest. Omitted -- which is what the Customer Price List sends -- it
+// offers every catalogue item, exactly as before.
 router.get('/items', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const items = await listPriceableItems({
@@ -102,6 +108,7 @@ router.get('/items', async (req: Request, res: Response, next: NextFunction) => 
       // beneath it; a sub-category narrows to exactly its own items.
       categoryId: asString(req.query.category_id),
       subcategoryId: asString(req.query.subcategory_id),
+      laundryType: parseOptionalLaundryType(req.query.laundry_type),
     });
     sendSuccess(res, items, 'Items fetched successfully');
   } catch (error) {
@@ -134,15 +141,20 @@ router.post('/items', async (req: Request, res: Response, next: NextFunction) =>
 });
 
 /**
- * GET /api/super-admin/prices/categories
+ * GET /api/super-admin/prices/categories?laundry_type=hotel|guest
  *
  * The whole two-level tree in one call: rows with `parent_id: null` are
  * Categories, the rest are Sub-categories pointing at them. Categories with
  * no items are omitted.
+ *
+ * `laundry_type` narrows it to one price list's catalogue, and renames the
+ * Guest three to Men's / Women's / Kids so the dropdown reads the same as the
+ * list below it. Omitted, every category comes back as it always did.
  */
-router.get('/categories', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/categories', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    sendSuccess(res, await listItemCategories(), 'Categories fetched successfully');
+    const categories = await listItemCategories(parseOptionalLaundryType(req.query.laundry_type));
+    sendSuccess(res, categories, 'Categories fetched successfully');
   } catch (error) {
     next(error);
   }

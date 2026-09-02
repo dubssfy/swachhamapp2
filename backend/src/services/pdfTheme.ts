@@ -49,11 +49,55 @@ export const LOGO_SIZE = 76;
 
 /** The Swachham mark, when the asset is present. */
 export function logoPath(): string | null {
-  const candidates = [
-    path.resolve(process.cwd(), '../mobile/assets/swachham-logo.png'),
-    path.resolve(process.cwd(), 'assets/swachham-logo.png'),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  return firstExisting(['swachham-logo.png']);
+}
+
+/**
+ * How dark the page watermark is allowed to get.
+ *
+ * CHOSEN FOR A BLACK-AND-WHITE LASER PRINTER, not for the screen. The mark's
+ * own orange sits at about 67% luminance, so at this alpha the darkest pixel
+ * the watermark can produce is roughly 97% white — a tint a greyscale printer
+ * renders as the faintest dither it has, and often as nothing at all. On a
+ * colour screen it reads as a barely-there wash.
+ *
+ * Raising this is the one change here that can spoil a printed invoice, which
+ * is why the number lives beside the palette rather than inline at the draw
+ * site, and why `smoke_invoice_watermark` asserts the resulting greyscale
+ * value rather than trusting the constant.
+ */
+export const WATERMARK_OPACITY = 0.1;
+
+/**
+ * The image drawn faintly behind every page.
+ *
+ * PREFERS A DEDICATED WATERMARK ASSET, FALLS BACK TO THE LOGO. The full logo
+ * is a badge — mark, wordmark and a solid teal bar — and the bar is far too
+ * heavy to sit behind body text even at a low alpha. `swachham-watermark.png`
+ * is the mark alone, cropped from that same logo, so this is the existing
+ * brand asset rather than a second, unrelated one. If the file is ever
+ * removed the logo is still used, so a deployment missing it degrades to a
+ * heavier watermark rather than to none.
+ */
+export function watermarkPath(): string | null {
+  return firstExisting(['swachham-watermark.png', 'swachham-logo.png']);
+}
+
+/**
+ * The first of these asset names that exists, checked in both the layouts the
+ * backend runs under: from the repo (`backend/` as cwd, assets in the sibling
+ * mobile app) and from a deployment that ships its own `assets/`.
+ */
+function firstExisting(names: string[]): string | null {
+  for (const name of names) {
+    const candidates = [
+      path.resolve(process.cwd(), `../mobile/assets/${name}`),
+      path.resolve(process.cwd(), `assets/${name}`),
+    ];
+    const found = candidates.find((candidate) => fs.existsSync(candidate));
+    if (found) return found;
+  }
+  return null;
 }
 
 /** 1234.5 -> "1,234.50" with Indian digit grouping. */

@@ -18,10 +18,35 @@ import type { ImageSourcePropType } from 'react-native';
  */
 
 export const CATEGORY_IMAGES: Record<string, ImageSourcePropType> = {
+  /* ---- Hotel Laundry: the establishment's own linen ---- */
   'Room Linen': require('../assets/images/room-linen.jpeg'),
   'Spa & Pool': require('../assets/images/spa.jpeg'),
   'F&B Service': require('../assets/images/F&B.jpeg'),
   Uniforms: require('../assets/images/Uniforms.jpeg'),
+
+  /*
+   * ---- Guest Laundry: the customer garment categories ----
+   *
+   * THE SAME ARTWORK THE CUSTOMER APP USES on its own category buttons
+   * (`CustomerHomeScreen.MAIN_CATEGORIES`), because these ARE those
+   * categories -- Guest Laundry reads the customer catalogue. One picture per
+   * category across both apps, so a guest's Men's card looks like the
+   * customer's Men's card.
+   *
+   * KEYED BY SLUG, NOT BY DISPLAY NAME. The slug is what migration 047 wrote
+   * and nothing renames it, whereas the name is editable from Super Admin --
+   * and at the Guest rate `others` is displayed as "Kids", so a name key
+   * would have to be kept in step with that relabelling. `getCategoryImage`
+   * tries the slug first, which is why these resolve.
+   *
+   * These three slugs exist only in the CUSTOMER catalogue, so no Hotel
+   * Laundry card can pick one up.
+   */
+  'mens-wear': require('../assets/images/mens.png'),
+  'womens-wear': require('../assets/images/womens.png'),
+  // Shown as "Kids" in Guest Laundry; `others.png` is the customer artwork
+  // for the same category.
+  others: require('../assets/images/others.png'),
 };
 
 /**
