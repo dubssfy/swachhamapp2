@@ -13,11 +13,20 @@ import { COLORS, SPACING, TYPOGRAPHY } from '../../constants/theme';
 import { sa, STATUS_TONE } from './styles';
 import superAdminApi, {
   BusinessAccountSummary, BusinessAccountOrder, PaymentContext,
-  PaymentReceipt, PaymentTypeValue, InvoiceHistoryEntry,
+  PaymentReceipt, PaymentTypeValue, InvoiceHistoryEntry, LaundryTypeValue,
 } from '../../services/superAdminApi';
 import { ActionButton } from './SuperAdminCustomerPricesScreen';
-import GstInvoiceModal from './GstInvoiceModal';
+import GstInvoiceModal, { LAUNDRY_TYPES } from './GstInvoiceModal';
 import WalkingOrderModal from './WalkingOrderModal';
+/*
+ * The pieces the Order Summary tab needs, all already in the app: the
+ * calendar the Sorter uses, the date helpers beside it, and the shared
+ * document naming. Imported here for the same reason GstInvoiceModal
+ * imported them — the Order Summary PDF moved, its parts did not change.
+ */
+import SorterCalendar from '../../components/sorter/SorterCalendar';
+import { formatLongDate, toDateKey } from '../../utils/sorterDates';
+import { businessDocumentFileName } from '../../utils/pdfFileName';
 /*
  * THE EXISTING Order Confirmation PDF generator, imported as-is.
  *
@@ -76,6 +85,133 @@ const dmy = (iso: string) => {
   return y && m && d ? `${d}/${m}/${y}` : String(iso || '');
 };
 
+/** The four native things More Options can do with a PDF that is already on disk. */
+type PdfFileAction = 'open' | 'print' | 'share' | 'save';
+
+/**
+ * More Options, performed on a PDF FILE THAT ALREADY EXISTS on the device.
+ *
+ * THIS IS THE ORDER DETAIL IMPLEMENTATION, lifted out unchanged so the Invoice
+ * tab performs the identical four actions rather than growing a second copy
+ * of them. Everything that differs between the two documents is passed in;
+ * nothing about the behaviour differs.
+ *
+ * It deliberately knows nothing about orders or invoices — it is handed a
+ * local `uri` and the name to call it by, and it opens, prints, shares or
+ * saves exactly that file. Producing the file stays with the caller, because
+ * that is the only part the two tabs genuinely do differently: Order Detail
+ * renders one with `generateOrderPdf`, Invoices downloads one from the server.
+ */
+async function runPdfFileAction(
+  action: PdfFileAction,
+  file: { uri: string; fileName: string },
+  opts: {
+    /** Plain-ASCII cache name for the print copy — see the note below. */
+    printTempName: string;
+    /** What the saved file is called in the folder the user picks. */
+    saveName: string;
+    /** Title on the share sheet. */
+    shareTitle: string;
+    /** Confirmation shown after a successful save. */
+    savedMessage: string;
+  }
+): Promise<void> {
+  const { uri, fileName } = file;
+
+  const share = async () => {
+    if (!(await Sharing.isAvailableAsync())) {
+      Alert.alert('PDF ready', fileName);
+      return;
+    }
+    await Sharing.shareAsync(uri, {
+      mimeType: 'application/pdf',
+      dialogTitle: opts.shareTitle,
+      UTI: 'com.adobe.pdf',
+    });
+  };
+
+  // Print reads the file path literally. The generated URI is
+  // percent-encoded (the order number's "#" becomes "%23"), which Share and
+  // Save decode fine but the print service does not — so give it a copy
+  // under a plain ASCII name.
+  let plainUri = uri;
+  if (action === 'print') {
+    try {
+      const safe = `${FileSystem.cacheDirectory}${opts.printTempName}`;
+      await FileSystem.deleteAsync(safe, { idempotent: true });
+      await FileSystem.copyAsync({ from: uri, to: safe });
+      plainUri = safe;
+    } catch {
+      // Keep the original URI if the copy fails.
+    }
+  }
+
+  if (action === 'open') {
+    /*
+     * THE DEVICE'S OWN PDF VIEWER, not this app.
+     *
+     * `openPdfInDeviceViewer` fires a real ACTION_VIEW intent on Android
+     * with a FileProvider content URI and a read grant, so the OS shows
+     * whichever PDF apps are installed and the chosen one can actually
+     * read the file. iOS has no "default PDF app" to open into, so it
+     * gets the share sheet, which is that platform's document handoff.
+     */
+    const outcome = await openPdfInDeviceViewer(uri, fileName);
+    if (outcome === 'unavailable') Alert.alert('PDF ready', fileName);
+    return;
+  }
+
+  if (action === 'print') {
+    try {
+      await Print.printAsync({ uri: plainUri });
+    } catch (e: any) {
+      // Dismissing the print dialog is a normal outcome, not a failure.
+      if (/cancel|dismiss/i.test(String(e?.message || ''))) return;
+      // No printing on this device — offer the file instead of losing it.
+      if (await Sharing.isAvailableAsync()) {
+        await share();
+        return;
+      }
+      throw e;
+    }
+    return;
+  }
+
+  if (action === 'share') {
+    await share();
+    return;
+  }
+
+  // save
+  if (Platform.OS !== 'android') {
+    // iOS has no public Downloads folder; the sheet's "Save to Files" is the
+    // platform-appropriate save.
+    await share();
+    return;
+  }
+  const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+  if (!perm.granted) {
+    Alert.alert('Not saved', 'Storage permission was declined.');
+    return;
+  }
+  const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+  const dest = await FileSystem.StorageAccessFramework.createFileAsync(
+    perm.directoryUri,
+    opts.saveName,
+    'application/pdf'
+  );
+  await FileSystem.writeAsStringAsync(dest, base64, { encoding: 'base64' });
+  Alert.alert('Saved', opts.savedMessage);
+}
+
+/** The four rows of a More Options sheet, in the order both tabs list them. */
+const PDF_ACTIONS: Array<{ action: PdfFileAction; icon: string; label: string }> = [
+  { action: 'open', icon: 'open-outline', label: 'Open PDF' },
+  { action: 'print', icon: 'print-outline', label: 'Print PDF' },
+  { action: 'share', icon: 'share-social-outline', label: 'Share PDF' },
+  { action: 'save', icon: 'download-outline', label: 'Save PDF to Mobile' },
+];
+
 export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
   const [businesses, setBusinesses] = useState<BusinessAccountSummary[]>([]);
   const [selected, setSelected] = useState<BusinessAccountSummary | null>(null);
@@ -84,7 +220,7 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const [tab, setTab] = useState<'orders' | 'invoices' | 'payments'>('orders');
+  const [tab, setTab] = useState<'orders' | 'invoices' | 'payments' | 'summary'>('orders');
 
   const loadBusinesses = useCallback(async () => {
     setError('');
@@ -153,7 +289,7 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
             </Text>
           ) : (
             <>
-              {/* ---- The three sections ---- */}
+              {/* ---- The four sections ---- */}
               <View style={sa.tabs}>
                 <TabButton
                   label="Order Detail"
@@ -170,6 +306,11 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
                   on={tab === 'payments'}
                   onPress={() => setTab('payments')}
                 />
+                <TabButton
+                  label="Order Summary"
+                  on={tab === 'summary'}
+                  onPress={() => setTab('summary')}
+                />
               </View>
 
               {/* `key` on the business id remounts each tab when the business
@@ -179,8 +320,10 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
                 <OrderDetailTab key={selected.id} business={selected} />
               ) : tab === 'invoices' ? (
                 <InvoiceHistoryTab key={selected.id} business={selected} />
-              ) : (
+              ) : tab === 'payments' ? (
                 <PaymentReceiptTab key={selected.id} business={selected} />
+              ) : (
+                <OrderSummaryTab key={selected.id} business={selected} />
               )}
             </>
           )}
@@ -334,21 +477,9 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
     return generateOrderPdf(data.order);
   };
 
-  const shareOrderPdf = async (uri: string, fileName: string) => {
-    if (!(await Sharing.isAvailableAsync())) {
-      Alert.alert('PDF ready', fileName);
-      return;
-    }
-    await Sharing.shareAsync(uri, {
-      mimeType: 'application/pdf',
-      dialogTitle: fileName,
-      UTI: 'com.adobe.pdf',
-    });
-  };
-
   const runPdfAction = async (
     o: BusinessAccountOrder,
-    action: 'open' | 'print' | 'share' | 'save'
+    action: PdfFileAction
   ) => {
     if (actionBusy) return;
     setMenuOrder(null);
@@ -356,79 +487,18 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
     setError('');
     try {
       const { uri, fileName } = await buildOrderPdf(o);
-
-      // Print reads the file path literally. The generated URI is
-      // percent-encoded (the order number's "#" becomes "%23"), which Share and
-      // Save decode fine but the print service does not — so give it a copy
-      // under a plain ASCII name.
-      let plainUri = uri;
-      if (action === 'print') {
-        try {
-          const safe = `${FileSystem.cacheDirectory}order-pdf.pdf`;
-          await FileSystem.deleteAsync(safe, { idempotent: true });
-          await FileSystem.copyAsync({ from: uri, to: safe });
-          plainUri = safe;
-        } catch {
-          // Keep the original URI if the copy fails.
-        }
-      }
-
-      if (action === 'open') {
-        /*
-         * THE DEVICE'S OWN PDF VIEWER, not this app.
-         *
-         * `openPdfInDeviceViewer` fires a real ACTION_VIEW intent on Android
-         * with a FileProvider content URI and a read grant, so the OS shows
-         * whichever PDF apps are installed and the chosen one can actually
-         * read the file. iOS has no "default PDF app" to open into, so it
-         * gets the share sheet, which is that platform's document handoff.
-         */
-        const outcome = await openPdfInDeviceViewer(uri, fileName);
-        if (outcome === 'unavailable') Alert.alert('PDF ready', fileName);
-        return;
-      }
-
-      if (action === 'print') {
-        try {
-          await Print.printAsync({ uri: plainUri });
-        } catch (e: any) {
-          // Dismissing the print dialog is a normal outcome, not a failure.
-          if (/cancel|dismiss/i.test(String(e?.message || ''))) return;
-          // No printing on this device — offer the file instead of losing it.
-          if (await Sharing.isAvailableAsync()) {
-            await shareOrderPdf(uri, fileName);
-            return;
-          }
-          throw e;
-        }
-        return;
-      }
-
-      if (action === 'share') {
-        await shareOrderPdf(uri, fileName);
-        return;
-      }
-
-      // save
-      if (Platform.OS !== 'android') {
-        // iOS has no public Downloads folder; the sheet's "Save to Files" is the
-        // platform-appropriate save.
-        await shareOrderPdf(uri, fileName);
-        return;
-      }
-      const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert('Not saved', 'Storage permission was declined.');
-        return;
-      }
-      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
-      const dest = await FileSystem.StorageAccessFramework.createFileAsync(
-        perm.directoryUri,
-        buildPdfBaseName(o.order_number, business.name),
-        'application/pdf'
-      );
-      await FileSystem.writeAsStringAsync(dest, base64, { encoding: 'base64' });
-      Alert.alert('Saved', 'The order PDF was saved to the folder you chose.');
+      /*
+       * The four actions themselves now live in `runPdfFileAction`, so the
+       * Invoice tab performs the same ones on its own document. What this
+       * tab passes is what it always used: the order PDF it just rendered,
+       * the plain print name, and the order's own saved file name.
+       */
+      await runPdfFileAction(action, { uri, fileName }, {
+        printTempName: 'order-pdf.pdf',
+        saveName: buildPdfBaseName(o.order_number, business.name),
+        shareTitle: fileName,
+        savedMessage: 'The order PDF was saved to the folder you chose.',
+      });
     } catch (e: any) {
       setError(
         e?.response?.data?.message || e?.message || 'Could not complete that PDF action.'
@@ -584,30 +654,18 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
                   <Text style={sa.choiceText}>Preparing PDF…</Text>
                 </View>
               ) : (
-                (['open', 'print', 'share', 'save'] as const).map((action) => {
-                  const meta = {
-                    open: { icon: 'open-outline', label: 'Open PDF' },
-                    print: { icon: 'print-outline', label: 'Print PDF' },
-                    share: { icon: 'share-social-outline', label: 'Share PDF' },
-                    save: { icon: 'download-outline', label: 'Save PDF to Mobile' },
-                  }[action];
-                  return (
-                    <TouchableOpacity
-                      key={action}
-                      style={sa.choice}
-                      onPress={() => menuOrder && runPdfAction(menuOrder, action)}
-                      accessibilityRole="button"
-                      accessibilityLabel={meta.label}
-                    >
-                      <Ionicons
-                        name={meta.icon as any}
-                        size={20}
-                        color={COLORS.Primary}
-                      />
-                      <Text style={sa.choiceText}>{meta.label}</Text>
-                    </TouchableOpacity>
-                  );
-                })
+                PDF_ACTIONS.map(({ action, icon, label }) => (
+                  <TouchableOpacity
+                    key={action}
+                    style={sa.choice}
+                    onPress={() => menuOrder && runPdfAction(menuOrder, action)}
+                    accessibilityRole="button"
+                    accessibilityLabel={label}
+                  >
+                    <Ionicons name={icon as any} size={20} color={COLORS.Primary} />
+                    <Text style={sa.choiceText}>{label}</Text>
+                  </TouchableOpacity>
+                ))
               )}
             </View>
           </View>
@@ -666,6 +724,10 @@ function InvoiceHistoryTab({ business }: { business: BusinessAccountSummary }) {
   const [error, setError] = useState('');
   /** The invoice whose PDF is being fetched, so only its row shows a spinner. */
   const [busyId, setBusyId] = useState<string | null>(null);
+  /** The invoice whose More Options sheet is open, if any. */
+  const [menuInvoice, setMenuInvoice] = useState<InvoiceHistoryEntry | null>(null);
+  /** True while a More Options action is downloading/handing off the PDF. */
+  const [actionBusy, setActionBusy] = useState(false);
 
   const load = useCallback(async () => {
     setError('');
@@ -691,6 +753,56 @@ function InvoiceHistoryTab({ business }: { business: BusinessAccountSummary }) {
    * so the bearer token is attached explicitly, exactly as GstInvoiceModal
    * does for the invoice it generates.
    */
+  /* ---- More Options ----
+   *
+   * THE SAME FOUR ACTIONS THE ORDER DETAIL TAB OFFERS, performed by the same
+   * `runPdfFileAction`. Only the document differs: this fetches the invoice
+   * PDF for the invoice that was tapped, from the same endpoint and with the
+   * same bearer token the View button uses, then hands that file over.
+   *
+   * View is deliberately left exactly as it was, downloading its own copy.
+   */
+  const downloadInvoicePdfForMenu = async (invoice: InvoiceHistoryEntry) => {
+    const headers = await superAdminApi.authHeader();
+    const url = superAdminApi.historyInvoicePdfUrl(business.id, invoice.id);
+    const safeName = `${business.name} ${invoice.period_from} to ${invoice.period_to}`
+      .replace(/[<>:"/\\|?* -]/g, '')
+      .trim();
+    const target = `${FileSystem.cacheDirectory}${encodeURIComponent(`${safeName}.pdf`)}`;
+    const result = await FileSystem.downloadAsync(url, target, { headers });
+    if (result.status !== 200) throw new Error('That invoice could not be downloaded.');
+    return { uri: result.uri, fileName: `${safeName}.pdf` };
+  };
+
+  const runInvoicePdfAction = async (invoice: InvoiceHistoryEntry, action: PdfFileAction) => {
+    if (actionBusy) return;
+    setMenuInvoice(null);
+    setActionBusy(true);
+    setError('');
+    try {
+      const { uri, fileName } = await downloadInvoicePdfForMenu(invoice);
+      /*
+       * `Invoice_<number>.pdf` for the saved copy. The invoice number carries
+       * slashes, which no file name may hold, so each run of non-alphanumeric
+       * characters becomes one underscore: the number stays readable and no
+       * invoice can be saved over another.
+       */
+      const saveName = `Invoice_${invoice.invoice_number.replace(/[^A-Za-z0-9]+/g, '_')}.pdf`;
+      await runPdfFileAction(action, { uri, fileName }, {
+        printTempName: 'invoice-pdf.pdf',
+        saveName,
+        shareTitle: `${invoice.invoice_number_display} — ${business.name}`,
+        savedMessage: 'The invoice PDF was saved to the folder you chose.',
+      });
+    } catch (e: any) {
+      setError(
+        e?.response?.data?.message || e?.message || 'Could not complete that PDF action.'
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const openInvoicePdf = async (invoice: InvoiceHistoryEntry, share: boolean) => {
     if (busyId) return;
     setBusyId(invoice.id);
@@ -832,13 +944,30 @@ function InvoiceHistoryTab({ business }: { business: BusinessAccountSummary }) {
                 <Amount label="Outstanding" value={inv.amount_due} />
               </View>
 
-              <View style={{ flexDirection: 'row', gap: SPACING.xs, marginTop: SPACING.sm }}>
+              {/* Wraps because there are now three buttons: a narrow phone
+                  puts the third on its own line rather than off the card. */}
+              <View
+                style={{
+                  flexDirection: 'row',
+                  flexWrap: 'wrap',
+                  gap: SPACING.xs,
+                  marginTop: SPACING.sm,
+                }}
+              >
                 <ActionButton
                   icon={busy ? 'hourglass-outline' : 'open-outline'}
                   label={busy ? '…' : 'View PDF'}
                   tone="primary"
                   onPress={() => openInvoicePdf(inv, false)}
                   accessibilityLabel={`Open invoice ${inv.invoice_number_display} in the device PDF viewer`}
+                />
+                {/* Immediately right of View — the same button the Order
+                    Detail tab carries, on this invoice's PDF. */}
+                <ActionButton
+                  icon="ellipsis-horizontal"
+                  label="More Options"
+                  onPress={() => setMenuInvoice(inv)}
+                  accessibilityLabel={`More PDF options for invoice ${inv.invoice_number_display}`}
                 />
                 <ActionButton
                   icon="share-outline"
@@ -861,6 +990,63 @@ function InvoiceHistoryTab({ business }: { business: BusinessAccountSummary }) {
         businessName={business.name}
         onClose={() => { setInvoiceOpen(false); load(); }}
       />
+
+      {/* More Options — the same four native actions the Order Detail tab
+          offers, here on the selected INVOICE PDF. Same bottom-sheet pattern
+          and the same rows, from the one `PDF_ACTIONS` list. */}
+      <Modal
+        visible={menuInvoice !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !actionBusy && setMenuInvoice(null)}
+      >
+        <View style={sa.modalBackdrop}>
+          <View style={sa.modalSheet}>
+            <View style={sa.header}>
+              <Text style={[sa.headerTitle, { flex: 1 }]} numberOfLines={1}>
+                {menuInvoice?.invoice_number_display || 'Invoice PDF'}
+              </Text>
+              <TouchableOpacity
+                style={sa.iconBtn}
+                onPress={() => setMenuInvoice(null)}
+                disabled={actionBusy}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={22} color={COLORS.TextPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={sa.scroll}>
+              {actionBusy ? (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: SPACING.sm,
+                    paddingVertical: SPACING.sm,
+                  }}
+                >
+                  <ActivityIndicator color={COLORS.Primary} />
+                  <Text style={sa.choiceText}>Preparing PDF…</Text>
+                </View>
+              ) : (
+                PDF_ACTIONS.map(({ action, icon, label }) => (
+                  <TouchableOpacity
+                    key={action}
+                    style={sa.choice}
+                    onPress={() => menuInvoice && runInvoicePdfAction(menuInvoice, action)}
+                    accessibilityRole="button"
+                    accessibilityLabel={label}
+                  >
+                    <Ionicons name={icon as any} size={20} color={COLORS.Primary} />
+                    <Text style={sa.choiceText}>{label}</Text>
+                  </TouchableOpacity>
+                ))
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -1176,5 +1362,183 @@ function StatusPill({ status }: { status: string }) {
     <View style={[sa.pill, { backgroundColor: tone.bg }]}>
       <Text style={[sa.pillText, { color: tone.fg }]}>{String(status).replace(/_/g, ' ')}</Text>
     </View>
+  );
+}
+
+/* ===================================================================
+ * ORDER SUMMARY
+ * =================================================================== */
+
+/**
+ * The EXISTING Order Summary PDF, moved here from the Generate Invoice modal.
+ *
+ * NOTHING ABOUT THE DOCUMENT CHANGED. It is the same `itemReportPdfUrl`
+ * endpoint, so the same server-side renderer builds it from the same data with
+ * the same calculations and the same design; the same
+ * `businessDocumentFileName` names it, and the same share hand-off delivers
+ * it. Only where the operator taps it moved — it used to sit under the invoice
+ * inside `GstInvoiceModal`, one tab away from a section of its own.
+ *
+ * IT KEEPS ITS OWN PERIOD AND TYPE, as it must now that it no longer shares
+ * the invoice modal's state. The controls are the same ones it stood beside
+ * there: the Sorter's calendar and the two laundry types, unchanged.
+ */
+function OrderSummaryTab({ business }: { business: BusinessAccountSummary }) {
+  // Defaults to the current month so far, from the device's own calendar.
+  const today = toDateKey(new Date());
+  const monthStart = `${today.slice(0, 8)}01`;
+
+  const [from, setFrom] = useState(monthStart);
+  const [to, setTo] = useState(today);
+  const [picking, setPicking] = useState<'from' | 'to' | null>(null);
+  const [laundryType, setLaundryType] = useState<LaundryTypeValue>('hotel');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const typeLabel =
+    LAUNDRY_TYPES.find((option) => option.value === laundryType)?.label ?? '';
+
+  /**
+   * Downloads the order summary and hands it to the share sheet.
+   *
+   * FileSystem does its own request, so the bearer token is attached
+   * explicitly — this endpoint is SUPER_ADMIN only.
+   */
+  const download = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const headers = await superAdminApi.authHeader();
+      const url = superAdminApi.itemReportPdfUrl(business.id, from, to, laundryType);
+      /*
+       * THE NAME THE USER ACTUALLY GETS. `downloadAsync` writes the body to
+       * the path it is handed and ignores the server's `Content-Disposition`
+       * entirely, so this — not the response header — is what decides the file
+       * name in the share sheet and in the saved file.
+       */
+      const fileName = businessDocumentFileName({
+        establishmentName: business.name,
+        from,
+        to,
+        laundryTypeLabel: typeLabel,
+        kind: 'summary',
+      });
+      const target = `${FileSystem.cacheDirectory}${fileName}`;
+
+      const result = await FileSystem.downloadAsync(url, target, { headers });
+      if (result.status !== 200) {
+        throw new Error(`No ${typeLabel} data could be found for this period.`);
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(result.uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: `${typeLabel} order summary — ${business.name}`,
+          UTI: 'com.adobe.pdf',
+        });
+      } else {
+        Alert.alert('Saved', result.uri);
+      }
+    } catch (e: any) {
+      setError(e?.message || 'Could not download the document.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dateButton = (label: string, value: string, which: 'from' | 'to') => (
+    <View style={{ flex: 1 }}>
+      <Text style={sa.label}>{label}</Text>
+      <TouchableOpacity
+        style={[sa.input, { flexDirection: 'row', alignItems: 'center', gap: 8 }]}
+        onPress={() => setPicking(which)}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${formatLongDate(value)}`}
+      >
+        <Ionicons name="calendar-outline" size={18} color={COLORS.Primary} />
+        <Text style={{ color: COLORS.TextPrimary, fontFamily: TYPOGRAPHY.fontFamily }}>
+          {formatLongDate(value)}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  return (
+    <ScrollView contentContainerStyle={sa.scroll} keyboardShouldPersistTaps="handled">
+      <Text style={sa.cardTitle}>{business.name}</Text>
+
+      {/* WHICH TYPE. Chosen first, because it decides what the dates below are
+          then read against — the two types never mix. */}
+      <Text style={sa.label}>LAUNDRY TYPE</Text>
+      <View style={{ flexDirection: 'row', gap: SPACING.xs }}>
+        {LAUNDRY_TYPES.map((option) => {
+          const on = laundryType === option.value;
+          return (
+            <TouchableOpacity
+              key={option.value}
+              style={[sa.tab, on && sa.tabActive, { flex: 1, flexDirection: 'row', gap: 6 }]}
+              onPress={() => {
+                setLaundryType(option.value);
+                setError('');
+              }}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: on }}
+              accessibilityLabel={`Generate a ${option.label} order summary`}
+            >
+              <Ionicons
+                name={option.icon}
+                size={16}
+                color={on ? COLORS.Surface : COLORS.TextSecondary}
+              />
+              <Text style={[sa.tabText, on && sa.tabTextActive]}>{option.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      <View style={{ flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.sm }}>
+        {dateButton('From', from, 'from')}
+        {dateButton('To', to, 'to')}
+      </View>
+
+      {!!error && (
+        <View style={sa.errorBox}>
+          <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
+          <Text style={sa.errorText}>{error}</Text>
+        </View>
+      )}
+
+      {/* THE SAME BUTTON, in its own section now. */}
+      <TouchableOpacity
+        style={[sa.buttonGhost, busy && sa.buttonDisabled]}
+        onPress={download}
+        disabled={busy}
+        accessibilityRole="button"
+        accessibilityLabel={`Generate the ${typeLabel} order summary PDF for the chosen period`}
+      >
+        <Text style={sa.buttonGhostText}>Order Summary (PDF)</Text>
+      </TouchableOpacity>
+
+      <Text style={[sa.cardMeta, { marginTop: SPACING.xs }]}>
+        The order summary lists each item's quantity per day, with its rate
+        and amount, for the period and laundry type chosen above.
+      </Text>
+
+      {/* The calendar the Sorter module already uses, reused as-is. */}
+      <SorterCalendar
+        visible={picking !== null}
+        value={picking === 'to' ? to : from}
+        // Nothing can be summarised for a day that has not happened.
+        maxDate={today}
+        title={picking === 'to' ? 'To date' : 'From date'}
+        onSelect={(key) => {
+          if (picking === 'to') setTo(key);
+          else setFrom(key);
+          setPicking(null);
+          setError('');
+        }}
+        onClose={() => setPicking(null)}
+      />
+    </ScrollView>
   );
 }

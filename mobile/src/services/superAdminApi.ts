@@ -1032,11 +1032,14 @@ const superAdminApi = {
     businessId: string,
     from: string,
     to: string,
-    laundryType?: LaundryTypeValue | null
+    laundryType?: LaundryTypeValue | null,
+    /** Percentage off the subtotal before GST. Omitted or 0 sends nothing. */
+    discountPercent?: number | null
   ): string =>
     `${API_BASE_URL}/api/super-admin/businesses/${businessId}/invoice.pdf` +
     `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` +
-    (laundryType ? `&laundry_type=${encodeURIComponent(laundryType)}` : ''),
+    (laundryType ? `&laundry_type=${encodeURIComponent(laundryType)}` : '') +
+    (discountPercent ? `&discount_percent=${encodeURIComponent(String(discountPercent))}` : ''),
 
   /**
    * The day-wise item quantity sheet that accompanies the invoice.
@@ -1103,11 +1106,20 @@ const superAdminApi = {
     businessId: string,
     from: string,
     to: string,
-    laundryType?: LaundryTypeValue | null
+    laundryType?: LaundryTypeValue | null,
+    /** Percentage off the subtotal before GST. Omitted or 0 sends nothing. */
+    discountPercent?: number | null
   ): Promise<any> => {
     const response = await apiClient.get(
       `/api/super-admin/businesses/${businessId}/invoice`,
-      { params: { from, to, ...(laundryType ? { laundry_type: laundryType } : {}) } }
+      {
+        params: {
+          from,
+          to,
+          ...(laundryType ? { laundry_type: laundryType } : {}),
+          ...(discountPercent ? { discount_percent: discountPercent } : {}),
+        },
+      }
     );
     return (response.data as any).data;
   },

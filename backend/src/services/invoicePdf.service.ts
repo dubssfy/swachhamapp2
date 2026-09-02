@@ -277,7 +277,10 @@ export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
        * so the qualifier the reader needed is on the document rather than
        * repeated down every row.
        */
-      const named = line.description;
+      const hasDuplicateName =
+        invoice.lines.filter((l) => l.description === line.description).length > 1;
+      const named =
+        hasDuplicateName && line.service ? `${line.description} (${line.service})` : line.description;
 
       /*
        * THE DEFECTIVE ADJUSTMENT, WHERE IT FITS.
@@ -369,7 +372,24 @@ ${line.ordered_quantity} ordered, ${line.defective_quantity} defective — ` +
       summaryY += strong ? 24 : 15;
     };
 
-    summaryRow('Sub Total', inr(invoice.totals.taxable_value));
+    /*
+     * Sub Total is the lines added up, as it always was — `subtotal` equals
+     * `taxable_value` on every invoice without a deduction, so this block is
+     * unchanged for them.
+     *
+     * WHERE ONE WAS TAKEN, IT IS SHOWN. The deduction and the value left to
+     * tax are stated between the subtotal and the GST rows, so the reader can
+     * follow the figure GST was actually charged on rather than finding a
+     * taxable value that does not match the column above it.
+     */
+    summaryRow('Sub Total', inr(invoice.totals.subtotal));
+    if (invoice.totals.discount_amount > 0) {
+      summaryRow(
+        `Less ${invoice.totals.discount_percent}%`,
+        `- ${inr(invoice.totals.discount_amount)}`
+      );
+      summaryRow('Taxable Amount', inr(invoice.totals.taxable_value));
+    }
     if (invoice.totals.intra_state) {
       summaryRow(`SGST@${(invoice.totals.gst_rate / 2).toFixed(1)}%`, inr(invoice.totals.sgst));
       summaryRow(`CGST@${(invoice.totals.gst_rate / 2).toFixed(1)}%`, inr(invoice.totals.cgst));

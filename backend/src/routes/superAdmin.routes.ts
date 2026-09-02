@@ -468,7 +468,11 @@ router.get(
 router.get('/businesses/:id/invoice', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const laundryType = parseLaundryType(req.query.laundry_type);
-    const invoice = await buildInvoice(req.params.id, req.query.from, req.query.to, laundryType);
+    // The deduction the operator typed, if any. Absent means none, which is
+    // what every caller that predates the field sends.
+    const invoice = await buildInvoice(
+      req.params.id, req.query.from, req.query.to, laundryType, req.query.discount_percent
+    );
     sendSuccess(res, invoice, 'Invoice generated');
   } catch (error) {
     next(error);
@@ -485,7 +489,9 @@ router.get('/businesses/:id/invoice.pdf', async (req: Request, res: Response, ne
   try {
     const authReq = req as AuthenticatedRequest;
     const laundryType = parseLaundryType(req.query.laundry_type);
-    const invoice = await buildInvoice(req.params.id, req.query.from, req.query.to, laundryType);
+    const invoice = await buildInvoice(
+      req.params.id, req.query.from, req.query.to, laundryType, req.query.discount_percent
+    );
     const pdf = await renderInvoicePdf(invoice);
 
     /*

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   View, Text, Modal, TouchableOpacity, ActivityIndicator, Platform, Alert, ScrollView,
+  TextInput,
 } from 'react-native';
 // The legacy entry point, the same one the order-PDF code uses: SDK 54's new
 // API replaced cacheDirectory with a different file object model.
@@ -25,11 +26,11 @@ import { businessDocumentFileName } from '../../utils/pdfFileName';
  * HOTEL AND GUEST ARE TWO SEPARATE INVOICES, chosen at the top. The type is
  * sent to the server with the two dates, and the server does the filtering —
  * so a Hotel invoice cannot contain a Guest line no matter what this screen
- * does. Both documents below are generated for whichever type is selected.
+ * does. The invoice below is generated for whichever type is selected.
  *
- * TWO DOCUMENTS, ONE PERIOD. The invoice and the order summary are downloaded
- * from the same `from`, `to` and type held in this component's state, so the
- * pair can never describe different windows.
+ * THE ORDER SUMMARY PDF USED TO BE DOWNLOADED HERE TOO. It now lives in the
+ * Order Summary tab of the Business Account, unchanged — same endpoint, same
+ * document, same file naming. Only its location moved.
  */
 
 interface Props {
@@ -42,7 +43,7 @@ interface Props {
 type Picking = 'from' | 'to' | null;
 
 /** The two invoice types, in the order the Business Account lists them. */
-const LAUNDRY_TYPES: Array<{ value: LaundryTypeValue; label: string; icon: any }> = [
+export const LAUNDRY_TYPES: Array<{ value: LaundryTypeValue; label: string; icon: any }> = [
   { value: 'hotel', label: 'Hotel Laundry', icon: 'business' },
   { value: 'guest', label: 'Guest Laundry', icon: 'person' },
 ];
@@ -63,12 +64,34 @@ export default function GstInvoiceModal({ visible, businessId, businessName, onC
    */
   const [laundryType, setLaundryType] = useState<LaundryTypeValue>('hotel');
 
+  /**
+   * The deduction taken off the subtotal before GST, as typed.
+   *
+   * Held as the raw string so a half-typed "5." is not fought with while the
+   * operator is still typing; `discountPercent` below is the number actually
+   * sent. Blank means none, and the invoice is then exactly what it has
+   * always been.
+   */
+  const [discount, setDiscount] = useState('');
+
   const [preview, setPreview] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   const typeLabel =
     LAUNDRY_TYPES.find((option) => option.value === laundryType)?.label ?? '';
+
+  /*
+   * WHAT GETS SENT, AND WHETHER IT MAY BE.
+   *
+   * Blank is 0 — no deduction, and nothing is sent at all. Anything typed
+   * must be a number from 0 to 100: the server refuses the rest too, but
+   * catching it here means an impossible percentage cannot even reach the
+   * button, let alone produce an invoice.
+   */
+  const discountPercent = discount.trim() === '' ? 0 : Number(discount);
+  const discountValid =
+    Number.isFinite(discountPercent) && discountPercent >= 0 && discountPercent <= 100;
 
   const reset = () => {
     setPreview(null);
@@ -81,7 +104,7 @@ export default function GstInvoiceModal({ visible, businessId, businessName, onC
     setBusy(true);
     setError('');
     try {
-      setPreview(await superAdminApi.getInvoice(businessId, from, to, laundryType));
+      setPreview(await superAdminApi.getInvoice(businessId, from, to, laundryType, discountPercent));
     } catch (e: any) {
       setPreview(null);
       setError(e?.response?.data?.message || e.message || 'Could not build the invoice.');
@@ -91,25 +114,20 @@ export default function GstInvoiceModal({ visible, businessId, businessName, onC
   };
 
   /**
-   * Downloads one of the two documents and hands it to the share sheet.
+   * Downloads the invoice and hands it to the share sheet.
    *
-   * BOTH DOCUMENTS GO THROUGH HERE, given the URL to fetch — which is what
-   * guarantees they are downloaded the same way, named consistently, and
-   * built from the same `from`, `to` and `laundryType` held above.
+   * It is built from the `from`, `to` and `laundryType` held above.
    *
    * FileSystem does its own request, so the bearer token is attached
-   * explicitly — these endpoints are SUPER_ADMIN only.
+   * explicitly — this endpoint is SUPER_ADMIN only.
    */
-  const download = async (kind: 'invoice' | 'items') => {
+  const download = async () => {
     if (!businessId) return;
     setBusy(true);
     setError('');
     try {
       const headers = await superAdminApi.authHeader();
-      const url =
-        kind === 'invoice'
-          ? superAdminApi.invoicePdfUrl(businessId, from, to, laundryType)
-          : superAdminApi.itemReportPdfUrl(businessId, from, to, laundryType);
+      const url = superAdminApi.invoicePdfUrl(businessId, from, to, laundryType, discountPercent);
       /*
        * THE NAME THE USER ACTUALLY GETS.
        *
@@ -124,7 +142,7 @@ export default function GstInvoiceModal({ visible, businessId, businessName, onC
         from,
         to,
         laundryTypeLabel: typeLabel,
-        kind: kind === 'invoice' ? 'invoice' : 'summary',
+        kind: 'invoice',
       });
       const target = `${FileSystem.cacheDirectory}${fileName}`;
 
@@ -135,10 +153,7 @@ export default function GstInvoiceModal({ visible, businessId, businessName, onC
         );
       }
 
-      const title =
-        kind === 'invoice'
-          ? `${typeLabel} invoice — ${businessName}`
-          : `${typeLabel} order summary — ${businessName}`;
+      const title = `${typeLabel} invoice — ${businessName}`;
 
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(result.uri, {
@@ -231,6 +246,29 @@ export default function GstInvoiceModal({ visible, businessId, businessName, onC
               {dateButton('To', to, 'to')}
             </View>
 
+            {/* THE DEDUCTION, taken off the subtotal before GST is charged.
+                Typed before generating; left blank the invoice is unchanged.
+                The arithmetic is the server's, as every other figure here is. */}
+            <Text style={sa.label}>DISCOUNT / DEDUCTION (%)</Text>
+            <TextInput
+              style={[sa.input, !discountValid && sa.inputMissing]}
+              value={discount}
+              onChangeText={(text) => {
+                setDiscount(text);
+                // The preview belongs to the deduction it was fetched for.
+                reset();
+              }}
+              keyboardType="decimal-pad"
+              placeholder="0"
+              placeholderTextColor={COLORS.TextSecondary}
+              accessibilityLabel="Discount or deduction percentage"
+            />
+            <Text style={sa.cardMeta}>
+              {discountValid
+                ? 'Taken off the subtotal before CGST/SGST. Leave blank for none.'
+                : 'Enter a percentage between 0 and 100.'}
+            </Text>
+
             {!!error && (
               <View style={sa.errorBox}>
                 <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
@@ -255,6 +293,17 @@ export default function GstInvoiceModal({ visible, businessId, businessName, onC
                 </Text>
                 <Text style={sa.cardLine}>Orders: {preview.orders?.length ?? 0}</Text>
                 <Text style={sa.cardLine}>Items billed: {preview.lines?.length ?? 0}</Text>
+                {preview.totals?.discount_amount > 0 ? (
+                  <>
+                    <Text style={sa.cardLine}>
+                      Sub total: INR {Number(preview.totals?.subtotal ?? 0).toFixed(2)}
+                    </Text>
+                    <Text style={sa.cardLine}>
+                      Less {preview.totals.discount_percent}%: INR{' '}
+                      {Number(preview.totals.discount_amount).toFixed(2)}
+                    </Text>
+                  </>
+                ) : null}
                 <Text style={sa.cardLine}>
                   Taxable value: INR {Number(preview.totals?.taxable_value ?? 0).toFixed(2)}
                 </Text>
@@ -279,45 +328,28 @@ export default function GstInvoiceModal({ visible, businessId, businessName, onC
             )}
 
             <TouchableOpacity
-              style={[sa.button, busy && sa.buttonDisabled]}
+              style={[sa.button, (busy || !discountValid) && sa.buttonDisabled]}
               onPress={loadPreview}
-              disabled={busy}
+              disabled={busy || !discountValid}
             >
               {busy ? <ActivityIndicator color={COLORS.Surface} />
                     : <Text style={sa.buttonText}>Preview totals</Text>}
             </TouchableOpacity>
 
-            {/* THE TWO DOCUMENTS, both for the type and period chosen above.
-                Neither takes its own dates: they read the same state, so the
-                pair always covers the same window. */}
+            {/* THE INVOICE, for the type and period chosen above. */}
             <TouchableOpacity
               style={[
                 sa.button,
                 { backgroundColor: COLORS.PrimaryDark },
-                busy && sa.buttonDisabled,
+                (busy || !discountValid) && sa.buttonDisabled,
               ]}
-              onPress={() => download('invoice')}
-              disabled={busy}
+              onPress={() => download()}
+              disabled={busy || !discountValid}
               accessibilityRole="button"
               accessibilityLabel={`Generate the ${typeLabel} invoice PDF`}
             >
               <Text style={sa.buttonText}>{typeLabel} Invoice (PDF)</Text>
             </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[sa.buttonGhost, busy && sa.buttonDisabled]}
-              onPress={() => download('items')}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel={`Generate the ${typeLabel} order summary PDF for the same period`}
-            >
-              <Text style={sa.buttonGhostText}>Order Summary (PDF)</Text>
-            </TouchableOpacity>
-
-            <Text style={[sa.cardMeta, { marginTop: SPACING.xs }]}>
-              The order summary lists each item's quantity per day, with its rate
-              and amount, for the same period and laundry type as the invoice above.
-            </Text>
           </ScrollView>
         </View>
       </View>

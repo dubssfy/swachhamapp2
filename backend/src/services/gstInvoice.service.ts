@@ -234,6 +234,17 @@ export interface GstInvoice {
   orders: InvoiceOrderRef[];
 
   totals: {
+    /**
+     * The lines added up, BEFORE any deduction — the Sub Total the invoice
+     * has always printed. Equal to `taxable_value` whenever no deduction is
+     * applied, which is every invoice that does not ask for one.
+     */
+    subtotal: number;
+    /** The deduction taken off the subtotal, as a percentage. 0 when none. */
+    discount_percent: number;
+    /** What that percentage came to in rupees. 0 when none. */
+    discount_amount: number;
+    /** The subtotal less the deduction — what GST is charged on. */
     taxable_value: number;
     gst_rate: number;
     /** Set for an intra-state supply; zero otherwise. */
@@ -313,6 +324,31 @@ function requireDate(value: unknown, label: string): string {
  * Normalises a state for comparison: "Maharashtra", "maharashtra" and
  * "27-Maharashtra" (the code the GST lookup returns) all have to match.
  */
+/**
+ * The deduction percentage, or 0 — never anything that could misprice an
+ * invoice.
+ *
+ * Absent, blank and null all mean "no deduction", which is what every caller
+ * that predates the field sends. Anything present must be a real number from
+ * 0 to 100: a negative would inflate the bill above its own lines and over
+ * 100 would invert it, so both are refused outright rather than clamped, and
+ * the operator is told. Decimals such as 5.5 are kept, rounded to the paisa
+ * the money itself is kept in.
+ */
+export function normaliseDiscountPercent(value: unknown): number {
+  if (value === undefined || value === null) return 0;
+  if (typeof value === 'string' && value.trim() === '') return 0;
+
+  const percent = Number(value);
+  if (!Number.isFinite(percent)) {
+    throw new AppError('Discount / Deduction must be a number.', 400);
+  }
+  if (percent < 0 || percent > 100) {
+    throw new AppError('Discount / Deduction must be between 0 and 100 percent.', 400);
+  }
+  return Math.round(percent * 100) / 100;
+}
+
 function stateKey(value: string | null | undefined): string {
   return String(value ?? '')
     .toLowerCase()
@@ -334,7 +370,12 @@ export async function buildInvoice(
    * Restricts the invoice to ONE laundry type. Omitted (or null) bills both,
    * which is what every caller that predates the split does.
    */
-  laundryType?: InvoiceLaundryType | null
+  laundryType?: InvoiceLaundryType | null,
+  /**
+   * Percentage taken off the subtotal before GST. Omitted means none, which
+   * is what every caller that predates the field does.
+   */
+  discountPercentInput?: unknown
 ): Promise<GstInvoice> {
   /*
    * Two ways in.
@@ -441,6 +482,7 @@ export async function buildInvoice(
     `SELECT oi.service_name AS description,
             oi.laundry_type,
             COALESCE(
+              (SELECT st.name FROM services st WHERE st.id = oi.laundry_service_id),
               (SELECT st.name FROM services st WHERE st.id = o.service_id),
               (SELECT MIN(st.name)
                  FROM item_service_types m
@@ -495,7 +537,19 @@ export async function buildInvoice(
     };
   });
 
-  const taxableValue = money(lines.reduce((sum, line) => sum + line.taxable, 0));
+  /*
+   * THE DEDUCTION, TAKEN OFF BEFORE TAX.
+   *
+   * The subtotal is the lines added up, exactly as it always was. A deduction
+   * comes off that, and GST is then charged on what remains — so the tax
+   * follows the money actually being billed rather than a figure the customer
+   * is not paying. No deduction leaves `taxableValue` identical to the
+   * subtotal, which is every invoice that does not ask for one.
+   */
+  const subtotal = money(lines.reduce((sum, line) => sum + line.taxable, 0));
+  const discountPercent = normaliseDiscountPercent(discountPercentInput);
+  const discountAmount = discountPercent > 0 ? money((subtotal * discountPercent) / 100) : 0;
+  const taxableValue = money(subtotal - discountAmount);
 
   /*
    * Place of supply. Same state as the supplier means CGST + SGST, each half
@@ -509,8 +563,18 @@ export async function buildInvoice(
   const customerState = business.state || null;
   const intraState = !customerState || stateKey(customerState) === stateKey(supplierState);
 
-  // Summed from the lines so the total always equals the column above it.
-  const totalTax = money(lines.reduce((sum, line) => sum + line.gst_amount, 0));
+  /*
+   * Summed from the lines so the total always equals the column above it.
+   *
+   * A DEDUCTION IS THE ONE CASE THAT CANNOT BE. The per-line tax describes
+   * the undiscounted line, so once money has come off the subtotal the sum of
+   * those figures is no longer the tax being charged. Then, and only then,
+   * the tax is taken on the revised taxable value at the SAME configured
+   * rate — leaving every undiscounted invoice on the identical arithmetic it
+   * has always used, down to the rounding.
+   */
+  const lineTax = money(lines.reduce((sum, line) => sum + line.gst_amount, 0));
+  const totalTax = discountAmount > 0 ? money((taxableValue * gstRate) / 100) : lineTax;
   const halfTax = money(totalTax / 2);
 
   const cgst = intraState ? halfTax : 0;
@@ -581,6 +645,9 @@ export async function buildInvoice(
     })),
 
     totals: {
+      subtotal,
+      discount_percent: discountPercent,
+      discount_amount: discountAmount,
       taxable_value: taxableValue,
       gst_rate: gstRate,
       cgst,

@@ -630,7 +630,11 @@ router.get(
         String(business.id),
         stored.period_from,
         stored.period_to,
-        stored.laundry_type
+        stored.laundry_type,
+        // Re-issued with the deduction it was issued under, so a stored
+        // invoice reopens as the document that was sent rather than at full
+        // price. 0 for every invoice that never had one.
+        stored.discount_percent
       );
       const pdf = await renderInvoicePdf(invoice);
       const fileName = invoiceFileName(invoice);

@@ -47,6 +47,8 @@ export interface InvoiceHistoryEntry {
   period_label: string;
   laundry_type: InvoiceLaundryType | null;
   laundry_type_label: string | null;
+  /** The deduction this invoice was issued with, as a percentage. 0 for none. */
+  discount_percent: number;
   taxable_amount: number;
   tax_amount: number;
   total_amount: number;
@@ -107,13 +109,14 @@ export async function recordInvoice(
   await query(
     `INSERT INTO business_invoices
        (invoice_number, business_id, period_from, period_to, billing_cycle,
-        laundry_type, taxable_amount, tax_amount, total_amount,
+        laundry_type, discount_percent, taxable_amount, tax_amount, total_amount,
         order_count, line_count, generated_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        -- The figures are refreshed so a regenerated invoice states what it
        -- was regenerated as, but generated_at is left alone: the invoice
        -- keeps the date it was first issued.
+       discount_percent = VALUES(discount_percent),
        taxable_amount = VALUES(taxable_amount),
        tax_amount     = VALUES(tax_amount),
        total_amount   = VALUES(total_amount),
@@ -129,6 +132,7 @@ export async function recordInvoice(
       invoice.period.to,
       cycle ?? 'MONTHLY',
       invoice.laundry_type,
+      invoice.totals.discount_percent,
       invoice.totals.taxable_value,
       invoice.totals.total_tax,
       invoice.totals.grand_total,
@@ -148,6 +152,7 @@ interface InvoiceRow {
   period_to: unknown;
   billing_cycle: string;
   laundry_type: InvoiceLaundryType | null;
+  discount_percent: string | number | null;
   taxable_amount: string | number;
   tax_amount: string | number;
   total_amount: string | number;
@@ -170,6 +175,7 @@ const SELECT_INVOICE = `
   SELECT i.id, i.invoice_number, i.business_id,
          COALESCE(NULLIF(b.establishment_name, ''), b.name) AS business_name,
          i.period_from, i.period_to, i.billing_cycle, i.laundry_type,
+         i.discount_percent,
          i.taxable_amount, i.tax_amount, i.total_amount,
          i.order_count, i.line_count, i.status, i.generated_at,
          (SELECT COALESCE(SUM(r.payment_received), 0)
@@ -218,6 +224,7 @@ function toEntry(row: InvoiceRow): InvoiceHistoryEntry {
     period_label: `${from} to ${to}`,
     laundry_type: row.laundry_type,
     laundry_type_label: row.laundry_type ? LAUNDRY_TYPE_LABELS[row.laundry_type] : null,
+    discount_percent: Number(row.discount_percent || 0),
     taxable_amount: money(row.taxable_amount),
     tax_amount: money(row.tax_amount),
     total_amount: total,

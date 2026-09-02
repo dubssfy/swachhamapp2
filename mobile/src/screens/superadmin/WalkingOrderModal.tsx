@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, Modal, TouchableOpacity, ActivityIndicator, Alert, ScrollView,
 } from 'react-native';
@@ -54,6 +54,16 @@ export default function WalkingOrderModal({
 
   const [orderDate, setOrderDate] = useState(today);
   const [picking, setPicking] = useState(false);
+  /**
+   * Whether the operator has actually SET the backdate for this entry.
+   *
+   * The field starts on today, which is exactly the date a backdated order is
+   * not for — so an untouched field is a default, not a choice, and the sheet
+   * must not be uploadable against it. Held as its own flag rather than
+   * compared against today, so re-picking today on purpose after picking
+   * another date still counts as chosen and does not disable the upload again.
+   */
+  const [dateChosen, setDateChosen] = useState(false);
   const [laundryType, setLaundryType] = useState<LaundryTypeValue>('hotel');
 
   /** The chosen file, held as base64 so preview and import send the same bytes. */
@@ -63,6 +73,16 @@ export default function WalkingOrderModal({
   const [error, setError] = useState('');
 
   const typeLabel = LAUNDRY_TYPES.find((t) => t.value === laundryType)?.label ?? '';
+
+  /*
+   * EVERY OPENING STARTS AT STEP ONE. The modal stays mounted between opens,
+   * so without this a second entry would inherit the last one's chosen date
+   * and skip the step. Only the flag is cleared — the date itself is left
+   * exactly as it was, as it always has been.
+   */
+  useEffect(() => {
+    if (visible) setDateChosen(false);
+  }, [visible]);
 
   /** Any change to the inputs invalidates a preview taken against the old ones. */
   const resetPreview = () => {
@@ -220,19 +240,35 @@ export default function WalkingOrderModal({
               normal order on that date, so invoices and reports pick it up.
             </Text>
 
-            {/* ---- 1. THE DATE the laundry was actually taken in ---- */}
+            {/* ---- 1. THE DATE the laundry was actually taken in ----
+                Highlighted until it is chosen, because it gates the upload
+                below: the existing `choiceActive` tokens, the same primary
+                border and tint the app already marks a live choice with. */}
             <Text style={sa.label}>ORDER DATE</Text>
             <TouchableOpacity
-              style={[sa.input, { flexDirection: 'row', alignItems: 'center', gap: 8 }]}
+              style={[
+                sa.input,
+                { flexDirection: 'row', alignItems: 'center', gap: 8 },
+                !dateChosen && sa.choiceActive,
+              ]}
               onPress={() => setPicking(true)}
               accessibilityRole="button"
               accessibilityLabel={`Order date: ${formatLongDate(orderDate)}`}
+              accessibilityHint={
+                dateChosen ? undefined : 'Step 1. Select the date before uploading the sheet.'
+              }
             >
               <Ionicons name="calendar-outline" size={18} color={COLORS.Primary} />
               <Text style={{ color: COLORS.TextPrimary, fontFamily: TYPOGRAPHY.fontFamily }}>
                 {formatLongDate(orderDate)}
               </Text>
             </TouchableOpacity>
+            {!dateChosen && (
+              <Text style={[sa.cardMeta, { color: COLORS.Primary, marginTop: SPACING.xs }]}>
+                Step 1 — select the date this laundry was taken. The Excel upload stays
+                disabled until you do.
+              </Text>
+            )}
 
             {/* ---- 2. WHICH TYPE. Decides the template and the prices. ---- */}
             <Text style={sa.label}>ORDER TYPE</Text>
@@ -273,13 +309,19 @@ export default function WalkingOrderModal({
               <Text style={sa.buttonGhostText}>Download Excel Template</Text>
             </TouchableOpacity>
 
-            {/* ---- 4. THE FILLED SHEET ---- */}
+            {/* ---- 4. THE FILLED SHEET ----
+                Gated on the date above. What happens once it is tapped —
+                picking, validating, importing — is untouched. */}
             <TouchableOpacity
-              style={[sa.button, busy && sa.buttonDisabled]}
+              style={[sa.button, (busy || !dateChosen) && sa.buttonDisabled]}
               onPress={pickAndValidate}
-              disabled={busy}
+              disabled={busy || !dateChosen}
               accessibilityRole="button"
+              accessibilityState={{ disabled: busy || !dateChosen }}
               accessibilityLabel="Choose the filled Excel file"
+              accessibilityHint={
+                dateChosen ? undefined : 'Disabled until the order date above is selected.'
+              }
             >
               {busy ? (
                 <ActivityIndicator color={COLORS.Surface} />
@@ -391,6 +433,9 @@ export default function WalkingOrderModal({
         title="Order date"
         onSelect={(key) => {
           setOrderDate(key);
+          // The date is now a choice rather than the default, so the upload
+          // below opens up — and stays open for any later change.
+          setDateChosen(true);
           setPicking(false);
           resetPreview();
         }}
