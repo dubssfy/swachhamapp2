@@ -1,7 +1,13 @@
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
-import { catalogueScope, categoryLabel, guestCategoryFilter, isGuest } from './guestCatalogue';
+import {
+  catalogueScope,
+  categoryLabel,
+  guestCategoryFilter,
+  isGuest,
+  serviceCodesFor,
+} from './guestCatalogue';
 
 /**
  * Price lists, and the one place a price is ever resolved.
@@ -1339,12 +1345,54 @@ async function serviceTypeName(serviceId: string): Promise<string> {
  */
 async function assertServiceTypeForItem(
   itemId: string,
-  serviceIdInput: unknown
+  serviceIdInput: unknown,
+  /**
+   * The rate this price is for. GUEST is validated against the Guest service
+   * rule instead of the mapping table, because at that rate a non-towel is
+   * offered Wash & Iron whether or not `item_service_types` has that row —
+   * and without this, a Guest price could not be set for the very service the
+   * Guest catalogue offers. Omitted, or Hotel, keeps the original check.
+   */
+  laundryType?: string | null
 ): Promise<string | null> {
   const raw = String(serviceIdInput ?? '').trim();
   if (raw === '' || raw === 'null' || raw === 'undefined') return null;
   if (!/^\d+$/.test(raw)) {
     throw new AppError('A valid service type is required.', 400);
+  }
+
+  if (isGuest(laundryType)) {
+    const service = await query<{ code: string }>(
+      `SELECT code FROM services
+        WHERE id = ? AND kind = 'SERVICE_TYPE' AND is_active = true`,
+      [raw]
+    );
+    const code = service.rows[0]?.code;
+
+    const item = await query<{ washing_group: string | null }>(
+      `SELECT washing_group FROM services WHERE id = ?`,
+      [itemId]
+    );
+    const mapped = await query<{ code: string }>(
+      `SELECT st.code
+         FROM item_service_types m
+         JOIN services st ON st.id = m.service_id
+        WHERE m.item_id = ? AND st.kind = 'SERVICE_TYPE' AND st.is_active = true`,
+      [itemId]
+    );
+
+    const allowed = serviceCodesFor(
+      'guest',
+      item.rows[0]?.washing_group ?? null,
+      mapped.rows.map((row) => row.code)
+    );
+    if (!code || !allowed.includes(code)) {
+      throw new AppError(
+        'That service type is not available for this item. Price it for a service the item is offered for, or leave the service blank to set one rate for every service.',
+        400
+      );
+    }
+    return raw;
   }
 
   const result = await query<{ id: string }>(
@@ -1387,8 +1435,11 @@ async function createBusinessPrice(
    * separately for each; leaving this out sets the item's single rate, which
    * is what every price set before per-service pricing existed means and
    * what most items still want.
+   *
+   * The laundry type goes with it: at the GUEST rate the services an item may
+   * be priced for are the ones the Guest rule offers, not the mapping table's.
    */
-  const serviceId = await assertServiceTypeForItem(itemId, input.service_id);
+  const serviceId = await assertServiceTypeForItem(itemId, input.service_id, laundryType);
 
   // The key is (business, item, laundry type, service). The SAME item at the
   // OTHER type -- or at another service -- is a different row and is

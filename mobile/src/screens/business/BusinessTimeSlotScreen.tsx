@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Image,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -68,7 +69,7 @@ import { todayIST, addDays } from '../../utils/istDates';
 const PROVISIONAL_PICKUP_SLOT_FALLBACK = '09-11';
 
 export default function BusinessTimeSlotScreen({ navigation }: any) {
-  const { confirmOrder, isPlacingOrder, cart } = useBusinessOrderStore();
+  const { confirmOrder, isPlacingOrder, cart, laundryType } = useBusinessOrderStore();
 
   /*
    * No pickup or delivery state lives here any more. The business does not
@@ -88,6 +89,45 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
 
   /** Set once the order is placed; drives the existing confirmation panel. */
   const [placedOrder, setPlacedOrder] = useState<{ number: string } | null>(null);
+
+  /*
+   * GUEST LAUNDRY: WHO THE ORDER IS FOR.
+   *
+   * Asked ONLY on a Guest Laundry order, and never on a Hotel one — a Hotel
+   * order does not render the section, does not validate it and sends nothing
+   * for it, so that flow is unchanged.
+   *
+   * READ FROM BOTH SOURCES, ON PURPOSE. The store's `laundryType` is set the
+   * moment the type is chosen on the Order Type page and survives every step
+   * after it; `cart.laundry_type` is what the server last returned. They
+   * normally agree, but the cart object can be null or stale at the instant
+   * this screen first renders — and a COMPULSORY selector that quietly does
+   * not appear is the worst possible failure here, because the order then
+   * cannot be placed and there is nothing on screen explaining why. Either
+   * source saying "guest" is enough to show it.
+   *
+   * Nothing is preselected. The choice is compulsory, and defaulting to
+   * either option would let an order be placed for a room or for staff
+   * because the user never looked at the section.
+   */
+  const isGuest = laundryType === 'guest' || cart?.laundry_type === 'guest';
+  const [guestFor, setGuestFor] = useState<'ROOM' | 'STAFF' | null>(null);
+  const [roomNumber, setRoomNumber] = useState('');
+  const [staffDetails, setStaffDetails] = useState('');
+
+  /*
+   * WHETHER THE ORDER MAY BE PLACED.
+   *
+   * A room order needs a room number actually typed — `.trim()`, so spaces
+   * are not a room. Staff laundry needs nothing more. A Hotel order is
+   * unaffected and stays always-ready, exactly as before.
+   */
+  const roomNumberValue = roomNumber.trim();
+  const staffDetailsValue = staffDetails.trim();
+  const guestSelectionComplete =
+    !isGuest ||
+    (guestFor === 'STAFF' && staffDetailsValue.length > 0) ||
+    (guestFor === 'ROOM' && roomNumberValue.length > 0);
 
   /**
    * Picks the placeholder pickup described at the top of this file.
@@ -119,6 +159,24 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
   const handleContinue = async () => {
     if (isPlacingOrder) return;
 
+    /*
+     * The compulsory Guest Laundry selection, checked before anything is
+     * sent. The server refuses the same cases with the same wording, so this
+     * is the fast path rather than the only guard.
+     */
+    if (isGuest && !guestFor) {
+      setError('Please select Room Number or Staff Laundry.');
+      return;
+    }
+    if (isGuest && guestFor === 'ROOM' && !roomNumberValue) {
+      setError('Please enter the room number.');
+      return;
+    }
+    if (isGuest && guestFor === 'STAFF' && !staffDetailsValue) {
+      setError('Please enter the staff laundry details.');
+      return;
+    }
+
     try {
       setError('');
       // The placeholder the server still requires. The Manager replaces it
@@ -135,6 +193,14 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
          */
         deliveryDate: null,
         deliverySlot: null,
+        /*
+         * GUEST LAUNDRY ONLY: who the order is for. Null on a Hotel order,
+         * where the server ignores both — so a Hotel request is exactly the
+         * request it was before this field existed.
+         */
+        guestLaundryFor: isGuest ? guestFor : null,
+        guestRoomNumber: isGuest && guestFor === 'ROOM' ? roomNumberValue : null,
+        guestStaffDetails: isGuest && guestFor === 'STAFF' ? staffDetailsValue : null,
         /*
          * NO NOTES ARE SENT.
          *
@@ -208,6 +274,101 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
                 and still carried on the cart for the rest of the app. */}
           </View>
 
+          {/* GUEST LAUNDRY ONLY: who the order is for.
+              Gated on `isGuest` above, so a Hotel order does not show it at
+              all. There is deliberately no "Laundry Type" heading — the two
+              options say what they are. */}
+          {isGuest && (
+            <View style={styles.guestCard}>
+              <Text style={styles.guestHeading}>
+                This order is for <Text style={styles.required}>*</Text>
+              </Text>
+
+              {(
+                [
+                  { value: 'ROOM' as const, label: 'Room Number' },
+                  { value: 'STAFF' as const, label: 'Staff Laundry' },
+                ]
+              ).map((option) => {
+                const selected = guestFor === option.value;
+                return (
+                  <TouchableOpacity
+                    key={option.value}
+                    style={[styles.guestOption, selected && styles.guestOptionSelected]}
+                    onPress={() => {
+                      setGuestFor(option.value);
+                      /*
+                       * Switching clears the OTHER field, so the order can
+                       * never carry a room number it is not for, or staff
+                       * details on a room order. The server discards the
+                       * unused one too; this keeps the screen honest as well.
+                       */
+                      if (option.value === 'STAFF') setRoomNumber('');
+                      else setStaffDetails('');
+                      setError('');
+                    }}
+                    activeOpacity={0.8}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                    accessibilityLabel={option.label}
+                  >
+                    <View style={[styles.radio, selected && styles.radioSelected]}>
+                      {selected ? <View style={styles.radioDot} /> : null}
+                    </View>
+                    <Text style={[styles.guestOptionText, selected && styles.guestOptionTextSelected]}>
+                      {option.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+
+              {/* EXACTLY ONE FIELD IS EVER SHOWN — the one belonging to the
+                  option that is selected. Both are compulsory. */}
+              {guestFor === 'ROOM' && (
+                <View style={styles.roomField}>
+                  <Text style={styles.roomLabel}>
+                    Room Number <Text style={styles.required}>*</Text>
+                  </Text>
+                  <TextInput
+                    style={styles.roomInput}
+                    value={roomNumber}
+                    onChangeText={(text) => {
+                      setRoomNumber(text);
+                      setError('');
+                    }}
+                    placeholder="e.g. 205"
+                    placeholderTextColor={COLORS.TextSecondary}
+                    maxLength={20}
+                    autoCapitalize="characters"
+                    accessibilityLabel="Room number"
+                  />
+                </View>
+              )}
+
+              {guestFor === 'STAFF' && (
+                <View style={styles.roomField}>
+                  <Text style={styles.roomLabel}>
+                    Staff Laundry Details <Text style={styles.required}>*</Text>
+                  </Text>
+                  <TextInput
+                    style={styles.roomInput}
+                    value={staffDetails}
+                    onChangeText={(text) => {
+                      setStaffDetails(text);
+                      setError('');
+                    }}
+                    placeholder="Enter details"
+                    placeholderTextColor={COLORS.TextSecondary}
+                    /* 120, the column's width — a longer value would be
+                       truncated by the database rather than by the field. */
+                    maxLength={120}
+                    accessibilityLabel="Staff laundry details"
+                  />
+                </View>
+              )}
+            </View>
+          )}
+
           {/* Says what happens next, in place of the booking the business used
               to make here. Without it the page would simply stop asking for a
               pickup with no explanation of who arranges one. */}
@@ -229,13 +390,18 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
 
         <View style={styles.footer}>
           <TouchableOpacity
-            style={[styles.continueButton, isPlacingOrder && styles.buttonDisabled]}
+            style={[
+              styles.continueButton,
+              (isPlacingOrder || !guestSelectionComplete) && styles.buttonDisabled,
+            ]}
             onPress={handleContinue}
             /* Disabled for the whole round trip, so a second tap cannot send a
-               second order. There is nothing left on this page to complete, so
-               it is otherwise always enabled — the cart's own rules are
-               enforced by the store and reported in the error row above. */
-            disabled={isPlacingOrder}
+               second order — and, on a Guest order, until the compulsory
+               room / staff selection is complete. A Hotel order has nothing
+               to complete here and stays enabled exactly as before; the
+               cart's own rules are still enforced by the store and reported
+               in the error row above. */
+            disabled={isPlacingOrder || !guestSelectionComplete}
             activeOpacity={0.85}
           >
             {isPlacingOrder ? (
@@ -383,6 +549,78 @@ const styles = StyleSheet.create({
     fontFamily: TYPOGRAPHY.fontFamily,
     fontSize: TYPOGRAPHY.sizes.sm,
     lineHeight: 19,
+    color: COLORS.TextPrimary,
+  },
+
+  // ---- Guest Laundry: who the order is for ----
+  guestCard: {
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1.5,
+    borderColor: COLORS.Primary,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+  },
+  guestHeading: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '800',
+    color: COLORS.PrimaryDark,
+    marginBottom: SPACING.sm,
+  },
+  required: { color: COLORS.Error },
+  guestOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    minHeight: 48,
+    paddingHorizontal: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1.5,
+    borderColor: COLORS.Border,
+    marginBottom: SPACING.xs,
+  },
+  guestOptionSelected: { borderColor: COLORS.Primary, backgroundColor: '#F1F9F4' },
+  guestOptionText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: '600',
+    color: COLORS.TextPrimary,
+  },
+  guestOptionTextSelected: { fontWeight: '800', color: COLORS.PrimaryDark },
+  radio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: COLORS.Border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioSelected: { borderColor: COLORS.Primary },
+  radioDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.Primary,
+  },
+  roomField: { marginTop: SPACING.xs },
+  roomLabel: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '700',
+    color: COLORS.TextSecondary,
+    marginBottom: 4,
+  },
+  roomInput: {
+    minHeight: 48,
+    paddingHorizontal: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1.5,
+    borderColor: COLORS.Primary,
+    backgroundColor: COLORS.Surface,
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.base,
     color: COLORS.TextPrimary,
   },
 

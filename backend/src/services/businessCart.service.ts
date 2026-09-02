@@ -1,7 +1,12 @@
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { lookupBusinessPrice } from './priceList.service';
-import { catalogueScope, guestCategoryFilter, isGuest } from './guestCatalogue';
+import {
+  catalogueScope,
+  guestCategoryFilter,
+  isGuest,
+  serviceCodesFor,
+} from './guestCatalogue';
 
 export type LaundryType = 'hotel' | 'guest';
 export type OrderType = 'standard' | 'quick';
@@ -59,13 +64,25 @@ const SERVICE_TYPES = ['wash_fold', 'wash_iron', 'dry_clean'];
 
 type CartItemRow = Omit<BusinessCartItem, 'available_service_types'> & {
   available_service_codes: string | null;
+  /** 'TOWEL' for a towel. Used only by the Guest service rule. */
+  washing_group: string | null;
 };
 
-function toCartItem(row: CartItemRow): BusinessCartItem {
-  const { available_service_codes, ...item } = row;
+function toCartItem(row: CartItemRow, laundryType: LaundryType | null): BusinessCartItem {
+  const { available_service_codes, washing_group, ...item } = row;
   return {
     ...item,
-    available_service_types: available_service_codes ? available_service_codes.split(',') : [],
+    /*
+     * The chips the Cart offers for switching a line's service. Hotel gets
+     * the mapping table verbatim; GUEST gets the rule, so the Cart offers
+     * exactly what the Items page offered and what `resolveItemServiceId`
+     * will accept. See `guestServiceCodes`.
+     */
+    available_service_types: serviceCodesFor(
+      laundryType,
+      washing_group,
+      available_service_codes ? available_service_codes.split(',') : []
+    ),
   };
 }
 
@@ -107,6 +124,8 @@ async function getCart(businessUserId: string): Promise<BusinessCart> {
             s.weight_kg, s.weight_unit,
             ROUND(COALESCE(s.weight_kg, 0) * ci.quantity, 3) AS total_weight_kg,
             st.code AS service_type, st.name AS service_name,
+            -- Read only for the Guest service rule; toCartItem strips it.
+            s.washing_group,
             (SELECT GROUP_CONCAT(a.code ORDER BY a.display_order ASC, a.name ASC)
                FROM item_service_types m
                JOIN services a ON a.id = m.service_id
@@ -121,7 +140,7 @@ async function getCart(businessUserId: string): Promise<BusinessCart> {
     [cart.id]
   );
 
-  const items = itemsResult.rows.map(toCartItem);
+  const items = itemsResult.rows.map((row) => toCartItem(row, cart.laundry_type));
   // Total order weight = SUM(item weight x quantity).
   const totalWeight = items.reduce((sum, item) => sum + Number(item.total_weight_kg || 0), 0);
 
@@ -154,17 +173,63 @@ async function getSupportedServices(itemId: string): Promise<Array<{ id: string;
  * Resolves the service a cart line carries from the code the user chose for
  * that item.
  *
- * The choice must be one the item actually supports — a Dry Clean only carpet
+ * The choice must be one the item actually offers — a Dry Clean only carpet
  * can never end up on a Wash & Iron line. There is no fallback: a service is
  * always chosen explicitly, per item.
+ *
+ * WHAT "OFFERS" MEANS DEPENDS ON THE LAUNDRY TYPE. Hotel Laundry reads the
+ * `item_service_types` mapping, exactly as it always has. GUEST applies the
+ * Guest rule over that mapping — towels Wash & Fold, everything else Wash &
+ * Iron plus Dry Clean where the item allows it — so the cart accepts exactly
+ * what the Guest catalogue offered. Without this the two would disagree: the
+ * Items page would show Wash & Iron and the cart would refuse it, because
+ * only 6 of the 59 Guest items have a Wash & Iron mapping row.
+ *
+ * The service ids are the same three rows either way, so a Guest line stores
+ * the id every other part of the system already uses.
  */
-async function resolveItemServiceId(itemId: string, requestedCode: string): Promise<string> {
+async function resolveItemServiceId(
+  itemId: string,
+  requestedCode: string,
+  laundryType?: string | null
+): Promise<string> {
   const supported = await getSupportedServices(itemId);
-  const match = supported.find((service) => service.code === requestedCode);
-  if (!match) {
+
+  if (!isGuest(laundryType)) {
+    const match = supported.find((service) => service.code === requestedCode);
+    if (!match) {
+      throw new AppError('This item is not available for the selected service', 400);
+    }
+    return match.id;
+  }
+
+  const item = await query<{ washing_group: string | null }>(
+    `SELECT washing_group FROM services WHERE id = ?`,
+    [itemId]
+  );
+  const allowed = serviceCodesFor(
+    'guest',
+    item.rows[0]?.washing_group ?? null,
+    supported.map((service) => service.code)
+  );
+  if (!allowed.includes(requestedCode)) {
     throw new AppError('This item is not available for the selected service', 400);
   }
-  return match.id;
+
+  /*
+   * Read from `services` by code rather than from the mapping: the rule may
+   * offer Wash & Iron on an item that has no mapping row for it, and that is
+   * the whole reason the rule exists.
+   */
+  const service = await query<{ id: string }>(
+    `SELECT id FROM services WHERE code = ? AND kind = 'SERVICE_TYPE' AND is_active = true LIMIT 1`,
+    [requestedCode]
+  );
+  const serviceId = service.rows[0]?.id;
+  if (!serviceId) {
+    throw new AppError('This item is not available for the selected service', 400);
+  }
+  return String(serviceId);
 }
 
 /**
@@ -235,7 +300,9 @@ async function addItem(
 
   // The line keeps its own service. Adding the same item again tops up the
   // quantity and re-states the service that was asked for.
-  const lineServiceId = await resolveItemServiceId(itemId, itemServiceType);
+  // The cart's OWN laundry type decides which rule applies — the same value
+  // the catalogue check above used, so the two cannot disagree.
+  const lineServiceId = await resolveItemServiceId(itemId, itemServiceType, laundryType);
 
   // price_at_add is a staging value only. It is filled from this
   // business's own price list at the cart's laundry type where one
@@ -330,15 +397,61 @@ async function setCartContext(
 }
 
 /**
+ * ONE CART LINE, FOUND BY ITS OWN ID AND OWNED BY THIS USER.
+ *
+ * THE LINE IS `cart_items.id`, NOT THE ITEM ID. The cart's unique key is
+ * (cart_id, service_id, laundry_service_key), so the SAME item can sit in the
+ * cart more than once at different services — "Shirt / Wash & Iron" and
+ * "Shirt / Dry Clean" are two rows. Matching on `ci.service_id`, which is the
+ * ITEM id despite its legacy name, matches EVERY one of those rows: it is why
+ * deleting one of them deleted both, and why changing one's quantity or
+ * service changed all of them.
+ *
+ * `cart_items.id` already identifies the line uniquely, is already returned
+ * by `getCart` as the item's `id`, and is what the customer-side cart has
+ * always used. Nothing new is stored to fix this.
+ *
+ * The `business_user_id` join is the ownership check: a line id belonging to
+ * somebody else's cart is a 404 here rather than a row this caller can touch.
+ */
+async function findCartLine(
+  businessUserId: string,
+  cartItemId: string
+): Promise<{ id: string; cart_id: string; service_id: string; laundry_type: string | null }> {
+  const result = await query<{
+    id: string;
+    cart_id: string;
+    service_id: string;
+    laundry_type: string | null;
+  }>(
+    // The cart's laundry type comes with the line, because which services the
+    // line may be switched to depends on it — see `resolveItemServiceId`.
+    `SELECT ci.id, ci.cart_id, ci.service_id, c.laundry_type
+       FROM cart_items ci
+       JOIN carts c ON c.id = ci.cart_id
+      WHERE ci.id = ? AND c.business_user_id = ?`,
+    [cartItemId, businessUserId]
+  );
+  const line = result.rows[0];
+  if (!line) {
+    throw new AppError('Cart item not found', 404);
+  }
+  return line;
+}
+
+/**
  * Updates one cart line: its quantity, its service, or both. The same
  * endpoint covers both so the cart keeps a single update call.
+ *
+ * `cartItemId` is the LINE's id — see `findCartLine`. It used to be the item
+ * id, which changed every line carrying that item.
  *
  * The line weight is not stored, so changing the quantity here is all it
  * takes for the line total and the cart total to come back correct.
  */
 async function updateItemQuantity(
   businessUserId: string,
-  itemId: string,
+  cartItemId: string,
   quantity?: number,
   itemServiceType?: string
 ): Promise<BusinessCart> {
@@ -352,24 +465,62 @@ async function updateItemQuantity(
     throw new AppError('Invalid service type', 400);
   }
 
+  // Resolved first: the line says which ITEM it holds, and the service below
+  // has to be validated against that item rather than against an id the
+  // caller supplied.
+  const line = await findCartLine(businessUserId, cartItemId);
+
   const fields: string[] = [];
   const values: unknown[] = [];
   if (quantity !== undefined) {
-    fields.push('ci.quantity = ?');
+    fields.push('quantity = ?');
     values.push(quantity);
   }
+
   if (itemServiceType !== undefined) {
     // Rejects a service the item does not support.
-    fields.push('ci.laundry_service_id = ?');
-    values.push(await resolveItemServiceId(itemId, itemServiceType));
+    const nextServiceId = await resolveItemServiceId(
+      line.service_id,
+      itemServiceType,
+      line.laundry_type
+    );
+
+    /*
+     * MOVING A LINE ONTO A SERVICE THE CART ALREADY HAS.
+     *
+     * With Shirt / Wash & Iron and Shirt / Dry Clean both in the cart,
+     * switching the first to Dry Clean would collide with the unique key —
+     * the same item at the same service twice. The two are merged instead:
+     * the quantities are added onto the existing line and this one is
+     * removed, which is exactly what adding the item again at that service
+     * already does. Erroring would leave the cart offering a service that
+     * cannot be chosen, with no way out but deleting a line by hand.
+     */
+    const clash = await query<{ id: string }>(
+      `SELECT id FROM cart_items
+        WHERE cart_id = ? AND service_id = ? AND COALESCE(laundry_service_id, 0) = COALESCE(?, 0)
+          AND id <> ?`,
+      [line.cart_id, line.service_id, nextServiceId, line.id]
+    );
+    const existing = clash.rows[0];
+    if (existing) {
+      await query(
+        `UPDATE cart_items
+            SET quantity = quantity + ?, updated_at = NOW()
+          WHERE id = ?`,
+        [quantity ?? (await lineQuantity(line.id)), existing.id]
+      );
+      await query(`DELETE FROM cart_items WHERE id = ?`, [line.id]);
+      return getCart(businessUserId);
+    }
+
+    fields.push('laundry_service_id = ?');
+    values.push(nextServiceId);
   }
 
   const result = await query(
-    `UPDATE cart_items ci
-     JOIN carts c ON c.id = ci.cart_id
-     SET ${fields.join(', ')}, ci.updated_at = NOW()
-     WHERE c.business_user_id = ? AND ci.service_id = ?`,
-    [...values, businessUserId, itemId]
+    `UPDATE cart_items SET ${fields.join(', ')}, updated_at = NOW() WHERE id = ?`,
+    [...values, line.id]
   );
   if (result.rowCount === 0) {
     throw new AppError('Cart item not found', 404);
@@ -378,16 +529,25 @@ async function updateItemQuantity(
   return getCart(businessUserId);
 }
 
-async function removeItem(businessUserId: string, itemId: string): Promise<BusinessCart> {
-  const result = await query(
-    `DELETE ci FROM cart_items ci
-     JOIN carts c ON c.id = ci.cart_id
-     WHERE c.business_user_id = ? AND ci.service_id = ?`,
-    [businessUserId, itemId]
+/** The quantity currently on a line, for the merge above. */
+async function lineQuantity(cartItemId: string): Promise<number> {
+  const result = await query<{ quantity: number }>(
+    `SELECT quantity FROM cart_items WHERE id = ?`,
+    [cartItemId]
   );
-  if (result.rowCount === 0) {
-    throw new AppError('Cart item not found', 404);
-  }
+  return Number(result.rows[0]?.quantity ?? 0);
+}
+
+/**
+ * Removes ONE cart line.
+ *
+ * `cartItemId` is the LINE's id — see `findCartLine`. Deleting
+ * "Shirt / Wash & Iron" leaves "Shirt / Dry Clean" exactly where it was.
+ */
+async function removeItem(businessUserId: string, cartItemId: string): Promise<BusinessCart> {
+  const line = await findCartLine(businessUserId, cartItemId);
+
+  await query(`DELETE FROM cart_items WHERE id = ?`, [line.id]);
 
   return getCart(businessUserId);
 }

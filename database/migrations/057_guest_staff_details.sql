@@ -1,0 +1,22 @@
+-- SWACHHAM — Guest Laundry: the staff-laundry detail
+-- Migration: 057_guest_staff_details.sql
+--
+-- Migration 056 recorded WHICH of the two a guest order is for, and the room
+-- number for a room order. A staff order carried no detail of its own, so a
+-- bag of staff laundry could not be traced back to the person who sent it.
+--
+-- A SEPARATE COLUMN, NOT A REUSE OF `guest_room_number`. That column means a
+-- room number and is sized like one (20); a staff detail is a name or a note
+-- and needs more room. Keeping them apart also means `guest_laundry_for`
+-- stays the only thing that has to be read to know which value applies:
+--
+--   guest_laundry_for = 'ROOM'  + guest_room_number   = '205'  -> Room Number: 205
+--   guest_laundry_for = 'STAFF' + guest_staff_details = 'John' -> Staff Laundry: John
+--   guest_laundry_for = NULL                                   -> not recorded
+--
+-- Nullable with no default, so no existing row is rewritten. Hotel Laundry
+-- orders keep NULL here as they do in both columns from 056, and any staff
+-- order placed between 056 and this migration keeps NULL and simply prints
+-- "Staff Laundry" with no detail after it.
+ALTER TABLE orders
+  ADD COLUMN guest_staff_details VARCHAR(120) NULL AFTER guest_room_number;

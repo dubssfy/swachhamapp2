@@ -106,7 +106,8 @@ function toCartItem(line: DemoCart['items'][number]): BusinessCartItem | null {
   const item = findDemoItem(line.item_id);
   if (!item) return null;
   return {
-    id: `demo-cartline-${line.item_id}`,
+    // Must match the id `addCartItem` minted: the LINE, item plus service.
+    id: `demo-cartline-${line.item_id}-${line.service_type}`,
     item_id: item.id,
     item_name: item.name,
     category_id: item.category_id,
@@ -497,13 +498,21 @@ export const demoBusinessOrderApi = {
     requireItemService(itemId, itemServiceType);
 
     const cart = await updateDemoState((state) => {
-      const existing = state.cart.items.find((line) => line.item_id === itemId);
+      /*
+       * ONE LINE PER ITEM **AND SERVICE**, matching the server's unique key
+       * (cart_id, service_id, laundry_service_key). Merging on `item_id`
+       * alone folded Shirt / Dry Clean into Shirt / Wash & Iron, so the two
+       * could never exist side by side here at all.
+       */
+      const existing = state.cart.items.find(
+        (line) => line.item_id === itemId && line.service_type === itemServiceType
+      );
       if (existing) {
         existing.quantity += quantity;
-        existing.service_type = itemServiceType as DemoOrderItem['service_type'];
       } else {
         state.cart.items.push({
-          id: `demo-cartline-${itemId}`,
+          // The id names the LINE, so it has to carry the service too.
+          id: `demo-cartline-${itemId}-${itemServiceType}`,
           item_id: itemId,
           quantity,
           service_type: itemServiceType as DemoOrderItem['service_type'],
@@ -514,10 +523,12 @@ export const demoBusinessOrderApi = {
     return ok(cart);
   },
 
-  updateCartItem: async (itemId: string, quantity: number): Promise<ApiResponse<BusinessCart>> => {
+  updateCartItem: async (cartItemId: string, quantity: number): Promise<ApiResponse<BusinessCart>> => {
     requireWholeQuantity(quantity);
     const cart = await updateDemoState((state) => {
-      const line = state.cart.items.find((entry) => entry.item_id === itemId);
+      // BY LINE ID, not item id — an item id names every service that item
+      // is in the cart at.
+      const line = state.cart.items.find((entry) => entry.id === cartItemId);
       if (!line) throw demoError('Cart item not found', 404);
       line.quantity = quantity;
       return toCart(state.cart);
@@ -526,22 +537,36 @@ export const demoBusinessOrderApi = {
   },
 
   setCartItemService: async (
-    itemId: string,
+    cartItemId: string,
     itemServiceType: string
   ): Promise<ApiResponse<BusinessCart>> => {
-    requireItemService(itemId, itemServiceType);
     const cart = await updateDemoState((state) => {
-      const line = state.cart.items.find((entry) => entry.item_id === itemId);
+      const line = state.cart.items.find((entry) => entry.id === cartItemId);
       if (!line) throw demoError('Cart item not found', 404);
+      requireItemService(line.item_id, itemServiceType);
+      /*
+       * Moving a line onto a service the cart already holds merges the two,
+       * the way the server does — the alternative is two identical lines.
+       */
+      const clash = state.cart.items.find(
+        (entry) => entry !== line && entry.item_id === line.item_id && entry.service_type === itemServiceType
+      );
+      if (clash) {
+        clash.quantity += line.quantity;
+        state.cart.items.splice(state.cart.items.indexOf(line), 1);
+        return toCart(state.cart);
+      }
       line.service_type = itemServiceType as DemoOrderItem['service_type'];
+      line.id = `demo-cartline-${line.item_id}-${itemServiceType}`;
       return toCart(state.cart);
     });
     return ok(cart);
   },
 
-  removeCartItem: async (itemId: string): Promise<ApiResponse<BusinessCart>> => {
+  removeCartItem: async (cartItemId: string): Promise<ApiResponse<BusinessCart>> => {
     const cart = await updateDemoState((state) => {
-      const index = state.cart.items.findIndex((entry) => entry.item_id === itemId);
+      // BY LINE ID: deleting Shirt / Wash & Iron must leave Shirt / Dry Clean.
+      const index = state.cart.items.findIndex((entry) => entry.id === cartItemId);
       if (index < 0) throw demoError('Cart item not found', 404);
       state.cart.items.splice(index, 1);
       return toCart(state.cart);
@@ -571,8 +596,10 @@ export const demoBusinessOrderApi = {
       const order = state.orders.find((entry) => entry.id === orderId);
       if (!order) throw demoError('Order not found', 404);
 
+      // The same line id as everywhere else — item AND service — so a
+      // repeated order whose lines share an item stays two lines.
       state.cart.items = order.items.map((item) => ({
-        id: `demo-cartline-${item.item_id}`,
+        id: `demo-cartline-${item.item_id}-${item.service_type}`,
         item_id: item.item_id,
         quantity: item.quantity,
         service_type: item.service_type,

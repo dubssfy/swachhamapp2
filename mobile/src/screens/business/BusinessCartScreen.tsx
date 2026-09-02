@@ -111,30 +111,42 @@ export default function BusinessCartScreen({ navigation }: any) {
   // the service area was settled on the Allow Permission page when the app
   // opened, and ordering neither asks for a fix nor re-tests the district.
 
-  const handleUpdateQuantity = async (itemId: string, quantity: number) => {
+  /*
+   * ALL THREE TAKE THE CART LINE'S OWN ID (`item.id`), NOT `item.item_id`.
+   *
+   * The same item can be in the cart twice at different services — Shirt /
+   * Wash & Iron and Shirt / Dry Clean are two lines with two ids but ONE
+   * item id. These used to be called with `item.item_id`, which named both
+   * lines: deleting one deleted the other, and a quantity or service change
+   * on one silently changed the other too.
+   *
+   * `item.id` is `cart_items.id`. It is already what this list keys on
+   * (`keyExtractor`), and it is what the customer-side cart has always sent.
+   */
+  const handleUpdateQuantity = async (cartItemId: string, quantity: number) => {
     if (quantity < 1) return;
     try {
       setError('');
-      await updateItem(itemId, quantity);
+      await updateItem(cartItemId, quantity);
     } catch (err: any) {
       setError(err?.message || 'Failed to update quantity');
     }
   };
 
   /** Each line keeps its own service, independent of the other lines. */
-  const handleItemService = async (itemId: string, value: string) => {
+  const handleItemService = async (cartItemId: string, value: string) => {
     try {
       setError('');
-      await setItemService(itemId, value);
+      await setItemService(cartItemId, value);
     } catch (err: any) {
       setError(err?.message || 'Failed to change item service');
     }
   };
 
-  const handleRemove = async (itemId: string) => {
+  const handleRemove = async (cartItemId: string) => {
     try {
       setError('');
-      await removeItem(itemId);
+      await removeItem(cartItemId);
     } catch (err: any) {
       setError(err?.message || 'Failed to remove item');
     }
@@ -250,7 +262,7 @@ export default function BusinessCartScreen({ navigation }: any) {
                         <TouchableOpacity
                           key={code}
                           style={[styles.itemServiceChip, isSelected && styles.itemServiceChipSelected]}
-                          onPress={() => handleItemService(item.item_id, code)}
+                          onPress={() => handleItemService(item.id, code)}
                           disabled={isLoading || isSelected}
                           activeOpacity={0.8}
                           accessibilityRole="radio"
@@ -279,7 +291,7 @@ export default function BusinessCartScreen({ navigation }: any) {
                     <View style={styles.stepper}>
                       <TouchableOpacity
                         style={styles.stepperButton}
-                        onPress={() => handleUpdateQuantity(item.item_id, item.quantity - 1)}
+                        onPress={() => handleUpdateQuantity(item.id, item.quantity - 1)}
                         disabled={isLoading}
                       >
                         <Ionicons name="remove" size={16} color={COLORS.Primary} />
@@ -287,14 +299,14 @@ export default function BusinessCartScreen({ navigation }: any) {
                       <Text style={styles.stepperValue}>{item.quantity}</Text>
                       <TouchableOpacity
                         style={styles.stepperButton}
-                        onPress={() => handleUpdateQuantity(item.item_id, item.quantity + 1)}
+                        onPress={() => handleUpdateQuantity(item.id, item.quantity + 1)}
                         disabled={isLoading}
                       >
                         <Ionicons name="add" size={16} color={COLORS.Primary} />
                       </TouchableOpacity>
                     </View>
 
-                    <TouchableOpacity onPress={() => handleRemove(item.item_id)} disabled={isLoading}>
+                    <TouchableOpacity onPress={() => handleRemove(item.id)} disabled={isLoading}>
                       <Ionicons name="trash-outline" size={20} color={COLORS.Error} />
                     </TouchableOpacity>
                   </View>

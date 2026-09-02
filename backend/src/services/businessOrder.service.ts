@@ -134,6 +134,87 @@ export interface BusinessOrderResult {
   }>;
 }
 
+/* ===================================================================
+ * GUEST LAUNDRY: WHO THE ORDER IS FOR
+ * =================================================================== */
+
+/** A Guest Laundry order is for a room, or for the hotel's own staff. */
+export type GuestLaundryFor = 'ROOM' | 'STAFF';
+
+export interface GuestLaundrySelection {
+  choice: GuestLaundryFor;
+  /** The room, for a ROOM order. Always null for STAFF. */
+  roomNumber: string | null;
+  /** The staff detail, for a STAFF order. Always null for ROOM. */
+  staffDetails: string | null;
+}
+
+/** The columns are VARCHAR(20)/(120); a longer value would be truncated. */
+const ROOM_NUMBER_MAX = 20;
+const STAFF_DETAILS_MAX = 120;
+
+export const GUEST_SELECTION_REQUIRED_MESSAGE =
+  'Please select Room Number or Staff Laundry.';
+export const ROOM_NUMBER_REQUIRED_MESSAGE = 'Please enter the room number.';
+export const STAFF_DETAILS_REQUIRED_MESSAGE = 'Please enter the staff laundry details.';
+
+/**
+ * Reads the Guest Laundry selection off an order request.
+ *
+ * GUEST LAUNDRY ONLY. A Hotel Laundry order returns null and is never asked
+ * for a choice, so nothing about the Hotel flow — or the Customer one, which
+ * does not come through here at all — changes. Anything a hotel order happens
+ * to send in these fields is ignored rather than refused: the fields do not
+ * apply to it, and rejecting an order over a field it should not have sent
+ * would break a flow this feature is not meant to touch.
+ *
+ * ON A GUEST ORDER THE CHOICE IS COMPULSORY, and enforced HERE rather than
+ * only on the screen — a request that skips the app is refused on the same
+ * terms, with the same wording the app shows.
+ */
+export function resolveGuestLaundry(
+  laundryType: string | null,
+  input: { guestLaundryFor?: unknown; guestRoomNumber?: unknown; guestStaffDetails?: unknown }
+): GuestLaundrySelection | null {
+  if (!isGuest(laundryType)) return null;
+
+  const choice = String(input.guestLaundryFor ?? '').trim().toUpperCase();
+
+  if (choice === 'STAFF') {
+    const staffDetails = String(input.guestStaffDetails ?? '').trim();
+    if (!staffDetails) {
+      throw new AppError(STAFF_DETAILS_REQUIRED_MESSAGE, 400);
+    }
+    if (staffDetails.length > STAFF_DETAILS_MAX) {
+      throw new AppError(
+        `Staff laundry details cannot be longer than ${STAFF_DETAILS_MAX} characters.`,
+        400
+      );
+    }
+    // No room number is kept for staff laundry, even if one was sent: the
+    // order is not for a room, and storing one would make it print as though
+    // it were.
+    return { choice: 'STAFF', roomNumber: null, staffDetails };
+  }
+
+  if (choice === 'ROOM') {
+    const roomNumber = String(input.guestRoomNumber ?? '').trim();
+    if (!roomNumber) {
+      throw new AppError(ROOM_NUMBER_REQUIRED_MESSAGE, 400);
+    }
+    if (roomNumber.length > ROOM_NUMBER_MAX) {
+      throw new AppError(
+        `Room number cannot be longer than ${ROOM_NUMBER_MAX} characters.`,
+        400
+      );
+    }
+    // Symmetrically, a room order keeps no staff detail.
+    return { choice: 'ROOM', roomNumber, staffDetails: null };
+  }
+
+  throw new AppError(GUEST_SELECTION_REQUIRED_MESSAGE, 400);
+}
+
 /**
  * Creates the order and books its pickup and delivery.
  *
@@ -156,7 +237,20 @@ async function createOrder(
    * Optional: a session minted before the token carried this has none, and the
    * order simply keeps NULL rather than being stamped with a guess.
    */
-  placedByMobile?: string
+  placedByMobile?: string,
+  /**
+   * Room number / Staff Laundry, for a GUEST order.
+   *
+   * Read from the request by the route through `resolveGuestLaundry`, which
+   * is also what enforces that a guest order has one. Undefined here means a
+   * caller that predates the field; the guard below still refuses to write a
+   * guest order without a selection, so it cannot be skipped by omission.
+   */
+  guestLaundryInput?: {
+    guestLaundryFor?: unknown;
+    guestRoomNumber?: unknown;
+    guestStaffDetails?: unknown;
+  }
 ): Promise<BusinessOrderResult> {
   const cartResult = await query<{
     id: string;
@@ -195,6 +289,15 @@ async function createOrder(
   if (!cart.order_type) {
     throw new AppError('Order type has not been selected', 400);
   }
+
+  /*
+   * The Guest Laundry selection, resolved against the cart's OWN laundry
+   * type rather than anything the request claims — so "this is a guest order,
+   * so it needs a room or staff" is decided by the same value the order is
+   * written with. Null for a hotel order. Throws for a guest order with no
+   * valid selection, before any row is written.
+   */
+  const guest = resolveGuestLaundry(cart.laundry_type, guestLaundryInput ?? {});
 
   // The service belongs to each line, not to the order, so the cart-level
   // service is no longer required — every line having one is.
@@ -323,11 +426,13 @@ async function createOrder(
     // `special_notes` is the column the orders table already has for notes
     // about the laundry itself — no new field was added for it.
     const [orderInsert]: any = await connection.execute(
-      `INSERT INTO orders (order_number, business_user_id, placed_by_mobile, laundry_type, order_type, service_type, service_id, status, subtotal, total_weight_kg, total, special_notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?, ?, ?)`,
+      `INSERT INTO orders (order_number, business_user_id, placed_by_mobile, laundry_type, guest_laundry_for, guest_room_number, guest_staff_details, order_type, service_type, service_id, status, subtotal, total_weight_kg, total, special_notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?, ?, ?)`,
       // `placed_by_mobile` is written ONCE, here, and never updated: editing a
       // contact later must not rewrite what an order already says.
-      [orderNumber, businessUserId, normaliseMobileOrNull(placedByMobile), cart.laundry_type, cart.order_type, orderServiceType, orderServiceId, subtotal, totalWeightKg, subtotal, schedule.serviceNotes || null]
+      // `guest_laundry_for` / `guest_room_number` are both NULL on a hotel
+      // order, which is what `resolveGuestLaundry` returns for one.
+      [orderNumber, businessUserId, normaliseMobileOrNull(placedByMobile), cart.laundry_type, guest?.choice ?? null, guest?.roomNumber ?? null, guest?.staffDetails ?? null, cart.order_type, orderServiceType, orderServiceId, subtotal, totalWeightKg, subtotal, schedule.serviceNotes || null]
     );
     const orderId = orderInsert.insertId;
 
@@ -490,6 +595,18 @@ export interface BusinessOrderDetail extends BusinessOrderSummary {
   business_name: string;
   contact_person_name: string | null;
   /**
+   * Guest Laundry only: whether this order is for a room or for staff.
+   *
+   * NULL on every Hotel Laundry order and on every order placed before the
+   * column existed — readers show nothing at all for null rather than
+   * guessing at one of the two.
+   */
+  guest_laundry_for: GuestLaundryFor | null;
+  /** The room, when `guest_laundry_for` is 'ROOM'. Null otherwise. */
+  guest_room_number: string | null;
+  /** The staff detail, when `guest_laundry_for` is 'STAFF'. Null otherwise. */
+  guest_staff_details: string | null;
+  /**
    * The number this order was PLACED ON, or null.
    *
    * `orders.placed_by_mobile` and nothing else. It is not the business's
@@ -600,6 +717,8 @@ async function fetchOrderDetail(
 
   const orderResult = await query<BusinessOrderDetail>(
     `SELECT o.id, o.order_number, o.laundry_type, o.order_type, o.service_type,
+            -- Guest Laundry's room / staff selection. NULL on hotel orders.
+            o.guest_laundry_for, o.guest_room_number, o.guest_staff_details,
             s.name AS service_name, o.status, o.created_at,
             ${BUSINESS_DISPLAY_NAME_SQL} AS business_name,
             bu.name AS contact_person_name,

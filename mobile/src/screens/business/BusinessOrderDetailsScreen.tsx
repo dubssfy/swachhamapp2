@@ -26,6 +26,7 @@ import {
   ORDER_LABEL,
   SERVICE_LABEL,
 } from '../../utils/businessOrderPdf';
+import { guestLaundryLine } from '../../utils/guestLaundryLabel';
 
 export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
   const { orderId } = route.params || {};
@@ -212,6 +213,13 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
       ? `Mixed — see the ${order.item_count} items above`
       : SERVICE_LABEL[order.service_type || ''] || order.service_name || '—';
 
+  /*
+   * "Room Number: 205", or "Staff Laundry" — Guest Laundry only, and null for
+   * everything else. Built by the shared helper the PDF also uses, so the
+   * screen and the document cannot word one order two ways.
+   */
+  const guestLine = guestLaundryLine(order);
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <BusinessHeader title="Order Details" subtitle={order.order_number} onBack={() => navigation.goBack()} />
@@ -308,6 +316,17 @@ export default function BusinessOrderDetailsScreen({ navigation, route }: any) {
           <Row label="Order Date" value={date} />
           <Row label="Order Time" value={time} />
           <Row label="Laundry Type" value={LAUNDRY_LABEL[order.laundry_type || ''] || '—'} />
+          {/* GUEST LAUNDRY: who the order is for — "Room Number: 205", or
+              "Staff Laundry" on its own. Drawn as ONE line rather than
+              through `Row`, because `Row` prints a label beside its value and
+              a staff order must show nothing but the two words. Null (a Hotel
+              order, or one placed before the field existed) renders nothing
+              at all. */}
+          {guestLine ? (
+            <View style={styles.row}>
+              <Text style={styles.guestLineText}>{guestLine}</Text>
+            </View>
+          ) : null}
           <Row label="Order Type" value={ORDER_LABEL[order.order_type || ''] || '—'} />
           {/* The ORDER-WIDE service, which exists only when every line shares
               one. A mixed order says so and points at the item list rather
@@ -434,6 +453,15 @@ const styles = StyleSheet.create({
     fontSize: TYPOGRAPHY.sizes.sm,
     fontWeight: '600',
     color: COLORS.TextPrimary,
+  },
+  /* Guest Laundry's room / staff line. One full-width string — it carries its
+     own wording and must never gain a label column. */
+  guestLineText: {
+    flex: 1,
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    fontWeight: '800',
+    color: COLORS.PrimaryDark,
   },
   itemRow: {
     flexDirection: 'row',

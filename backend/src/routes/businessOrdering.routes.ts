@@ -296,14 +296,21 @@ router.post('/cart/items', async (req: Request, res: Response, next: NextFunctio
   }
 });
 
-// Updates a cart line: quantity, its service, or both.
-router.put('/cart/items/:itemId', async (req: Request, res: Response, next: NextFunction) => {
+/*
+ * Updates a cart line: quantity, its service, or both.
+ *
+ * `:cartItemId` IS THE LINE'S OWN ID (`cart_items.id`), not the item's. The
+ * same item can be in the cart at two services — Shirt / Wash & Iron and
+ * Shirt / Dry Clean are two lines — so an item id does not name one of them.
+ * The param was the item id, which is why updating one changed both.
+ */
+router.put('/cart/items/:cartItemId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authReq = req as AuthenticatedRequest;
     const { quantity, itemServiceType } = req.body;
     const cart = await updateItemQuantity(
       authReq.user!.id,
-      req.params.itemId,
+      req.params.cartItemId,
       quantity === undefined ? undefined : Number(quantity),
       itemServiceType
     );
@@ -313,10 +320,11 @@ router.put('/cart/items/:itemId', async (req: Request, res: Response, next: Next
   }
 });
 
-router.delete('/cart/items/:itemId', async (req: Request, res: Response, next: NextFunction) => {
+/** Removes ONE line. `:cartItemId` is the line's id — see the PUT above. */
+router.delete('/cart/items/:cartItemId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authReq = req as AuthenticatedRequest;
-    const cart = await removeItem(authReq.user!.id, req.params.itemId);
+    const cart = await removeItem(authReq.user!.id, req.params.cartItemId);
     sendSuccess(res, cart, 'Cart item removed');
   } catch (error) {
     next(error);
@@ -444,7 +452,17 @@ router.post('/orders', async (req: Request, res: Response, next: NextFunction) =
     // transaction; anything invalid throws with its own status code.
     // The number this session was proven on, from the verified token -- never
     // from the request body, which the caller controls.
-    const order = await createOrder(businessUserId, schedule, authReq.user?.mobile);
+    /*
+     * The Guest Laundry selection travels with the order, not with the cart:
+     * it describes THIS order (which room sent the bag), not the catalogue
+     * the cart was filled from. The service validates it against the cart's
+     * own laundry type and ignores it entirely for a Hotel order.
+     */
+    const order = await createOrder(businessUserId, schedule, authReq.user?.mobile, {
+      guestLaundryFor: req.body?.guestLaundryFor,
+      guestRoomNumber: req.body?.guestRoomNumber,
+      guestStaffDetails: req.body?.guestStaffDetails,
+    });
 
     logger.info(
       `[BusinessOrder] order created: ${order.order_number} (id ${order.id}) for user ${businessUserId}`

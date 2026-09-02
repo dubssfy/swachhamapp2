@@ -1,4 +1,5 @@
 import { BusinessOrderDetail } from '../services/businessOrderApi';
+import { guestLaundryLine } from './guestLaundryLabel';
 
 /**
  * The Business Order PDF's HTML, and nothing else.
@@ -115,6 +116,28 @@ export function buildBusinessOrderPdfHtml(
   logo: string | null
 ) {
     const { date, time } = formatDateTime(data.created_at);
+
+    /*
+     * GUEST LAUNDRY: WHO THE ORDER IS FOR.
+     *
+     * "Room Number: 205", or "Staff Laundry" on its own — the same string the
+     * Order Detail screen shows, from the same helper, so the document and
+     * the screen cannot disagree about one order.
+     *
+     * PRINTED AS A WHOLE LINE, with no key span. The cells around it are
+     * "Label: value" pairs, but a staff order must read "Staff Laundry" and
+     * nothing else — no "Laundry Type:" and no "Type:" — so the line carries
+     * its own wording and is rendered as one value.
+     *
+     * Empty string for a Hotel order, for an order placed before the field
+     * existed, and for any caller whose payload does not carry it (the Sorter
+     * screen shares this generator) — nothing is drawn at all in those cases,
+     * so no other document gains a blank cell.
+     */
+    const guestLine = guestLaundryLine(data);
+    const guestCell = guestLine
+      ? `<div class="cell"><span class="v">${escapeHtml(guestLine)}</span></div>`
+      : '';
 
     // NO AMOUNTS. A business order is weight-based from the business's
     // point of view: the price is an internal figure used to raise the
@@ -241,7 +264,16 @@ export function buildBusinessOrderPdfHtml(
               text-transform: uppercase; color: #2D6A4F; margin: 2px 0 0; }
   .brand { font-size: 26px; font-weight: 700; color: #2D6A4F; margin: 0; letter-spacing: 1px; }
   .tagline { display: block; font-size: 12px; color: #6B7280; font-weight: 400; letter-spacing: .4px; margin: 2px 0 0; }
-  .logo { width: 62px; height: 62px; object-fit: contain; }
+  /* 62px -> 82px: noticeably more present at the head of the page, still
+     comfortably under the 26px brand wordmark beside it and well inside the
+     header band, so nothing below it moves.
+     SQUARE BOX + object-fit:contain KEEPS THE ASPECT RATIO. The box is square
+     and the art is not, so contain letterboxes the image inside it rather
+     than stretching it — which is why width and height stay equal here
+     instead of one being tuned to the image.
+     NOTE: this whole stylesheet sits inside a TS template literal, so no
+     backtick may appear in these comments. */
+  .logo { width: 82px; height: 82px; object-fit: contain; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: #2D6A4F; margin: 22px 0 8px; }
   .grid { display: flex; flex-wrap: wrap; }
   .cell { width: 50%; padding: 5px 0; font-size: 12px; }
@@ -336,6 +368,7 @@ export function buildBusinessOrderPdfHtml(
     <div class="cell"><span class="k">Order Date:</span> <span class="v">${escapeHtml(date)}</span></div>
     <div class="cell"><span class="k">Order Time:</span> <span class="v">${escapeHtml(time)}</span></div>
     <div class="cell"><span class="k">Laundry Type:</span> <span class="v">${escapeHtml(LAUNDRY_LABEL[data.laundry_type || ''] || '-')}</span></div>
+    ${guestCell}
     <div class="cell"><span class="k">Order Type:</span> <span class="v">${escapeHtml(ORDER_LABEL[data.order_type || ''] || '-')}</span></div>
     <div class="cell"><span class="k">Items:</span> <span class="v">${escapeHtml(data.item_count)} (Qty ${escapeHtml(data.total_quantity)})</span></div>
 

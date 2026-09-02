@@ -122,6 +122,19 @@ export interface BusinessPickupSchedule {
   deliveryDate?: string | null;
   /** Delivery slot id, chosen independently of the pickup. Optional, as above. */
   deliverySlot?: string | null;
+  /**
+   * GUEST LAUNDRY ONLY: whether the order is for a room or for hotel staff.
+   *
+   * Compulsory on a Guest order and refused by the server without it. Left
+   * undefined for Hotel Laundry, which is never asked and where the server
+   * ignores it.
+   */
+  guestLaundryFor?: 'ROOM' | 'STAFF' | null;
+  /** The room, when `guestLaundryFor` is 'ROOM'. */
+  guestRoomNumber?: string | null;
+  /** The staff detail, when `guestLaundryFor` is 'STAFF'. Also compulsory. */
+  guestStaffDetails?: string | null;
+
   /*
    * `pickupNotes` and `serviceNotes` USED TO LIVE HERE and are gone.
    *
@@ -248,6 +261,18 @@ export interface BusinessOrderItem {
 export interface BusinessOrderDetail extends BusinessOrderSummary {
   business_name: string;
   contact_person_name: string | null;
+  /**
+   * GUEST LAUNDRY ONLY: whether this order is for a room or for hotel staff.
+   *
+   * NULL on every Hotel Laundry order and on every order placed before the
+   * field existed. Screens and documents show nothing for null rather than
+   * picking one of the two.
+   */
+  guest_laundry_for?: 'ROOM' | 'STAFF' | null;
+  /** The room, when `guest_laundry_for` is 'ROOM'. */
+  guest_room_number?: string | null;
+  /** The staff detail, when `guest_laundry_for` is 'STAFF'. */
+  guest_staff_details?: string | null;
   /**
    * The number this order was PLACED ON -- `orders.placed_by_mobile`.
    *
@@ -437,9 +462,18 @@ const realBusinessOrderApi = {
     return response.data;
   },
 
-  updateCartItem: async (itemId: string, quantity: number): Promise<ApiResponse<BusinessCart>> => {
+  /*
+   * THESE THREE TAKE THE CART LINE'S OWN ID (`BusinessCartItem.id`), NOT THE
+   * ITEM'S (`item_id`).
+   *
+   * The same item can be in the cart twice at different services — Shirt /
+   * Wash & Iron and Shirt / Dry Clean are two lines — so an item id names
+   * both of them, not one. Passing `item_id` here is what made deleting one
+   * delete both, and updating one update both.
+   */
+  updateCartItem: async (cartItemId: string, quantity: number): Promise<ApiResponse<BusinessCart>> => {
     const response = await apiClient.put<ApiResponse<BusinessCart>>(
-      `/api/businesses/cart/items/${itemId}`,
+      `/api/businesses/cart/items/${cartItemId}`,
       { quantity }
     );
     return response.data;
@@ -447,18 +481,18 @@ const realBusinessOrderApi = {
 
   /** Same endpoint as updateCartItem — the line's service instead of its quantity. */
   setCartItemService: async (
-    itemId: string,
+    cartItemId: string,
     itemServiceType: string
   ): Promise<ApiResponse<BusinessCart>> => {
     const response = await apiClient.put<ApiResponse<BusinessCart>>(
-      `/api/businesses/cart/items/${itemId}`,
+      `/api/businesses/cart/items/${cartItemId}`,
       { itemServiceType }
     );
     return response.data;
   },
 
-  removeCartItem: async (itemId: string): Promise<ApiResponse<BusinessCart>> => {
-    const response = await apiClient.delete<ApiResponse<BusinessCart>>(`/api/businesses/cart/items/${itemId}`);
+  removeCartItem: async (cartItemId: string): Promise<ApiResponse<BusinessCart>> => {
+    const response = await apiClient.delete<ApiResponse<BusinessCart>>(`/api/businesses/cart/items/${cartItemId}`);
     return response.data;
   },
 
@@ -569,6 +603,13 @@ const realBusinessOrderApi = {
         /* No `pickupNotes` / `serviceNotes` key at all — the Business flow no
            longer collects them. The endpoint treats an absent note as no
            note, so the request is valid exactly as it was before. */
+
+        /* GUEST LAUNDRY. Sent as null for a Hotel order, where the server
+           ignores both — a Hotel request is byte-for-byte as valid as it was
+           before these two keys existed. */
+        guestLaundryFor: schedule.guestLaundryFor || null,
+        guestRoomNumber: schedule.guestRoomNumber || null,
+        guestStaffDetails: schedule.guestStaffDetails || null,
       }
     );
     return response.data;

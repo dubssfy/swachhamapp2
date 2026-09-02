@@ -162,3 +162,80 @@ export function categoryLabel(
   if (!isGuest(laundryType) || !slug) return storedName;
   return LABEL_BY_SLUG.get(slug) ?? storedName;
 }
+
+/* ============================================================
+ * WHICH SERVICES AN ITEM OFFERS AT THE GUEST RATE
+ * ============================================================
+ *
+ * THE RULE, and it is the same one Hotel Laundry has followed since
+ * migration 052:
+ *
+ *   TOWELS      -> Wash & Fold, and nothing else
+ *   EVERYTHING   -> Wash & Iron, plus Dry Clean where the catalogue
+ *   ELSE            already says the item can be dry cleaned
+ *
+ * WHY THIS IS A RULE HERE AND NOT A MIGRATION. Guest Laundry reads the
+ * CUSTOMER catalogue -- `catalogueScope('guest')` is 'CUSTOMER' -- and those
+ * `services` rows and their `item_service_types` mappings are the SAME rows
+ * the customer app reads. Migration 052 deliberately moved every customer
+ * item onto Wash & Fold to preserve the customer app's own labels and prices,
+ * which is why Guest today offers "Wash & Fold" on a blazer. Rewriting those
+ * mappings would fix Guest by changing the Customer side, which is the one
+ * thing this must not do.
+ *
+ * So the mapping table is left exactly as it is, and the Guest rate applies
+ * this rule over the top of it -- the same way `guestCategoryFilter` narrows
+ * the categories and `categoryLabel` renames them. Hotel Laundry does not go
+ * through here at all and is untouched.
+ *
+ * A TOWEL IS `services.washing_group = 'TOWEL'`, the column the batch
+ * optimiser already sorts washing by and the one migration 052 keyed on --
+ * not a name match, because the name is free text.
+ */
+
+/** The service codes, spelled as `services.code` spells them. */
+export const WASH_FOLD = 'wash_fold';
+export const WASH_IRON = 'wash_iron';
+export const DRY_CLEAN = 'dry_clean';
+
+/**
+ * The services this item may be ordered for at the Guest rate.
+ *
+ * `mappedCodes` is what `item_service_types` says the item supports. It is
+ * consulted for ONE thing only -- whether Dry Clean is on offer -- because
+ * dry cleaning is a property of the garment, and a shirt the catalogue never
+ * marked dry-cleanable must not gain it here.
+ *
+ * Wash & Iron is added to every non-towel whether or not the mapping table
+ * has a row for it, which is the point: today only 6 of the 59 Guest items
+ * carry that row, and the rest would otherwise still show Wash & Fold.
+ *
+ * Returned in display order -- the wash service first, Dry Clean after --
+ * matching `services.display_order`.
+ */
+export function guestServiceCodes(
+  washingGroup: string | null | undefined,
+  mappedCodes: string[]
+): string[] {
+  if (String(washingGroup ?? '').toUpperCase() === 'TOWEL') {
+    // A towel is washed and folded. It is never ironed and never dry cleaned,
+    // so nothing is carried over from the mapping table.
+    return [WASH_FOLD];
+  }
+
+  return mappedCodes.includes(DRY_CLEAN) ? [WASH_IRON, DRY_CLEAN] : [WASH_IRON];
+}
+
+/**
+ * The same rule, applied only when the laundry type is Guest.
+ *
+ * Hotel Laundry gets its mapped codes back untouched, so every Hotel screen,
+ * cart and order behaves exactly as it did.
+ */
+export function serviceCodesFor(
+  laundryType: LaundryType | string | null | undefined,
+  washingGroup: string | null | undefined,
+  mappedCodes: string[]
+): string[] {
+  return isGuest(laundryType) ? guestServiceCodes(washingGroup, mappedCodes) : mappedCodes;
+}

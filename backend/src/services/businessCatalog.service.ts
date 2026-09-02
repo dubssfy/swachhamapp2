@@ -1,6 +1,12 @@
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
-import { catalogueScope, categoryLabel, guestCategoryFilter, isGuest } from './guestCatalogue';
+import {
+  catalogueScope,
+  categoryLabel,
+  guestCategoryFilter,
+  isGuest,
+  serviceCodesFor,
+} from './guestCatalogue';
 
 /**
  * WHICH CATALOGUE, AND WHY IT DEPENDS ON THE LAUNDRY TYPE.
@@ -108,6 +114,8 @@ export interface BusinessItem {
 
 interface ItemRow extends Omit<BusinessItem, 'service_types'> {
   service_types: string | null;
+  /** 'TOWEL' for a towel. Used only by the Guest service rule. */
+  washing_group: string | null;
   /**
    * The item's category slug and its parent's, selected only so the Guest
    * label can be applied. Neither reaches the API: both are destructured away
@@ -119,7 +127,7 @@ interface ItemRow extends Omit<BusinessItem, 'service_types'> {
 
 /** MySQL returns a SET as a comma string; the API exposes it as an array. */
 function toItem(row: ItemRow, laundryType: 'hotel' | 'guest'): BusinessItem {
-  const { category_slug, parent_category_slug, ...item } = row;
+  const { category_slug, parent_category_slug, washing_group, ...item } = row;
   return {
     ...item,
     // Same relabelling the category list applies, so an item's stated category
@@ -132,7 +140,20 @@ function toItem(row: ItemRow, laundryType: 'hotel' | 'guest'): BusinessItem {
     ),
     weight_kg: row.weight_kg === null ? null : Number(row.weight_kg),
     order_count: Number(row.order_count ?? 0),
-    service_types: (row.service_types || '').split(',').filter(Boolean),
+    /*
+     * WHICH SERVICES THIS ITEM OFFERS.
+     *
+     * Hotel Laundry gets the mapping table verbatim, exactly as before. GUEST
+     * gets the rule instead -- towels Wash & Fold, everything else Wash &
+     * Iron plus Dry Clean where the item already allows it -- because Guest
+     * reads the CUSTOMER catalogue, whose rows say "Wash & Fold" on a blazer
+     * for reasons that belong to the customer app. See `guestServiceCodes`.
+     */
+    service_types: serviceCodesFor(
+      laundryType,
+      washing_group,
+      (row.service_types || '').split(',').filter(Boolean)
+    ),
   };
 }
 
@@ -323,6 +344,10 @@ const ITEM_SELECT = `
             FROM item_service_types m
             JOIN services st ON st.id = m.service_id
            WHERE m.item_id = i.id AND st.is_active = true) AS service_types,
+         -- Read only so the Guest rule can tell a towel from everything else;
+         -- destructured away in toItem, so the item shape the app sees is
+         -- unchanged. (No backticks in here: this is a TS template literal.)
+         i.washing_group,
          ${ORDER_FREQUENCY} AS order_count,
          i.image_url, i.icon_name, i.is_active
     FROM services i
