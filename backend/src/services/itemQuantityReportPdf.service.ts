@@ -323,20 +323,71 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
       const closingX = left + ITEM_W + blockDates.length * DATE_W;
       const tableW = ITEM_W + blockDates.length * DATE_W + (isLastBlock ? closingW : 0);
 
+      let maxOrderLinesInBlock = 2;
+      blockDates.forEach((date) => {
+        const list = report.orders_by_date?.[date] || [];
+        if (list.length > 0) {
+          maxOrderLinesInBlock = Math.max(maxOrderLinesInBlock, 1 + list.length);
+        }
+      });
+      const blockHeadH = HEAD_H + (maxOrderLinesInBlock - 1) * 8;
+
       const head = (top: number): number => {
-        doc.rect(left, top, tableW, HEAD_H).fill(THEME.PRIMARY);
+        doc.rect(left, top, tableW, blockHeadH).fill(THEME.PRIMARY);
         doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(headFont);
-        doc.text('Item Name', left + 6, top + 6, {
+        doc.text('Item Name', left + 6, top + 5, {
           width: ITEM_W - 12, lineBreak: false, ellipsis: true,
         });
+
+        // Crisp vector downward arrow (↓) after Item Name
+        const w1 = doc.widthOfString('Item Name');
+        const arrow1X = left + 6 + w1 + 4;
+        if (arrow1X < left + ITEM_W - 4) {
+          doc.strokeColor('#FFFFFF').lineWidth(1)
+            .moveTo(arrow1X, top + 5.5).lineTo(arrow1X, top + 10.5).stroke()
+            .moveTo(arrow1X - 1.8, top + 8.8).lineTo(arrow1X, top + 11).lineTo(arrow1X + 1.8, top + 8.8).stroke();
+        }
+
+        doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(Math.min(headFont, 6.5));
+        doc.text('Order Number', left + 6, top + 13, {
+          width: ITEM_W - 12, lineBreak: false, ellipsis: true,
+        });
+
+        // Crisp vector rightward arrow (→) after Order Number
+        const w2 = doc.widthOfString('Order Number');
+        const arrow2X = left + 6 + w2 + 3;
+        const arrow2Y = top + 16;
+        if (arrow2X + 6 < left + ITEM_W - 4) {
+          doc.strokeColor('#FFFFFF').lineWidth(1)
+            .moveTo(arrow2X, arrow2Y).lineTo(arrow2X + 5, arrow2Y).stroke()
+            .moveTo(arrow2X + 3.5, arrow2Y - 1.8).lineTo(arrow2X + 5.2, arrow2Y).lineTo(arrow2X + 3.5, arrow2Y + 1.8).stroke();
+        }
         blockDates.forEach((date, i) => {
-          doc.text(dateHead(date), left + ITEM_W + i * DATE_W, top + 6, {
+          const dateStr = dateHead(date);
+          const orderNumbers = report.orders_by_date?.[date] || [];
+
+          doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(headFont);
+          doc.text(dateStr, left + ITEM_W + i * DATE_W, top + 5, {
             width: DATE_W - 3,
             align: 'right',
             lineBreak: false,
           });
+
+          orderNumbers.forEach((orderNo, orderIdx) => {
+            const yPos = top + 5 + (orderIdx + 1) * 8;
+            doc.fillColor('#FFFFFF');
+            figure(
+              orderNo,
+              left + ITEM_W + i * DATE_W,
+              yPos,
+              DATE_W - 3,
+              Math.min(headFont, 6.5),
+              false
+            );
+          });
         });
         if (isLastBlock) {
+          doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(headFont);
           doc.text('Total', closingX, top + 6, { width: TOTAL_W - 6, align: 'right' });
           // PDFKit's built-in fonts are WinAnsi and have no rupee glyph, so
           // the currency is stated in the heading rather than per figure.
@@ -346,7 +397,7 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
             align: 'right',
           });
         }
-        return top + HEAD_H;
+        return top + blockHeadH;
       };
 
       /*
@@ -359,7 +410,7 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
        */
       const blockH =
         (blocks.length > 1 ? 12 : 0) +
-        HEAD_H +
+        blockHeadH +
         report.rows.length * ROW_H +
         (ROW_H + 2) +
         BLOCK_GAP +
@@ -382,7 +433,7 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
        */
       if (
         y + blockH > bottomLimit &&
-        ((blockIndex > 0 && fitsOnAFreshPage) || y + HEAD_H + ROW_H * 2 > bottomLimit)
+        ((blockIndex > 0 && fitsOnAFreshPage) || y + blockHeadH + ROW_H * 2 > bottomLimit)
       ) {
         doc.addPage();
         y = MARGIN;

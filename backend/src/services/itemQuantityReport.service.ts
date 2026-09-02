@@ -108,6 +108,8 @@ export interface ItemQuantityReport {
    * columns would push the ones that matter off the page for no information.
    */
   dates: string[];
+  /** Map of date (YYYY-MM-DD) -> list of order_numbers on that date. */
+  orders_by_date?: Record<string, string[]>;
   rows: ItemQuantityRow[];
 
   /** Column totals, keyed by the same date keys. */
@@ -278,6 +280,30 @@ export async function buildItemQuantityReport(
   const grandTotal = rows.reduce((sum, row) => sum + row.total, 0);
   const amountTotal = money(rows.reduce((sum, row) => sum + row.amount, 0));
 
+  const ordersPerDateResult = await query<{ order_date: string; order_number: string }>(
+    `SELECT DATE_FORMAT(DATE(CONVERT_TZ(o.created_at, '+00:00', ?)), '%Y-%m-%d') AS order_date,
+            o.order_number
+       FROM orders o
+       JOIN business_users bu ON bu.id = o.business_user_id
+      WHERE bu.business_id = ?
+        AND o.status <> 'CANCELLED'
+        AND DATE(CONVERT_TZ(o.created_at, '+00:00', ?)) BETWEEN ? AND ?
+        ${laundryType ? 'AND o.laundry_type = ?' : ''}
+      ORDER BY o.created_at ASC`,
+    laundryType
+      ? [config.BUSINESS_TZ_OFFSET, businessId, config.BUSINESS_TZ_OFFSET, from, to, laundryType]
+      : [config.BUSINESS_TZ_OFFSET, businessId, config.BUSINESS_TZ_OFFSET, from, to]
+  );
+
+  const ordersByDate: Record<string, string[]> = {};
+  for (const row of ordersPerDateResult.rows) {
+    const d = String(row.order_date);
+    if (!ordersByDate[d]) ordersByDate[d] = [];
+    if (!ordersByDate[d].includes(row.order_number)) {
+      ordersByDate[d].push(row.order_number);
+    }
+  }
+
   const reportDateResult = await query<{ d: string }>(
     `SELECT DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?), '%Y-%m-%d') AS d`,
     [config.BUSINESS_TZ_OFFSET]
@@ -321,6 +347,7 @@ export async function buildItemQuantityReport(
     laundry_type_label: typeLabel,
 
     dates,
+    orders_by_date: ordersByDate,
     rows,
     totals_by_date: totalsByDate,
     grand_total: grandTotal,
