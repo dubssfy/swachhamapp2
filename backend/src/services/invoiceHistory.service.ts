@@ -100,47 +100,117 @@ const money = (value: unknown) => Number(value ?? 0);
  * fail an invoice that has otherwise been generated correctly. A failure is
  * logged by the caller and the invoice is still returned.
  */
+function getPeriodKey(pFrom: string, pTo: string, pCycle: string): string {
+  const c = (pCycle || 'MONTHLY').toUpperCase();
+  const fromMonth = pFrom.slice(0, 7);
+  const fromYear = pFrom.slice(0, 4);
+
+  if (c === 'QUARTERLY') {
+    const m = Number(pFrom.slice(5, 7));
+    const q = Math.floor((m - 1) / 3) + 1;
+    return `${fromYear}-Q${q}`;
+  }
+  if (c === 'HALF_YEARLY') {
+    const m = Number(pFrom.slice(5, 7));
+    const h = m <= 6 ? 1 : 2;
+    return `${fromYear}-H${h}`;
+  }
+  if (c === 'YEARLY') {
+    return `${fromYear}`;
+  }
+  if (c === 'WEEKLY' || c === 'FORTNIGHTLY') {
+    return `${pFrom}_${pTo}`;
+  }
+  return `${fromMonth}`;
+}
+
 export async function recordInvoice(
   invoice: GstInvoice,
   options: { cycle?: BillingCycle | null; generatedBy?: string | null } = {}
 ): Promise<void> {
-  const cycle = options.cycle ?? invoice.period.cycle ?? null;
+  const cycle = options.cycle ?? invoice.period.cycle ?? 'MONTHLY';
+  const businessId = invoice.customer.id;
+  const laundryType = invoice.laundry_type ?? null;
 
-  await query(
-    `INSERT INTO business_invoices
-       (invoice_number, business_id, period_from, period_to, billing_cycle,
-        laundry_type, discount_percent, taxable_amount, tax_amount, total_amount,
-        order_count, line_count, generated_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       -- The figures are refreshed so a regenerated invoice states what it
-       -- was regenerated as, but generated_at is left alone: the invoice
-       -- keeps the date it was first issued.
-       discount_percent = VALUES(discount_percent),
-       taxable_amount = VALUES(taxable_amount),
-       tax_amount     = VALUES(tax_amount),
-       total_amount   = VALUES(total_amount),
-       order_count    = VALUES(order_count),
-       line_count     = VALUES(line_count),
-       billing_cycle  = VALUES(billing_cycle),
-       period_from    = VALUES(period_from),
-       period_to      = VALUES(period_to)`,
-    [
-      invoice.invoice_number,
-      invoice.customer.id,
-      invoice.period.from,
-      invoice.period.to,
-      cycle ?? 'MONTHLY',
-      invoice.laundry_type,
-      invoice.totals.discount_percent,
-      invoice.totals.taxable_value,
-      invoice.totals.total_tax,
-      invoice.totals.grand_total,
-      invoice.orders.length,
-      invoice.lines.length,
-      options.generatedBy ?? null,
-    ]
+  // Find all existing invoices for this business and laundry_type
+  const existingRows = await query<{ id: number; period_from: unknown; period_to: unknown; billing_cycle: string }>(
+    `SELECT id, period_from, period_to, billing_cycle
+       FROM business_invoices
+      WHERE business_id = ?
+        AND (laundry_type = ? OR (laundry_type IS NULL AND ? IS NULL))
+      ORDER BY id DESC`,
+    [businessId, laundryType, laundryType]
   );
+
+  const targetKey = getPeriodKey(invoice.period.from, invoice.period.to, cycle);
+
+  let existingId: number | null = null;
+  for (const row of existingRows.rows) {
+    const rFrom = dateKey(row.period_from);
+    const rTo = dateKey(row.period_to);
+    const rKey = getPeriodKey(rFrom, rTo, row.billing_cycle || cycle);
+    if (rKey === targetKey) {
+      existingId = row.id;
+      break;
+    }
+  }
+
+  if (existingId !== null) {
+    await query(
+      `UPDATE business_invoices
+          SET invoice_number = ?,
+              period_from = ?,
+              period_to = ?,
+              billing_cycle = ?,
+              laundry_type = ?,
+              discount_percent = ?,
+              taxable_amount = ?,
+              tax_amount = ?,
+              total_amount = ?,
+              order_count = ?,
+              line_count = ?,
+              generated_by = COALESCE(?, generated_by)
+        WHERE id = ?`,
+      [
+        invoice.invoice_number,
+        invoice.period.from,
+        invoice.period.to,
+        cycle,
+        laundryType,
+        invoice.totals?.discount_percent ?? 0,
+        invoice.totals?.taxable_value ?? 0,
+        invoice.totals?.total_tax ?? 0,
+        invoice.totals?.grand_total ?? 0,
+        invoice.orders?.length ?? 0,
+        invoice.lines?.length ?? 0,
+        options.generatedBy ?? null,
+        existingId,
+      ]
+    );
+  } else {
+    await query(
+      `INSERT INTO business_invoices
+         (invoice_number, business_id, period_from, period_to, billing_cycle,
+          laundry_type, discount_percent, taxable_amount, tax_amount, total_amount,
+          order_count, line_count, generated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        invoice.invoice_number,
+        businessId,
+        invoice.period.from,
+        invoice.period.to,
+        cycle,
+        laundryType,
+        invoice.totals?.discount_percent ?? 0,
+        invoice.totals?.taxable_value ?? 0,
+        invoice.totals?.total_tax ?? 0,
+        invoice.totals?.grand_total ?? 0,
+        invoice.orders?.length ?? 0,
+        invoice.lines?.length ?? 0,
+        options.generatedBy ?? null,
+      ]
+    );
+  }
 }
 
 interface InvoiceRow {
@@ -255,23 +325,51 @@ export async function listInvoicesForBusiness(
   const rows = await query<InvoiceRow>(
     `${SELECT_INVOICE}
      WHERE i.business_id = ?
-     ORDER BY i.period_to DESC, i.id DESC
-     -- Interpolated, not bound: this driver refuses placeholders in LIMIT.
-     -- Both are clamped to integers above and neither comes from a string,
-     -- so there is nothing here for a caller to inject. Same convention as
-     -- notification.service and service.service.
-     LIMIT ${limit} OFFSET ${offset}`,
+     ORDER BY i.period_to DESC, i.id DESC`,
     [businessId]
   );
 
-  const counted = await query<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM business_invoices WHERE business_id = ?`,
-    [businessId]
-  );
+  const entries = rows.rows.map(toEntry);
+
+  const seen = new Map<string, InvoiceHistoryEntry>();
+  for (const entry of entries) {
+    const cycle = (entry.billing_cycle || 'MONTHLY').toUpperCase();
+    const laundry = entry.laundry_type || 'all';
+    const fromMonth = entry.period_from.slice(0, 7);
+    const fromYear = entry.period_from.slice(0, 4);
+
+    let periodKey = `${fromMonth}`;
+    if (cycle === 'QUARTERLY') {
+      const m = Number(entry.period_from.slice(5, 7));
+      const q = Math.floor((m - 1) / 3) + 1;
+      periodKey = `${fromYear}-Q${q}`;
+    } else if (cycle === 'HALF_YEARLY') {
+      const m = Number(entry.period_from.slice(5, 7));
+      const h = m <= 6 ? 1 : 2;
+      periodKey = `${fromYear}-H${h}`;
+    } else if (cycle === 'YEARLY') {
+      periodKey = `${fromYear}`;
+    } else if (cycle === 'WEEKLY' || cycle === 'FORTNIGHTLY') {
+      periodKey = `${entry.period_from}_${entry.period_to}`;
+    }
+
+    const uniqueKey = `${entry.business_id}_${cycle}_${laundry}_${periodKey}`;
+    if (!seen.has(uniqueKey)) {
+      seen.set(uniqueKey, entry);
+    } else {
+      const existing = seen.get(uniqueKey)!;
+      if (Number(entry.id) > Number(existing.id)) {
+        seen.set(uniqueKey, entry);
+      }
+    }
+  }
+
+  const deduplicated = Array.from(seen.values());
+  const paginated = deduplicated.slice(offset, offset + limit);
 
   return {
-    invoices: rows.rows.map(toEntry),
-    total: Number(counted.rows[0]?.n || 0),
+    invoices: paginated,
+    total: deduplicated.length,
   };
 }
 
