@@ -616,54 +616,52 @@ const MAPPED_SERVICE_TYPES_EXPR = `
 const SERVICE_TYPES_SELECT = `${MAPPED_SERVICE_TYPES_EXPR} AS service_types`;
 
 /* ===================================================================
- * THE GUEST SERVICE RULE, AS SQL
+ * EVERY SERVICE IS PRICEABLE AT THE GUEST RATE
  * ===================================================================
  *
- * At the GUEST rate a non-towel is offered Wash & Iron, never Wash & Fold —
- * `guestServiceCodes` in guestCatalogue.ts is the statement of that rule, and
- * the Guest catalogue, the Guest cart and the price WRITE check
- * (`assertServiceTypeForItem`) have all gone through it for some time.
+ * At the GUEST rate the price list offers ALL THREE services — Wash & Fold,
+ * Wash & Iron and Dry Clean — for every item, whatever the mapping table says
+ * and whatever the item's washing group is. That is a deliberate decision
+ * about the PRICE LIST, asked for so a rate can be entered for any service
+ * without first editing the catalogue.
  *
- * THE PRICE LIST READ PATH DID NOT. It drove its lines and its
- * `service_types` straight off `item_service_types`, which is the raw
- * mapping table, and the mapping table has not been reorganised for the Guest
- * rule — deliberately, because HOTEL still reads it and must keep reading it.
- * On this database that meant, of 240 active non-towel items:
+ * WHAT IT REPLACED. The list used to be driven straight off
+ * `item_service_types`, the raw mapping table, which on this database left
+ * the Guest rate with, of 240 active non-towel items:
  *
- *   86  mapped to wash_fold  -> the Guest price list offered them "Wash &
- *                               Fold", a service a Guest order cannot place.
- *                               Shirt, Trouser, Jeans, Blazer and so on.
- *   90  with no wash_iron    -> their "Wash & Iron" line was missing
- *                               altogether, so the service the Guest rate
- *                               DOES bill could not be priced against it.
+ *   86  mapped to wash_fold  -> shown as "Wash & Fold"
+ *   90  with no wash_iron    -> no "Wash & Iron" line at all, so the service
+ *                               could not be priced against it
  *
- * So the rule is applied here too, over the top of the mapping table, exactly
- * as the catalogue applies it. The mapping table is not touched and Hotel
- * does not come through these helpers at all.
+ * Both of those are gone: every item now carries one line per service.
  *
- * `mappedCodes` is still consulted for ONE thing — whether Dry Clean is on
- * offer — because dry cleaning is a property of the garment and an item the
- * catalogue never marked dry-cleanable must not gain it here. That is the
- * same single consultation `guestServiceCodes` makes.
+ * WHAT THIS DOES NOT CHANGE, AND IT MATTERS.
+ *
+ * `guestServiceCodes` in guestCatalogue.ts — the rule that a guest ORDERS a
+ * towel as Wash & Fold and everything else as Wash & Iron — is untouched, and
+ * so are the Guest catalogue and the Guest cart. So a Wash & Fold rate
+ * entered here against a non-towel is stored and displayed, but a guest
+ * cannot place that order, and the rate would therefore never be billed. It
+ * is priceable, not orderable. Making it orderable is a separate change to
+ * the catalogue rule, and a much wider one.
+ *
+ * HOTEL DOES NOT COME THROUGH HERE AT ALL and still reads the mapping table
+ * verbatim, so a towel is still Wash & Fold there and a shirt is not.
  */
 
 /**
- * Matches the service-type rows a GUEST order may be placed for, for the item
- * aliased `i`. `serviceAlias` is the `services` row being tested.
+ * Matches the service-type rows the GUEST price list offers for the item
+ * aliased `i` — which is now every active one.
+ *
+ * Kept as a function, rather than folded away, because it is the single place
+ * the Guest rate's answer to "which services can be priced" is given: the
+ * line join and the `service_types` list both call it, so they cannot drift,
+ * and narrowing it again later is an edit to one expression.
  */
-function guestServiceMatch(serviceAlias: string, itemAlias = 'i'): string {
-  const towel = `UPPER(COALESCE(${itemAlias}.washing_group, '')) = 'TOWEL'`;
-  return `(
-        (${towel} AND ${serviceAlias}.code = 'wash_fold')
-     OR (NOT (${towel}) AND ${serviceAlias}.code = 'wash_iron')
-     OR (NOT (${towel}) AND ${serviceAlias}.code = 'dry_clean'
-         AND EXISTS (SELECT 1
-                       FROM item_service_types gm
-                       JOIN services gx ON gx.id = gm.service_id
-                      WHERE gm.item_id = ${itemAlias}.id
-                        AND gx.code = 'dry_clean'
-                        AND gx.kind = 'SERVICE_TYPE' AND gx.is_active = true))
-      )`;
+function guestServiceMatch(serviceAlias: string, _itemAlias = 'i'): string {
+  // Every active service type. The alias is still referenced so the caller's
+  // join stays well-formed and the shape is ready for a narrower rule.
+  return `(${serviceAlias}.id IS NOT NULL)`;
 }
 
 /**
@@ -1474,31 +1472,27 @@ async function assertServiceTypeForItem(
   }
 
   if (isGuest(laundryType)) {
-    const service = await query<{ code: string }>(
-      `SELECT code FROM services
+    /*
+     * ANY ACTIVE SERVICE TYPE MAY BE PRICED AT THE GUEST RATE.
+     *
+     * This used to run the incoming service through `serviceCodesFor`, so a
+     * non-towel could not be priced on Wash & Fold. The Guest price list now
+     * OFFERS all three services for every item (see the note above
+     * `guestServiceMatch`), and a picker that offers a service the save then
+     * refuses is worse than either behaviour on its own — so the check is the
+     * one thing it still has to be: that the service exists and is live.
+     *
+     * The ORDERING rule is untouched. `guestServiceCodes` still decides what
+     * a guest may actually order, so a Wash & Fold rate on a non-towel is
+     * stored and shown but never billed. That is the accepted consequence of
+     * making every service priceable here.
+     */
+    const service = await query<{ id: string }>(
+      `SELECT id FROM services
         WHERE id = ? AND kind = 'SERVICE_TYPE' AND is_active = true`,
       [raw]
     );
-    const code = service.rows[0]?.code;
-
-    const item = await query<{ washing_group: string | null }>(
-      `SELECT washing_group FROM services WHERE id = ?`,
-      [itemId]
-    );
-    const mapped = await query<{ code: string }>(
-      `SELECT st.code
-         FROM item_service_types m
-         JOIN services st ON st.id = m.service_id
-        WHERE m.item_id = ? AND st.kind = 'SERVICE_TYPE' AND st.is_active = true`,
-      [itemId]
-    );
-
-    const allowed = serviceCodesFor(
-      'guest',
-      item.rows[0]?.washing_group ?? null,
-      mapped.rows.map((row) => row.code)
-    );
-    if (!code || !allowed.includes(code)) {
+    if (!service.rows[0]) {
       throw new AppError(
         'That service type is not available for this item. Price it for a service the item is offered for, or leave the service blank to set one rate for every service.',
         400
