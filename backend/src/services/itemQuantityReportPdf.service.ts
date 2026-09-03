@@ -2,7 +2,16 @@ import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
 import { ItemQuantityReport } from './itemQuantityReport.service';
-import { THEME, LOGO_SIZE, logoPath, inr, dmy, periodFileNamePart, safeFileNamePart } from './pdfTheme';
+import {
+  THEME,
+  LOGO_SIZE,
+  logoPath,
+  drawPageWatermark,
+  inr,
+  dmy,
+  periodFileNamePart,
+  safeFileNamePart,
+} from './pdfTheme';
 
 /**
  * Renders the Order Summary to PDF, on the server.
@@ -76,6 +85,37 @@ const TOTAL_W = 36;
 const RATE_W = 44;
 const AMOUNT_W = 60;
 
+/*
+ * ------------------------------------------------------------------
+ * FILLING THE PAGE
+ * ------------------------------------------------------------------
+ *
+ * The two constants above `DATE_W_MAX` and `ITEM_W_MAX` are COMFORTABLE
+ * widths, not maxima for the sheet — and treating them as maxima is what left
+ * the sheet with a blank strip down its right-hand side. A week of dates was
+ * laid out as 148 + 7x44 + 140 = 596pt of table on 802pt of printable width:
+ * a quarter of the page, blank, on every page of the document.
+ *
+ * The two below are the ceilings the fill pass may grow to once the
+ * comfortable widths have been assigned. Every point between the two goes
+ * back to the columns that can use it — the date grid first, then the item
+ * name, which is the column that ellipsises and so gains the most from width.
+ *
+ * A long period never reaches them: it is already using the whole width, its
+ * slack is nil, and the fill pass changes nothing about it.
+ */
+
+/** A date column may grow to this once the comfortable width is met. */
+const DATE_W_FILL = 72;
+/**
+ * And the item name to this.
+ *
+ * Deliberately not unbounded. A report with one or two date columns cannot
+ * fill the sheet however the width is shared out, and a 600pt column holding
+ * "Bath Towel" reads worse than an honest margin does.
+ */
+const ITEM_W_FILL = 320;
+
 /** Below this column width the grid switches to its dense font and day-only heads. */
 const DENSE_BELOW = 30;
 
@@ -147,7 +187,23 @@ function chunkDates(dates: string[], perBlock: number): string[][] {
 
 export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: MARGIN });
+    /*
+     * NO AUTOMATIC FIRST PAGE, so the watermark handler can be attached
+     * before any page exists. PDFKit creates the first page during
+     * construction, which would fire `pageAdded` before there is a listener
+     * for it — page one would be the single page in the document with no
+     * watermark. Adding it by hand below means every page, first included,
+     * goes through the identical path, and so does every page PDFKit adds
+     * itself when the grid overflows.
+     */
+    const doc = new PDFDocument({
+      size: 'A4',
+      layout: 'landscape',
+      margin: MARGIN,
+      autoFirstPage: false,
+    });
+    doc.on('pageAdded', () => drawPageWatermark(doc));
+    doc.addPage();
     const chunks: Buffer[] = [];
 
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -167,11 +223,48 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
      */
     const closingW = TOTAL_W + RATE_W + AMOUNT_W;
     const plan = planColumns(report.dates.length, width - ITEM_W_MIN - closingW);
-    const DATE_W = plan.dateW;
+    let DATE_W = plan.dateW;
     // Whatever the dates did not need goes back to the item name, up to its
     // full width — a short period gets roomy names, a month gets ellipsis.
-    const ITEM_W = Math.min(ITEM_W_MAX, ITEM_W_MIN + plan.itemBonus);
+    let ITEM_W = Math.min(ITEM_W_MAX, ITEM_W_MIN + plan.itemBonus);
     const blocks = chunkDates(report.dates, plan.perBlock);
+
+    /*
+     * ---------------------------------------------------------------
+     * THE FILL PASS — spend the width the plan left on the table
+     * ---------------------------------------------------------------
+     *
+     * MEASURED AGAINST THE WIDEST BLOCK, not against one of them. Blocks do
+     * not all have the same width: every block but the last carries
+     * `perBlock` date columns, while the last carries the remainder PLUS the
+     * three closing money columns. Growing to fit one of those can overflow
+     * the other, so the widest is what the growth is bounded by, and the
+     * page can then hold every block.
+     */
+    const widestBlock = (itemW: number, dateW: number) =>
+      Math.max(
+        ...blocks.map(
+          (block, index) =>
+            itemW +
+            block.length * dateW +
+            (index === blocks.length - 1 ? closingW : 0)
+        )
+      );
+
+    /*
+     * Growing a date column by one point widens a block by as many points as
+     * it has date columns, so the largest block's count is the exchange rate
+     * the growth is divided by. It is the largest, so no block can overflow.
+     */
+    const widestDateCount = Math.max(1, ...blocks.map((block) => block.length));
+
+    // 1. The date grid, up to its fill ceiling.
+    const dateRoom = Math.max(0, width - widestBlock(ITEM_W, DATE_W));
+    DATE_W += Math.max(0, Math.min(DATE_W_FILL - DATE_W, dateRoom / widestDateCount));
+
+    // 2. Then the item name, which ellipsises and so gains most from the rest.
+    const itemRoom = Math.max(0, width - widestBlock(ITEM_W, DATE_W));
+    ITEM_W += Math.max(0, Math.min(ITEM_W_FILL - ITEM_W, itemRoom));
 
     /*
      * A dense grid drops to a smaller figure font and to DAY-ONLY headings.
@@ -182,9 +275,20 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
     const oneMonth =
       report.dates.length > 0 &&
       new Set(report.dates.map((d) => d.slice(0, 7))).size === 1;
-    const useDayOnly = plan.dense && oneMonth;
-    const gridFont = plan.dense ? 7 : 8.5;
-    const headFont = plan.dense ? 6.8 : 8;
+    /*
+     * DENSE IS DECIDED ON THE FINAL COLUMN WIDTH, not on the planned one.
+     *
+     * `plan.dense` was measured before the fill pass widened the columns. A
+     * grid that was cramped at 26pt and is now 72pt would still have been set
+     * in the 7pt figure font and headed "21" instead of "21-08" — small type
+     * in a wide column, which is the opposite of what the extra width was
+     * taken for. Re-reading it here is what lets a widened grid also be a
+     * readable one.
+     */
+    const dense = DATE_W < DENSE_BELOW;
+    const useDayOnly = dense && oneMonth;
+    const gridFont = dense ? 7 : 8.5;
+    const headFont = dense ? 6.8 : 8;
     const dateHead = (iso: string) => (useDayOnly ? dayOnly(iso) : dm(iso));
 
     /**

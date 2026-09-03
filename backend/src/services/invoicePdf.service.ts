@@ -5,8 +5,7 @@ import {
   THEME,
   LOGO_SIZE,
   logoPath,
-  watermarkPath,
-  WATERMARK_OPACITY,
+  drawPageWatermark,
   inr,
   dmy,
   periodFileNamePart,
@@ -53,58 +52,14 @@ const BAND = THEME.BAND;
 
 const MARGIN = 36;
 
-/**
- * Draws the faint brand mark behind everything else on the current page.
+/*
+ * THE WATERMARK NOW LIVES IN `pdfTheme` as `drawPageWatermark`.
  *
- * CALLED FROM `pageAdded`, WHICH IS WHY IT IS THE FIRST THING ON EVERY PAGE.
- * PDFKit paints in call order with no z-index, so "behind the content" means
- * "before the content" — and a page that PDFKit creates on its own, when a
- * table overflows, fires the same event and so gets the same watermark. There
- * is no page in the document this can miss.
- *
- * It is drawn INSIDE `save`/`restore` and puts `doc.x`/`doc.y` back where it
- * found them, because those two are not part of the graphics state: leaving
- * them moved would shift the first thing written on the new page.
+ * It was defined here and used only by this document. The Order Summary needs
+ * the identical behaviour — same asset, same alpha, same centred `fit` box —
+ * so it moved beside the palette rather than being copied into a second file.
+ * Nothing about what this document draws changed with the move.
  */
-function drawWatermark(doc: PDFKit.PDFDocument): void {
-  const mark = watermarkPath();
-  if (!mark) return;
-
-  const { width: pw, height: ph } = doc.page;
-  // Big enough to read as the brand, short of the margins so it never tucks
-  // under the header band or the tear-off strip.
-  const box = Math.min(pw, ph) * 0.55;
-  const x = doc.x;
-  const y = doc.y;
-
-  try {
-    doc.save();
-    doc.opacity(WATERMARK_OPACITY);
-    /*
-     * `fit` scales INSIDE the box and never stretches, so the mark keeps its
-     * own proportions whatever box it is given; `align`/`valign` then centre
-     * what that produced. Passing a width and a height instead is what would
-     * distort it.
-     */
-    doc.image(mark, (pw - box) / 2, (ph - box) / 2, {
-      fit: [box, box],
-      align: 'center',
-      valign: 'center',
-    });
-    doc.opacity(1);
-    doc.restore();
-  } catch {
-    // A missing or unreadable mark must never cost the invoice its page.
-    try {
-      doc.restore();
-    } catch {
-      /* nothing to unwind */
-    }
-  }
-
-  doc.x = x;
-  doc.y = y;
-}
 
 /**
  * The tax invoice's file name.
@@ -201,7 +156,7 @@ export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
      * goes through the identical path.
      */
     const doc = new PDFDocument({ size: 'A4', margin: MARGIN, autoFirstPage: false });
-    doc.on('pageAdded', () => drawWatermark(doc));
+    doc.on('pageAdded', () => drawPageWatermark(doc));
     doc.addPage();
     const chunks: Buffer[] = [];
 

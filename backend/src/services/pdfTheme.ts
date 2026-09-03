@@ -84,6 +84,76 @@ export function watermarkPath(): string | null {
 }
 
 /**
+ * How much of the page's short side the mark is drawn across.
+ *
+ * Large enough to read as the brand from arm's length, and short of the
+ * margins on both documents so it never tucks under a header band or a
+ * tear-off strip. Applied to the SHORT side, so one number works for the
+ * portrait invoice and the landscape Order Summary alike.
+ */
+export const WATERMARK_SCALE = 0.55;
+
+/**
+ * Draws the faint brand mark behind everything else on the current page.
+ *
+ * CALL IT FROM `pageAdded`, WHICH IS WHY IT ENDS UP BEHIND THE CONTENT.
+ * PDFKit paints in call order and PDF has no z-index, so "behind" means
+ * "first" — and a page PDFKit creates on its own, when a table overflows,
+ * fires the same event and so gets the same watermark. There is no page in a
+ * document wired this way that this can miss.
+ *
+ * The caller must construct its document with `autoFirstPage: false` and add
+ * page one by hand, or the constructor fires `pageAdded` before any listener
+ * exists and page one is the single page with no mark.
+ *
+ * It is drawn INSIDE `save`/`restore` and puts `doc.x`/`doc.y` back where it
+ * found them, because those two are not part of the graphics state: leaving
+ * them moved would shift the first thing written on the new page.
+ *
+ * SHARED BY THE TAX INVOICE AND THE ORDER SUMMARY. It lives here for the same
+ * reason the palette does — the two are one company's pair, and a watermark
+ * tuned in one file and missed in the other is exactly the drift this module
+ * exists to prevent.
+ */
+export function drawPageWatermark(doc: PDFKit.PDFDocument): void {
+  const mark = watermarkPath();
+  if (!mark) return;
+
+  const { width: pw, height: ph } = doc.page;
+  const box = Math.min(pw, ph) * WATERMARK_SCALE;
+  const x = doc.x;
+  const y = doc.y;
+
+  try {
+    doc.save();
+    doc.opacity(WATERMARK_OPACITY);
+    /*
+     * `fit` scales INSIDE the box and never stretches, so the mark keeps its
+     * own proportions whatever box it is given; `align`/`valign` then centre
+     * what that produced. Passing a width and a height instead is what would
+     * distort it.
+     */
+    doc.image(mark, (pw - box) / 2, (ph - box) / 2, {
+      fit: [box, box],
+      align: 'center',
+      valign: 'center',
+    });
+    doc.opacity(1);
+    doc.restore();
+  } catch {
+    // A missing or unreadable mark must never cost the document its page.
+    try {
+      doc.restore();
+    } catch {
+      /* nothing to unwind */
+    }
+  }
+
+  doc.x = x;
+  doc.y = y;
+}
+
+/**
  * The first of these asset names that exists, checked in both the layouts the
  * backend runs under: from the repo (`backend/` as cwd, assets in the sibling
  * mobile app) and from a deployment that ships its own `assets/`.

@@ -605,12 +605,125 @@ async function lookupBusinessPrice(
  * CUSTOMER PRICE LIST  — super admin CRUD
  * =================================================================== */
 
-const SERVICE_TYPES_SELECT = `
+/** The codes the mapping table holds for the item aliased `i`. */
+const MAPPED_SERVICE_TYPES_EXPR = `
             (SELECT GROUP_CONCAT(st.code ORDER BY st.display_order ASC, st.name ASC)
                FROM item_service_types m
                JOIN services st ON st.id = m.service_id
               WHERE m.item_id = i.id AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
-            ) AS service_types`;
+            )`;
+
+const SERVICE_TYPES_SELECT = `${MAPPED_SERVICE_TYPES_EXPR} AS service_types`;
+
+/* ===================================================================
+ * THE GUEST SERVICE RULE, AS SQL
+ * ===================================================================
+ *
+ * At the GUEST rate a non-towel is offered Wash & Iron, never Wash & Fold —
+ * `guestServiceCodes` in guestCatalogue.ts is the statement of that rule, and
+ * the Guest catalogue, the Guest cart and the price WRITE check
+ * (`assertServiceTypeForItem`) have all gone through it for some time.
+ *
+ * THE PRICE LIST READ PATH DID NOT. It drove its lines and its
+ * `service_types` straight off `item_service_types`, which is the raw
+ * mapping table, and the mapping table has not been reorganised for the Guest
+ * rule — deliberately, because HOTEL still reads it and must keep reading it.
+ * On this database that meant, of 240 active non-towel items:
+ *
+ *   86  mapped to wash_fold  -> the Guest price list offered them "Wash &
+ *                               Fold", a service a Guest order cannot place.
+ *                               Shirt, Trouser, Jeans, Blazer and so on.
+ *   90  with no wash_iron    -> their "Wash & Iron" line was missing
+ *                               altogether, so the service the Guest rate
+ *                               DOES bill could not be priced against it.
+ *
+ * So the rule is applied here too, over the top of the mapping table, exactly
+ * as the catalogue applies it. The mapping table is not touched and Hotel
+ * does not come through these helpers at all.
+ *
+ * `mappedCodes` is still consulted for ONE thing — whether Dry Clean is on
+ * offer — because dry cleaning is a property of the garment and an item the
+ * catalogue never marked dry-cleanable must not gain it here. That is the
+ * same single consultation `guestServiceCodes` makes.
+ */
+
+/**
+ * Matches the service-type rows a GUEST order may be placed for, for the item
+ * aliased `i`. `serviceAlias` is the `services` row being tested.
+ */
+function guestServiceMatch(serviceAlias: string, itemAlias = 'i'): string {
+  const towel = `UPPER(COALESCE(${itemAlias}.washing_group, '')) = 'TOWEL'`;
+  return `(
+        (${towel} AND ${serviceAlias}.code = 'wash_fold')
+     OR (NOT (${towel}) AND ${serviceAlias}.code = 'wash_iron')
+     OR (NOT (${towel}) AND ${serviceAlias}.code = 'dry_clean'
+         AND EXISTS (SELECT 1
+                       FROM item_service_types gm
+                       JOIN services gx ON gx.id = gm.service_id
+                      WHERE gm.item_id = ${itemAlias}.id
+                        AND gx.code = 'dry_clean'
+                        AND gx.kind = 'SERVICE_TYPE' AND gx.is_active = true))
+      )`;
+}
+
+/**
+ * `service_types` for one item — the codes the dropdown offers.
+ *
+ * Hotel keeps the mapping table verbatim, so its listing is unchanged.
+ */
+const GUEST_SERVICE_TYPES_EXPR = `
+            (SELECT GROUP_CONCAT(gst.code ORDER BY gst.display_order ASC, gst.name ASC)
+               FROM services gst
+              WHERE gst.kind = 'SERVICE_TYPE' AND gst.is_active = true
+                AND ${guestServiceMatch('gst')}
+            )`;
+
+function serviceTypesSelect(laundryType?: LaundryType | string | null): string {
+  return isGuest(laundryType)
+    ? `${GUEST_SERVICE_TYPES_EXPR} AS service_types`
+    : SERVICE_TYPES_SELECT;
+}
+
+/**
+ * The same choice made in SQL, for a query whose laundry type is a COLUMN
+ * rather than something the caller knew in advance — a single stored price
+ * row carries its own `laundry_type`, and it is that row's rate which decides
+ * which services its item is offered for.
+ */
+function serviceTypesSelectFromColumn(laundryColumn: string): string {
+  return `CASE WHEN ${laundryColumn} = 'guest'
+                    THEN ${GUEST_SERVICE_TYPES_EXPR}
+                    ELSE ${MAPPED_SERVICE_TYPES_EXPR}
+               END AS service_types`;
+}
+
+/**
+ * The join that produces ONE LINE PER SERVICE the item is offered for.
+ *
+ * Hotel joins the mapping table, exactly as before. Guest joins the service
+ * types the rule allows, so a Shirt gets its Wash & Iron line whether or not
+ * the mapping table ever carried that row, and gets no Wash & Fold line even
+ * though the mapping table says it has one.
+ *
+ * Both forms are LEFT joins and neither filters in the WHERE clause, so an
+ * item with no services at all still produces exactly one line — which is
+ * what keeps its base rate on screen and editable.
+ */
+function serviceLineJoin(laundryType: LaundryType): string {
+  if (isGuest(laundryType)) {
+    return `
+       LEFT JOIN services st
+              ON st.kind = 'SERVICE_TYPE' AND st.is_active = true
+             AND ${guestServiceMatch('st')}`;
+  }
+  return `
+       LEFT JOIN item_service_types m
+              ON m.item_id = i.id
+             AND EXISTS (SELECT 1 FROM services x
+                          WHERE x.id = m.service_id
+                            AND x.kind = 'SERVICE_TYPE' AND x.is_active = true)
+       LEFT JOIN services st ON st.id = m.service_id`;
+}
 
 
 /**
@@ -1187,7 +1300,7 @@ async function listBusinessPrices(
             -- The base row's own identity, so the extra line built for it in
             -- expandBaseRateLines can be edited and removed like any other.
             base.id AS base_price_id, base.is_active AS base_is_active,
-            ${SERVICE_TYPES_SELECT},
+            ${serviceTypesSelect(laundryType)},
             p.created_at, p.updated_at
        FROM services i
        LEFT JOIN service_categories c ON c.id = i.category_id
@@ -1209,18 +1322,16 @@ async function listBusinessPrices(
         * services that had already been priced — so the first price for a
         * service could never be entered against the line it belongs to.
         *
-        * The item_service_types join is filtered to real, active
-        * SERVICE_TYPEs inside the join itself
-        * rather than in the WHERE clause: an item with no services at all
-        * must still produce exactly one line, and a WHERE filter would drop
-        * it from the list entirely.
-        */
-       LEFT JOIN item_service_types m
-              ON m.item_id = i.id
-             AND EXISTS (SELECT 1 FROM services x
-                          WHERE x.id = m.service_id
-                            AND x.kind = 'SERVICE_TYPE' AND x.is_active = true)
-       LEFT JOIN services st ON st.id = m.service_id
+        * The join is filtered to real, active SERVICE_TYPEs inside the join
+        * itself rather than in the WHERE clause: an item with no services at
+        * all must still produce exactly one line, and a WHERE filter would
+        * drop it from the list entirely.
+        *
+        * WHICH SERVICES THOSE ARE DEPENDS ON THE RATE. Hotel reads the
+        * mapping table; Guest reads the Guest service rule over the top of
+        * it. See serviceLineJoin -- and note that this whole query is a TS
+        * template literal, so no backtick may appear in these comments.
+        */${serviceLineJoin(laundryType)}
        /*
         * THIS SERVICE'S OWN RATE.
         *
@@ -1281,7 +1392,8 @@ const BUSINESS_PRICE_SELECT = `
             ) AS customer_price,
             p.price, p.is_active, i.is_active AS item_is_active,
             p.service_id, st.name AS service_name,
-            ${SERVICE_TYPES_SELECT},
+            -- This row's own rate decides the rule; see the helper.
+            ${serviceTypesSelectFromColumn('p.laundry_type')},
             p.created_at, p.updated_at
        FROM business_price_list p
        JOIN services i ON i.id = p.item_id
@@ -1588,7 +1700,14 @@ export interface PriceableItem {
  * so a newly created item comes back in exactly the shape the picker already
  * renders.
  */
-const PRICEABLE_ITEM_SELECT = `
+/**
+ * Takes the rate the picker was opened for, because `service_types` is what
+ * the Add Price dropdown offers: opened for Guest Laundry it must offer the
+ * services a Guest order can actually be placed for, or the operator picks
+ * Wash & Fold for a shirt and the save is refused by
+ * `assertServiceTypeForItem` — which has applied the Guest rule all along.
+ */
+const priceableItemSelect = (laundryType?: LaundryType | string | null) => `
   SELECT i.id, i.name, i.category_id, c.name AS category_name, c.slug AS category_slug,
          c.parent_id AS parent_category_id, pc.name AS parent_category_name,
          pc.slug AS parent_category_slug,
@@ -1599,7 +1718,7 @@ const PRICEABLE_ITEM_SELECT = `
             asked whether the item has ANY customer price. */
          EXISTS (SELECT 1 FROM customer_price_list cp
                   WHERE cp.item_id = i.id) AS has_customer_price,
-         ${SERVICE_TYPES_SELECT}
+         ${serviceTypesSelect(laundryType)}
     FROM services i
     LEFT JOIN service_categories c ON c.id = i.category_id
     LEFT JOIN service_categories pc ON pc.id = c.parent_id`;
@@ -1692,7 +1811,7 @@ async function listPriceableItems(
     values.push(`%${options.search}%`);
   }
   if (options.unpricedOnly) {
-    // The join it used to read is gone; see PRICEABLE_ITEM_SELECT.
+    // The join it used to read is gone; see priceableItemSelect.
     conditions.push(
       'NOT EXISTS (SELECT 1 FROM customer_price_list cp WHERE cp.item_id = i.id)'
     );
@@ -1701,7 +1820,7 @@ async function listPriceableItems(
   const result = await query<
     Omit<PriceableItem, 'service_types'> & { service_types: string | null }
   >(
-    `${PRICEABLE_ITEM_SELECT}
+    `${priceableItemSelect(options.laundryType)}
       WHERE ${conditions.join(' AND ')}
       ${PRICE_LIST_ORDER}
       LIMIT 500`,
@@ -1713,7 +1832,7 @@ async function listPriceableItems(
 
 /** One catalogue item in the same shape the pickers already read. */
 async function getPriceableItemById(itemId: string | number): Promise<PriceableItem> {
-  const result = await query<any>(`${PRICEABLE_ITEM_SELECT} WHERE i.id = ?`, [itemId]);
+  const result = await query<any>(`${priceableItemSelect()} WHERE i.id = ?`, [itemId]);
   const row = result.rows[0];
   if (!row) throw new AppError('Item not found.', 404);
   return toPriceableItem(row);

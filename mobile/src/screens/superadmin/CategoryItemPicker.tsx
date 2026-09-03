@@ -362,6 +362,27 @@ export default function CategoryItemPicker({
  * subcategory." — and its message is rendered verbatim, so the form can never
  * claim something different from what the server decided.
  */
+/**
+ * THE THREE LAUNDRY SERVICES, as the whole app spells them.
+ *
+ *   wash_fold   Wash & Fold   the TOWEL service
+ *   wash_iron   Wash & Iron   everything that is not a towel
+ *   dry_clean   Dry Clean     everything that is not a towel
+ *
+ * All three are offered here whatever price list the picker was opened from,
+ * because this form creates a CATALOGUE item and there is one catalogue: the
+ * same item appears on the Customer list and on both Business rates. Which of
+ * them a given rate then shows is decided per rate — at the Guest rate a
+ * non-towel is shown Wash & Iron even where the mapping says Wash & Fold —
+ * so choosing all three here is a statement about the item, not about any one
+ * price list.
+ */
+const SERVICE_OPTIONS: Array<{ code: string; label: string; meta: string }> = [
+  { code: 'wash_fold', label: 'Wash & Fold', meta: 'Towels' },
+  { code: 'wash_iron', label: 'Wash & Iron', meta: 'Everything else' },
+  { code: 'dry_clean', label: 'Dry Clean', meta: 'Where the garment allows it' },
+];
+
 function CreateItemSheet({
   visible, categoryName, subcategoryName, categoryId, subcategoryId, targetCategoryId,
   onClose, onCreated,
@@ -378,12 +399,37 @@ function CreateItemSheet({
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  /**
+   * WHICH LAUNDRY SERVICES THE NEW ITEM IS OFFERED FOR.
+   *
+   * All three start selected, which is exactly what the server did when the
+   * form sent nothing: `createCatalogueItem` maps an item with no services
+   * named to EVERY active service, because an item with no mapping at all is
+   * priced, active and still invisible at order time. So a user who ignores
+   * this control gets the behaviour the form has always had — the control
+   * only adds the ability to narrow it at creation instead of editing it
+   * afterwards.
+   *
+   * The codes are the three the whole app is built on. They are written here
+   * rather than fetched so the form can be filled in before, or without, a
+   * round trip; the server still validates every code it is sent and refuses
+   * anything it does not know.
+   */
+  const [services, setServices] = useState<string[]>(
+    SERVICE_OPTIONS.map((option) => option.code)
+  );
 
   useEffect(() => {
     if (!visible) return;
     setName('');
     setError('');
+    setServices(SERVICE_OPTIONS.map((option) => option.code));
   }, [visible]);
+
+  const toggleService = (code: string) =>
+    setServices((current) =>
+      current.includes(code) ? current.filter((c) => c !== code) : [...current, code]
+    );
 
   const create = async () => {
     setBusy(true);
@@ -395,6 +441,16 @@ function CreateItemSheet({
         // exists, rather than trusting one id on its own.
         category_id: categoryId || undefined,
         subcategory_id: subcategoryId || undefined,
+        /*
+         * Omitted when all three are selected, so the request is byte-for-byte
+         * the one this form always sent and the server takes its own
+         * map-to-everything path. Sent only when the choice actually narrows
+         * something.
+         */
+        service_types:
+          services.length > 0 && services.length < SERVICE_OPTIONS.length
+            ? services
+            : undefined,
       });
       onCreated(item);
     } catch (e: any) {
@@ -451,15 +507,39 @@ function CreateItemSheet({
               autoFocus
             />
 
+            {/* All three services, every time this form is opened — from the
+                Business price list or the Customer one. Tapping one off
+                narrows what the item may be ordered for. */}
+            <Text style={[sa.label, { marginTop: SPACING.md }]}>SERVICES</Text>
+            {SERVICE_OPTIONS.map((option) => (
+              <Option
+                key={option.code}
+                label={option.label}
+                meta={option.meta}
+                selected={services.includes(option.code)}
+                onPress={() => toggleService(option.code)}
+              />
+            ))}
+            {services.length === 0 ? (
+              <Text style={[sa.cardMeta, { color: COLORS.Error }]}>
+                Choose at least one service. An item with none is priced and active but
+                cannot be ordered.
+              </Text>
+            ) : null}
+
             <Text style={[sa.cardMeta, { marginTop: SPACING.xs }]}>
               The item is added to the catalogue under this category and becomes available
               in both the Customer and Business price lists.
             </Text>
 
             <TouchableOpacity
-              style={[sa.button, (!name.trim() || !targetCategoryId || busy) && sa.buttonDisabled]}
+              style={[
+                sa.button,
+                (!name.trim() || !targetCategoryId || services.length === 0 || busy) &&
+                  sa.buttonDisabled,
+              ]}
               onPress={create}
-              disabled={!name.trim() || !targetCategoryId || busy}
+              disabled={!name.trim() || !targetCategoryId || services.length === 0 || busy}
             >
               {busy ? (
                 <ActivityIndicator color={COLORS.Surface} />
