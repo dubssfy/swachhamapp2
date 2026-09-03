@@ -111,7 +111,88 @@ export function buildPdfFileName(orderNumber: string, businessName?: string | nu
  * by construction rather than by four separate edits kept in step by hand.
  */
 
-export function buildBusinessOrderPdfHtml(
+/**
+ * THE DOCUMENT SHELL — doctype, meta and the stylesheet.
+ *
+ * Lifted out of the builder VERBATIM so a combined document can carry many
+ * orders under one stylesheet instead of repeating or altering it. Nothing
+ * in the CSS below was touched; a single-order PDF is byte-for-byte what it
+ * was before.
+ */
+const ORDER_PDF_DOC_OPEN = `<!DOCTYPE html><html><head><meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; }
+  /* ONE LOGO ON THIS DOCUMENT, and it is the one in the header block below.
+     The small mark that used to be pinned to the top-left of every page is
+     gone, and with it the extra top padding that existed only to stop page
+     content sitting underneath it — so the header now starts where the rest
+     of the page margin does, with no blank strip above it. */
+  body { font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif; color: #1B1B1B; padding: 28px; }
+  .head { display: flex; align-items: center; gap: 14px; border-bottom: 3px solid #2D6A4F; padding-bottom: 14px; }
+  .docbusiness { text-align: center; font-size: 20px; font-weight: 700; color: #1B4332;
+                 margin: 16px 0 0; }
+  .doctitle { text-align: center; font-size: 15px; font-weight: 700; letter-spacing: 1px;
+              text-transform: uppercase; color: #2D6A4F; margin: 2px 0 0; }
+  .brand { font-size: 26px; font-weight: 700; color: #2D6A4F; margin: 0; letter-spacing: 1px; }
+  .tagline { display: block; font-size: 12px; color: #6B7280; font-weight: 400; letter-spacing: .4px; margin: 2px 0 0; }
+  /* 62px -> 82px: noticeably more present at the head of the page, still
+     comfortably under the 26px brand wordmark beside it and well inside the
+     header band, so nothing below it moves.
+     SQUARE BOX + object-fit:contain KEEPS THE ASPECT RATIO. The box is square
+     and the art is not, so contain letterboxes the image inside it rather
+     than stretching it — which is why width and height stay equal here
+     instead of one being tuned to the image.
+     NOTE: this whole stylesheet sits inside a TS template literal, so no
+     backtick may appear in these comments. */
+  .logo { width: 82px; height: 82px; object-fit: contain; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: #2D6A4F; margin: 22px 0 8px; }
+  .grid { display: flex; flex-wrap: wrap; }
+  .cell { width: 50%; padding: 5px 0; font-size: 12px; }
+  .k { color: #6B7280; }
+  .v { font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+  th { background: #F1F7F3; text-align: left; padding: 8px; border-bottom: 2px solid #D8E6DD; font-size: 11px; text-transform: uppercase; color: #2D6A4F; }
+  td { padding: 8px; border-bottom: 1px solid #EDF2EF; vertical-align: top; }
+  .num { text-align: right; white-space: nowrap; }
+  /* The two adjustment columns, when the table carries them. The defective
+     count is the one a reader is looking for, so it is the one that is
+     coloured; the final quantity is what the order bills, so it is the one
+     that is bold. */
+  .defect { color: #B42318; font-weight: 700; }
+  /* An item still being processed, so the document never reads as though the
+     whole order were finished. */
+  .pending { color: #8A5200; font-weight: 700; }
+  .ready { color: #1B4332; }
+  .final { font-weight: 700; color: #1B4332; }
+  /* Long orders paginate cleanly: the column headers repeat on every page,
+     a row is never split across a page break, and long item or service names
+     wrap instead of overflowing. */
+  thead { display: table-header-group; }
+  tfoot { display: table-row-group; }
+  tr { page-break-inside: avoid; }
+  h2 { page-break-after: avoid; }
+  .wrap { word-break: break-word; overflow-wrap: anywhere; }
+  /* The width the Service column used to take is given back to the two
+     columns that carry real names, rather than left as slack spread evenly
+     across every column. Percentages, so the table still fits any page. */
+  .col-item { width: 46%; }
+  .col-cat { width: 26%; }
+  tfoot td { border-top: 2px solid #D8E6DD; border-bottom: none; padding-top: 10px; }
+  .tfoot-label { text-align: right; text-transform: uppercase; font-size: 11px; letter-spacing: .5px; color: #2D6A4F; font-weight: 700; }
+  .tfoot-value { font-weight: 700; color: #1B4332; }
+  .pill { display: inline-block; background: #E8F3EC; color: #1B4332; border-radius: 10px; padding: 3px 10px; font-size: 11px; font-weight: 700; }
+  .adjnote { font-size: 11px; color: #6B7280; margin: 8px 0 0; line-height: 1.5; }
+  footer { margin-top: 28px; border-top: 1px solid #E5E7EB; padding-top: 10px; text-align: center; color: #9AA3AE; font-size: 10px; }
+</style></head><body>`;
+
+const ORDER_PDF_DOC_CLOSE = `</body></html>`;
+
+/**
+ * ONE ORDER, as it appears inside the document — everything between <body>
+ * and </body>. Held apart from the shell only so that more than one order
+ * can be laid into the SAME document; not a line of the markup changed.
+ */
+export function buildBusinessOrderPdfBody(
   data: BusinessOrderDetail,
   logo: string | null
 ) {
@@ -248,71 +329,7 @@ export function buildBusinessOrderPdfHtml(
       : ''
   }`;
 
-    return `<!DOCTYPE html><html><head><meta charset="utf-8" />
-<style>
-  * { box-sizing: border-box; }
-  /* ONE LOGO ON THIS DOCUMENT, and it is the one in the header block below.
-     The small mark that used to be pinned to the top-left of every page is
-     gone, and with it the extra top padding that existed only to stop page
-     content sitting underneath it — so the header now starts where the rest
-     of the page margin does, with no blank strip above it. */
-  body { font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif; color: #1B1B1B; padding: 28px; }
-  .head { display: flex; align-items: center; gap: 14px; border-bottom: 3px solid #2D6A4F; padding-bottom: 14px; }
-  .docbusiness { text-align: center; font-size: 20px; font-weight: 700; color: #1B4332;
-                 margin: 16px 0 0; }
-  .doctitle { text-align: center; font-size: 15px; font-weight: 700; letter-spacing: 1px;
-              text-transform: uppercase; color: #2D6A4F; margin: 2px 0 0; }
-  .brand { font-size: 26px; font-weight: 700; color: #2D6A4F; margin: 0; letter-spacing: 1px; }
-  .tagline { display: block; font-size: 12px; color: #6B7280; font-weight: 400; letter-spacing: .4px; margin: 2px 0 0; }
-  /* 62px -> 82px: noticeably more present at the head of the page, still
-     comfortably under the 26px brand wordmark beside it and well inside the
-     header band, so nothing below it moves.
-     SQUARE BOX + object-fit:contain KEEPS THE ASPECT RATIO. The box is square
-     and the art is not, so contain letterboxes the image inside it rather
-     than stretching it — which is why width and height stay equal here
-     instead of one being tuned to the image.
-     NOTE: this whole stylesheet sits inside a TS template literal, so no
-     backtick may appear in these comments. */
-  .logo { width: 82px; height: 82px; object-fit: contain; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: #2D6A4F; margin: 22px 0 8px; }
-  .grid { display: flex; flex-wrap: wrap; }
-  .cell { width: 50%; padding: 5px 0; font-size: 12px; }
-  .k { color: #6B7280; }
-  .v { font-weight: 600; }
-  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
-  th { background: #F1F7F3; text-align: left; padding: 8px; border-bottom: 2px solid #D8E6DD; font-size: 11px; text-transform: uppercase; color: #2D6A4F; }
-  td { padding: 8px; border-bottom: 1px solid #EDF2EF; vertical-align: top; }
-  .num { text-align: right; white-space: nowrap; }
-  /* The two adjustment columns, when the table carries them. The defective
-     count is the one a reader is looking for, so it is the one that is
-     coloured; the final quantity is what the order bills, so it is the one
-     that is bold. */
-  .defect { color: #B42318; font-weight: 700; }
-  /* An item still being processed, so the document never reads as though the
-     whole order were finished. */
-  .pending { color: #8A5200; font-weight: 700; }
-  .ready { color: #1B4332; }
-  .final { font-weight: 700; color: #1B4332; }
-  /* Long orders paginate cleanly: the column headers repeat on every page,
-     a row is never split across a page break, and long item or service names
-     wrap instead of overflowing. */
-  thead { display: table-header-group; }
-  tfoot { display: table-row-group; }
-  tr { page-break-inside: avoid; }
-  h2 { page-break-after: avoid; }
-  .wrap { word-break: break-word; overflow-wrap: anywhere; }
-  /* The width the Service column used to take is given back to the two
-     columns that carry real names, rather than left as slack spread evenly
-     across every column. Percentages, so the table still fits any page. */
-  .col-item { width: 46%; }
-  .col-cat { width: 26%; }
-  tfoot td { border-top: 2px solid #D8E6DD; border-bottom: none; padding-top: 10px; }
-  .tfoot-label { text-align: right; text-transform: uppercase; font-size: 11px; letter-spacing: .5px; color: #2D6A4F; font-weight: 700; }
-  .tfoot-value { font-weight: 700; color: #1B4332; }
-  .pill { display: inline-block; background: #E8F3EC; color: #1B4332; border-radius: 10px; padding: 3px 10px; font-size: 11px; font-weight: 700; }
-  .adjnote { font-size: 11px; color: #6B7280; margin: 8px 0 0; line-height: 1.5; }
-  footer { margin-top: 28px; border-top: 1px solid #E5E7EB; padding-top: 10px; text-align: center; color: #9AA3AE; font-size: 10px; }
-</style></head><body>
+    return `
   <div class="head">
     ${logo ? `<img class="logo" src="${logo}" />` : ''}
     <div>
@@ -389,5 +406,36 @@ export function buildBusinessOrderPdfHtml(
 ${summary}
 
   <footer>Generated by SWACHHAM · ${escapeHtml(date)} ${escapeHtml(time)}</footer>
-</body></html>`;
+`;
+}
+
+/**
+ * The Order Details PDF for ONE order — the existing document, unchanged.
+ */
+export function buildBusinessOrderPdfHtml(
+  data: BusinessOrderDetail,
+  logo: string | null
+) {
+  return `${ORDER_PDF_DOC_OPEN}${buildBusinessOrderPdfBody(data, logo)}${ORDER_PDF_DOC_CLOSE}`;
+}
+
+/**
+ * MANY ORDERS, ONE DOCUMENT.
+ *
+ * Each order is rendered by the very function the single-order PDF uses, so
+ * every page is the existing Order Details layout — same header, same table,
+ * same footer. The only thing added between them is a page break, carried
+ * inline so the shared stylesheet stays exactly as it is.
+ *
+ * The caller decides the order of the array; this puts them on pages in that
+ * order and nothing else.
+ */
+export function buildCombinedOrderPdfHtml(
+  orders: BusinessOrderDetail[],
+  logo: string | null
+) {
+  const pages = orders
+    .map((order) => buildBusinessOrderPdfBody(order, logo))
+    .join('<div style="page-break-after: always;"></div>');
+  return `${ORDER_PDF_DOC_OPEN}${pages}${ORDER_PDF_DOC_CLOSE}`;
 }

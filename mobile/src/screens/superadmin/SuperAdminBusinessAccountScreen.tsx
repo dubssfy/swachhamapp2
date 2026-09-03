@@ -35,7 +35,9 @@ import { businessDocumentFileName } from '../../utils/pdfFileName';
  * That is what makes the PDF opened here the very document the business gets,
  * mobile number and establishment name included.
  */
-import { generateOrderPdf, buildPdfBaseName } from '../../utils/businessOrderPdf';
+import {
+  generateOrderPdf, generateCombinedOrderPdf, buildPdfBaseName,
+} from '../../utils/businessOrderPdf';
 /*
  * "Open PDF" hands the document to the PHONE, not to this app — see
  * `openPdf.ts`. One helper, so every Open PDF in the Super Admin behaves the
@@ -86,7 +88,7 @@ const dmy = (iso: string) => {
 };
 
 /** The four native things More Options can do with a PDF that is already on disk. */
-type PdfFileAction = 'open' | 'print' | 'share' | 'save';
+export type PdfFileAction = 'open' | 'print' | 'share' | 'save';
 
 /**
  * More Options, performed on a PDF FILE THAT ALREADY EXISTS on the device.
@@ -102,7 +104,7 @@ type PdfFileAction = 'open' | 'print' | 'share' | 'save';
  * that is the only part the two tabs genuinely do differently: Order Detail
  * renders one with `generateOrderPdf`, Invoices downloads one from the server.
  */
-async function runPdfFileAction(
+export async function runPdfFileAction(
   action: PdfFileAction,
   file: { uri: string; fileName: string },
   opts: {
@@ -204,8 +206,41 @@ async function runPdfFileAction(
   Alert.alert('Saved', opts.savedMessage);
 }
 
+/**
+ * The two laundry types the Order Detail list can be narrowed to.
+ *
+ * Same two values, labels and icons the rest of the Super Admin uses for the
+ * choice, so the filter reads as the same distinction everywhere.
+ */
+const ORDER_TYPE_FILTERS: Array<{ value: 'hotel' | 'guest'; label: string; icon: any }> = [
+  { value: 'hotel', label: 'Hotel Order', icon: 'business' },
+  { value: 'guest', label: 'Guest Order', icon: 'person' },
+];
+
+/**
+ * The two invoice types the Invoice list can be narrowed to.
+ *
+ * The same two values the invoices are already generated and stored under,
+ * so the filter reads as the same distinction the documents themselves make.
+ */
+const INVOICE_TYPE_FILTERS: Array<{ value: 'hotel' | 'guest'; label: string; icon: any }> = [
+  { value: 'hotel', label: 'Hotel Invoice', icon: 'business' },
+  { value: 'guest', label: 'Guest Invoice', icon: 'person' },
+];
+
+/**
+ * Hotel / Guest, as the Combine Order tab labels them.
+ *
+ * The same two `laundry_type` values the orders already carry — the app's
+ * existing classification — under the shorter labels that section uses.
+ */
+const COMBINE_TYPE_TABS: Array<{ value: 'hotel' | 'guest'; label: string; icon: any }> = [
+  { value: 'hotel', label: 'Hotel', icon: 'business' },
+  { value: 'guest', label: 'Guest', icon: 'person' },
+];
+
 /** The four rows of a More Options sheet, in the order both tabs list them. */
-const PDF_ACTIONS: Array<{ action: PdfFileAction; icon: string; label: string }> = [
+export const PDF_ACTIONS: Array<{ action: PdfFileAction; icon: string; label: string }> = [
   { action: 'open', icon: 'open-outline', label: 'Open PDF' },
   { action: 'print', icon: 'print-outline', label: 'Print PDF' },
   { action: 'share', icon: 'share-social-outline', label: 'Share PDF' },
@@ -220,7 +255,7 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const [tab, setTab] = useState<'orders' | 'invoices' | 'payments' | 'summary'>('orders');
+  const [tab, setTab] = useState<'orders' | 'invoices' | 'payments' | 'summary' | 'combine'>('orders');
 
   const loadBusinesses = useCallback(async () => {
     setError('');
@@ -289,7 +324,7 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
             </Text>
           ) : (
             <>
-              {/* ---- The four sections ---- */}
+              {/* ---- The five sections ---- */}
               <View style={sa.tabs}>
                 <TabButton
                   label="Order Detail"
@@ -311,6 +346,11 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
                   on={tab === 'summary'}
                   onPress={() => setTab('summary')}
                 />
+                <TabButton
+                  label="Combine Order"
+                  on={tab === 'combine'}
+                  onPress={() => setTab('combine')}
+                />
               </View>
 
               {/* `key` on the business id remounts each tab when the business
@@ -322,8 +362,10 @@ export default function SuperAdminBusinessAccountScreen({ navigation }: any) {
                 <InvoiceHistoryTab key={selected.id} business={selected} />
               ) : tab === 'payments' ? (
                 <PaymentReceiptTab key={selected.id} business={selected} />
-              ) : (
+              ) : tab === 'summary' ? (
                 <OrderSummaryTab key={selected.id} business={selected} />
+              ) : (
+                <CombineOrderTab key={selected.id} business={selected} />
               )}
             </>
           )}
@@ -411,6 +453,8 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [walkingOpen, setWalkingOpen] = useState(false);
+  /** Which laundry type the list is narrowed to, or null for all of them. */
+  const [typeFilter, setTypeFilter] = useState<'hotel' | 'guest' | null>(null);
   /** The order whose PDF is being built, so only its own row shows a spinner. */
   const [pdfFor, setPdfFor] = useState<string | null>(null);
   /** The order whose "More Options" menu is open, or null when it is closed. */
@@ -432,6 +476,16 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
   }, [business.id]);
 
   useFocusEffect(useCallback(() => { setLoading(true); load(); }, [load]));
+
+  /*
+   * The list the cards are drawn from. Null shows every order, exactly as
+   * before; a type shows only that one. Nothing is refetched — the same
+   * orders already loaded are simply narrowed.
+   */
+  const shownOrders = useMemo(
+    () => (typeFilter ? orders.filter((o) => o.laundry_type === typeFilter) : orders),
+    [orders, typeFilter]
+  );
 
   /**
    * The Order Confirmation PDF for one order.
@@ -546,14 +600,45 @@ function OrderDetailTab({ business }: { business: BusinessAccountSummary }) {
         <Text style={sa.addEntryText}>Add Backdated Walking Order</Text>
       </TouchableOpacity>
 
+      {/* Hotel / Guest, narrowing the list below to one laundry type. The
+          orders, their cards and their PDF are untouched — this only decides
+          which of them are listed. Tapping the selected one clears it, so
+          the full list is always one tap away. */}
+      <View style={{ flexDirection: 'row', gap: SPACING.xs, marginTop: SPACING.sm }}>
+        {ORDER_TYPE_FILTERS.map((option) => {
+          const on = typeFilter === option.value;
+          return (
+            <TouchableOpacity
+              key={option.value}
+              style={[sa.tab, on && sa.tabActive, { flex: 1, flexDirection: 'row', gap: 6 }]}
+              onPress={() => setTypeFilter(on ? null : option.value)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: on }}
+              accessibilityLabel={`${option.label}: show only ${option.label.toLowerCase()}s`}
+            >
+              <Ionicons
+                name={option.icon}
+                size={16}
+                color={on ? COLORS.Surface : COLORS.TextSecondary}
+              />
+              <Text style={[sa.tabText, on && sa.tabTextActive]}>{option.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
       <Text style={[sa.cardMeta, { marginTop: SPACING.xs, marginBottom: SPACING.sm }]}>
-        {orders.length} order{orders.length === 1 ? '' : 's'} for {business.name}.
+        {shownOrders.length} order{shownOrders.length === 1 ? '' : 's'} for {business.name}.
       </Text>
 
       {orders.length === 0 ? (
         <Text style={sa.empty}>This business has not placed any orders yet.</Text>
+      ) : shownOrders.length === 0 ? (
+        <Text style={sa.empty}>
+          This business has no {typeFilter === 'guest' ? 'Guest' : 'Hotel'} orders.
+        </Text>
       ) : (
-        orders.map((o) => (
+        shownOrders.map((o) => (
           <View key={o.id} style={sa.card}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm }}>
               <View style={sa.flex}>
@@ -724,6 +809,8 @@ function InvoiceHistoryTab({ business }: { business: BusinessAccountSummary }) {
   const [error, setError] = useState('');
   /** The invoice whose PDF is being fetched, so only its row shows a spinner. */
   const [busyId, setBusyId] = useState<string | null>(null);
+  /** Which invoice type the list is narrowed to, or null for all of them. */
+  const [invoiceFilter, setInvoiceFilter] = useState<'hotel' | 'guest' | null>(null);
   /** The invoice whose More Options sheet is open, if any. */
   const [menuInvoice, setMenuInvoice] = useState<InvoiceHistoryEntry | null>(null);
   /** True while a More Options action is downloading/handing off the PDF. */
@@ -743,6 +830,16 @@ function InvoiceHistoryTab({ business }: { business: BusinessAccountSummary }) {
   }, [business.id]);
 
   useFocusEffect(useCallback(() => { setLoading(true); load(); }, [load]));
+
+  /*
+   * The list the cards are drawn from. Null shows every invoice, exactly as
+   * before; a type shows only that one. Nothing is refetched.
+   */
+  const shownInvoices = useMemo(
+    () => (invoiceFilter ? invoices.filter((i) => i.laundry_type === invoiceFilter) : invoices),
+    [invoices, invoiceFilter]
+  );
+
 
   /**
    * Download one stored invoice and hand it to the device.
@@ -881,13 +978,44 @@ function InvoiceHistoryTab({ business }: { business: BusinessAccountSummary }) {
         <Text style={sa.addEntryText}>Generate Invoice</Text>
       </TouchableOpacity>
 
+      {/* Hotel / Guest, narrowing the list below to one invoice type. The
+          invoices, their cards and their PDF are untouched — this only
+          decides which of them are listed. Tapping the selected one clears
+          it, so the full list is always one tap away. */}
+      <View style={{ flexDirection: 'row', gap: SPACING.xs, marginTop: SPACING.sm }}>
+        {INVOICE_TYPE_FILTERS.map((option) => {
+          const on = invoiceFilter === option.value;
+          return (
+            <TouchableOpacity
+              key={option.value}
+              style={[sa.tab, on && sa.tabActive, { flex: 1, flexDirection: 'row', gap: 6 }]}
+              onPress={() => setInvoiceFilter(on ? null : option.value)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: on }}
+              accessibilityLabel={`${option.label}: show only ${option.label.toLowerCase()}s`}
+            >
+              <Ionicons
+                name={option.icon}
+                size={16}
+                color={on ? COLORS.Surface : COLORS.TextSecondary}
+              />
+              <Text style={[sa.tabText, on && sa.tabTextActive]}>{option.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
       {invoices.length === 0 ? (
         <Text style={[sa.empty, { marginTop: SPACING.md }]}>
           No invoice has been generated for {business.name} yet. Use Generate Invoice above and it
           will appear here.
         </Text>
+      ) : shownInvoices.length === 0 ? (
+        <Text style={[sa.empty, { marginTop: SPACING.md }]}>
+          {business.name} has no {invoiceFilter === 'guest' ? 'Guest' : 'Hotel'} invoices.
+        </Text>
       ) : (
-        invoices.map((inv) => {
+        shownInvoices.map((inv) => {
           const tone = INVOICE_STATUS_TONE[inv.status];
           const busy = busyId === inv.id;
           return (
@@ -1394,6 +1522,13 @@ function OrderSummaryTab({ business }: { business: BusinessAccountSummary }) {
   const [laundryType, setLaundryType] = useState<LaundryTypeValue>('hotel');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  /**
+   * THE ORDER SUMMARY PDF, once the server has sent it — the one file all
+   * four actions work on, so none of them fetches or renders a second copy.
+   */
+  const [built, setBuilt] = useState<{ uri: string; fileName: string } | null>(null);
+  /** True while a More Options action is handing that file to the device. */
+  const [actionBusy, setActionBusy] = useState(false);
 
   const typeLabel =
     LAUNDRY_TYPES.find((option) => option.value === laundryType)?.label ?? '';
@@ -1430,21 +1565,45 @@ function OrderSummaryTab({ business }: { business: BusinessAccountSummary }) {
         throw new Error(`No ${typeLabel} data could be found for this period.`);
       }
 
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(result.uri, {
-          mimeType: 'application/pdf',
-          dialogTitle: `${typeLabel} order summary — ${business.name}`,
-          UTI: 'com.adobe.pdf',
-        });
-      } else {
-        Alert.alert('Saved', result.uri);
-      }
+      /*
+       * Downloaded once, then offered. The four actions below all act on
+       * THIS file — sharing it is one of them, which is what this button
+       * used to do on its own.
+       */
+      setBuilt({ uri: result.uri, fileName });
     } catch (e: any) {
       setError(e?.message || 'Could not download the document.');
     } finally {
       setBusy(false);
     }
   };
+
+  /* ---- The four actions, on the Order Summary PDF just downloaded ----
+   *
+   * THE SAME `runPdfFileAction` the Order Detail, Invoice and Combine Orders
+   * tabs use, so opening, printing, sharing and saving behave identically
+   * wherever they appear. The file is neither re-fetched nor altered.
+   */
+  const runSummaryAction = async (action: PdfFileAction) => {
+    if (actionBusy || !built) return;
+    setActionBusy(true);
+    setError('');
+    try {
+      await runPdfFileAction(action, built, {
+        printTempName: 'order-summary.pdf',
+        saveName: built.fileName,
+        shareTitle: `${typeLabel} order summary — ${business.name}`,
+        savedMessage: 'The order summary PDF was saved to the folder you chose.',
+      });
+    } catch (e: any) {
+      setError(e?.message || 'Could not complete that PDF action.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  /** A new period or type means the downloaded file no longer matches. */
+  const invalidate = () => setBuilt(null);
 
   const dateButton = (label: string, value: string, which: 'from' | 'to') => (
     <View style={{ flex: 1 }}>
@@ -1480,6 +1639,7 @@ function OrderSummaryTab({ business }: { business: BusinessAccountSummary }) {
               onPress={() => {
                 setLaundryType(option.value);
                 setError('');
+                invalidate();
               }}
               accessibilityRole="radio"
               accessibilityState={{ selected: on }}
@@ -1524,6 +1684,63 @@ function OrderSummaryTab({ business }: { business: BusinessAccountSummary }) {
         and amount, for the period and laundry type chosen above.
       </Text>
 
+      {/* THE FOUR OPTIONS, on the Order Summary PDF just downloaded. Same
+          bottom-sheet pattern, same four rows and the same handler the other
+          tabs use — only the document differs. */}
+      <Modal
+        visible={built !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !actionBusy && setBuilt(null)}
+      >
+        <View style={sa.modalBackdrop}>
+          <View style={sa.modalSheet}>
+            <View style={sa.header}>
+              <Text style={[sa.headerTitle, { flex: 1 }]} numberOfLines={1}>
+                {built?.fileName || 'Order Summary PDF'}
+              </Text>
+              <TouchableOpacity
+                style={sa.iconBtn}
+                onPress={() => setBuilt(null)}
+                disabled={actionBusy}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={22} color={COLORS.TextPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={sa.scroll}>
+              {actionBusy ? (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: SPACING.sm,
+                    paddingVertical: SPACING.sm,
+                  }}
+                >
+                  <ActivityIndicator color={COLORS.Primary} />
+                  <Text style={sa.choiceText}>Preparing PDF…</Text>
+                </View>
+              ) : (
+                PDF_ACTIONS.map(({ action, icon, label }) => (
+                  <TouchableOpacity
+                    key={action}
+                    style={sa.choice}
+                    onPress={() => runSummaryAction(action)}
+                    accessibilityRole="button"
+                    accessibilityLabel={label}
+                  >
+                    <Ionicons name={icon as any} size={20} color={COLORS.Primary} />
+                    <Text style={sa.choiceText}>{label}</Text>
+                  </TouchableOpacity>
+                ))
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* The calendar the Sorter module already uses, reused as-is. */}
       <SorterCalendar
         visible={picking !== null}
@@ -1536,6 +1753,319 @@ function OrderSummaryTab({ business }: { business: BusinessAccountSummary }) {
           else setFrom(key);
           setPicking(null);
           setError('');
+          invalidate();
+        }}
+        onClose={() => setPicking(null)}
+      />
+    </ScrollView>
+  );
+}
+
+/* ===================================================================
+ * COMBINE ORDER
+ * =================================================================== */
+
+/**
+ * Every order in a date range, as ONE Order Details PDF.
+ *
+ * NOT A NEW DOCUMENT. Each order inside it is drawn by the same builder the
+ * single-order PDF uses, through the same `expo-print` call and the same
+ * logo — so a page of the combined file is the Order Details page the
+ * business already receives, and there is no second layout to keep in step.
+ *
+ * DATE ASCENDING, EARLIEST FIRST. The orders are sorted on the day they were
+ * placed before they are handed over; within one day they keep the order the
+ * API already returned them in, which is the existing list's own order.
+ *
+ * Read-only from end to end: it fetches orders and renders them. Nothing is
+ * created and nothing is written back.
+ */
+function CombineOrderTab({ business }: { business: BusinessAccountSummary }) {
+  const today = toDateKey(new Date());
+  const monthStart = `${today.slice(0, 8)}01`;
+
+  const [from, setFrom] = useState(monthStart);
+  const [to, setTo] = useState(today);
+  const [picking, setPicking] = useState<'from' | 'to' | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState('');
+  const [error, setError] = useState('');
+  /** Which laundry type is combined, or null for every order in the range. */
+  const [typeFilter, setTypeFilter] = useState<'hotel' | 'guest' | null>(null);
+  /**
+   * THE COMBINED PDF, once it has been built — the one file all four actions
+   * work on. Held so Open, Print, Share and Save hand over the very document
+   * that was generated rather than each rebuilding one of their own.
+   */
+  const [built, setBuilt] = useState<{ uri: string; fileName: string } | null>(null);
+  /** True while a More Options action is handing that file to the device. */
+  const [actionBusy, setActionBusy] = useState(false);
+
+  /** The day an order belongs to, as YYYY-MM-DD — what the range is read against. */
+  const orderDay = (order: BusinessAccountOrder) => String(order.created_at).slice(0, 10);
+
+  /** "Hotel Laundry" / "Guest Laundry", or '' when every order is combined. */
+  const typeLabel = typeFilter ? LAUNDRY_TYPES.find((t) => t.value === typeFilter)!.label : '';
+
+  const generate = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    setProgress('Finding orders…');
+    try {
+      if (from > to) throw new Error('The From date must not be after the To date.');
+
+      // The SAME list the Order Detail tab shows, narrowed to the range.
+      const { orders: all } = await superAdminApi.getBusinessAccountOrders(business.id);
+      const inRange = all
+        .filter((o) => {
+          const day = orderDay(o);
+          if (day < from || day > to) return false;
+          // The order's own laundry_type — the classification the rest of the
+          // app already bills, reports and invoices on. No filter combines
+          // everything in the range, exactly as this tab did before.
+          return typeFilter ? o.laundry_type === typeFilter : true;
+        })
+        // EARLIEST DATE FIRST. Only the date decides; orders sharing a date
+        // keep the sequence the API returned them in.
+        .sort((a, b) => (orderDay(a) < orderDay(b) ? -1 : orderDay(a) > orderDay(b) ? 1 : 0));
+
+      if (inRange.length === 0) {
+        throw new Error(
+          `${business.name} has no ${typeLabel ? typeLabel + ' ' : ''}orders between ` +
+            `${formatLongDate(from)} and ${formatLongDate(to)}.`
+        );
+      }
+
+      /*
+       * Each order is fetched in full through the endpoint the single-order
+       * PDF already uses, so the pages carry exactly the data that document
+       * carries. Sequentially, to keep the order and to stay gentle on the
+       * server for a long range.
+       */
+      const details: any[] = [];
+      for (let i = 0; i < inRange.length; i += 1) {
+        setProgress(`Fetching order ${i + 1} of ${inRange.length}…`);
+        const data = await superAdminApi.getBusinessAccountOrder(business.id, inRange[i].id);
+        details.push(data.order);
+      }
+
+      setProgress(`Building PDF of ${details.length} order(s)…`);
+      /*
+       * Named the way every other business document in the app is: the
+       * establishment, then the period. `businessDocumentFileName` builds
+       * that shape, and its own suffix is swapped for this document's.
+       */
+      const fileName = businessDocumentFileName({
+        establishmentName: business.name,
+        from,
+        to,
+        // Named for the type as well, so a Hotel combine and a Guest combine
+        // over the same period are two files rather than one overwriting the
+        // other in the cache.
+        laundryTypeLabel: typeLabel,
+        kind: 'summary',
+      }).replace(/_Order_Summary\.pdf$/, '_Combined_Orders.pdf');
+
+      /*
+       * Built once, then offered. The four actions below all act on THIS
+       * file — opening it is one of them, which is what the button used to
+       * do on its own.
+       */
+      setBuilt(await generateCombinedOrderPdf(details, fileName));
+    } catch (e: any) {
+      setError(e?.response?.data?.message || e?.message || 'Could not build the combined PDF.');
+    } finally {
+      setBusy(false);
+      setProgress('');
+    }
+  };
+
+  /* ---- The four actions, on the combined PDF that was just built ----
+   *
+   * THE SAME `runPdfFileAction` the Order Detail and Invoice tabs use, so
+   * opening, printing, sharing and saving behave identically wherever they
+   * appear. The file is not rebuilt and not altered — it is handed over as
+   * generated.
+   */
+  const runCombinedAction = async (action: PdfFileAction) => {
+    if (actionBusy || !built) return;
+    setActionBusy(true);
+    setError('');
+    try {
+      await runPdfFileAction(action, built, {
+        printTempName: 'combined-orders.pdf',
+        saveName: built.fileName,
+        shareTitle: built.fileName,
+        savedMessage: 'The combined order PDF was saved to the folder you chose.',
+      });
+    } catch (e: any) {
+      setError(e?.message || 'Could not complete that PDF action.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  /** A new period or type means the built file no longer matches the choices. */
+  const invalidate = () => setBuilt(null);
+
+  const dateButton = (label: string, value: string, which: 'from' | 'to') => (
+    <View style={{ flex: 1 }}>
+      <Text style={sa.label}>{label}</Text>
+      <TouchableOpacity
+        style={[sa.input, { flexDirection: 'row', alignItems: 'center', gap: 8 }]}
+        onPress={() => setPicking(which)}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${formatLongDate(value)}`}
+      >
+        <Ionicons name="calendar-outline" size={18} color={COLORS.Primary} />
+        <Text style={{ color: COLORS.TextPrimary, fontFamily: TYPOGRAPHY.fontFamily }}>
+          {formatLongDate(value)}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  return (
+    <ScrollView contentContainerStyle={sa.scroll} keyboardShouldPersistTaps="handled">
+      <Text style={sa.cardTitle}>{business.name}</Text>
+      <Text style={sa.cardMeta}>
+        Every order placed in the range below, gathered into one PDF — each on its
+        own page, in the existing Order Details layout, earliest date first.
+      </Text>
+
+      <View style={{ flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.sm }}>
+        {dateButton('From', from, 'from')}
+        {dateButton('To', to, 'to')}
+      </View>
+
+      {/* Immediately below the date picker: which laundry type the range is
+          combined for. The dates above are untouched — these only decide
+          which of the orders in that range go into the document. Tapping the
+          selected one clears it, which is the every-order behaviour this tab
+          had before. */}
+      <View style={{ flexDirection: 'row', gap: SPACING.xs, marginTop: SPACING.sm }}>
+        {COMBINE_TYPE_TABS.map((option) => {
+          const on = typeFilter === option.value;
+          return (
+            <TouchableOpacity
+              key={option.value}
+              style={[sa.tab, on && sa.tabActive, { flex: 1, flexDirection: 'row', gap: 6 }]}
+              onPress={() => { setTypeFilter(on ? null : option.value); invalidate(); }}
+              disabled={busy}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: on, disabled: busy }}
+              accessibilityLabel={`${option.label}: combine only ${option.label} Laundry orders`}
+            >
+              <Ionicons
+                name={option.icon}
+                size={16}
+                color={on ? COLORS.Surface : COLORS.TextSecondary}
+              />
+              <Text style={[sa.tabText, on && sa.tabTextActive]}>{option.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {!!error && (
+        <View style={sa.errorBox}>
+          <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
+          <Text style={sa.errorText}>{error}</Text>
+        </View>
+      )}
+
+      <TouchableOpacity
+        style={[sa.button, busy && sa.buttonDisabled]}
+        onPress={generate}
+        disabled={busy}
+        accessibilityRole="button"
+        accessibilityLabel={`Combine ${business.name}'s orders for the chosen period into one PDF`}
+      >
+        {busy ? (
+          <ActivityIndicator color={COLORS.Surface} />
+        ) : (
+          <Text style={sa.buttonText}>
+            Combine {typeLabel ? `${typeLabel} ` : ''}Orders (PDF)
+          </Text>
+        )}
+      </TouchableOpacity>
+
+      {busy && !!progress && (
+        <Text style={[sa.cardMeta, { marginTop: SPACING.xs, textAlign: 'center' }]}>
+          {progress}
+        </Text>
+      )}
+
+      {/* THE FOUR OPTIONS, on the combined PDF that was just built. Same
+          bottom-sheet pattern, same four rows and the same handler the Order
+          Detail and Invoice tabs use — only the document differs. */}
+      <Modal
+        visible={built !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !actionBusy && setBuilt(null)}
+      >
+        <View style={sa.modalBackdrop}>
+          <View style={sa.modalSheet}>
+            <View style={sa.header}>
+              <Text style={[sa.headerTitle, { flex: 1 }]} numberOfLines={1}>
+                {built?.fileName || 'Combined Order PDF'}
+              </Text>
+              <TouchableOpacity
+                style={sa.iconBtn}
+                onPress={() => setBuilt(null)}
+                disabled={actionBusy}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={22} color={COLORS.TextPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={sa.scroll}>
+              {actionBusy ? (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: SPACING.sm,
+                    paddingVertical: SPACING.sm,
+                  }}
+                >
+                  <ActivityIndicator color={COLORS.Primary} />
+                  <Text style={sa.choiceText}>Preparing PDF…</Text>
+                </View>
+              ) : (
+                PDF_ACTIONS.map(({ action, icon, label }) => (
+                  <TouchableOpacity
+                    key={action}
+                    style={sa.choice}
+                    onPress={() => runCombinedAction(action)}
+                    accessibilityRole="button"
+                    accessibilityLabel={label}
+                  >
+                    <Ionicons name={icon as any} size={20} color={COLORS.Primary} />
+                    <Text style={sa.choiceText}>{label}</Text>
+                  </TouchableOpacity>
+                ))
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* The calendar the rest of the app already uses. */}
+      <SorterCalendar
+        visible={picking !== null}
+        value={picking === 'to' ? to : from}
+        maxDate={today}
+        title={picking === 'to' ? 'To date' : 'From date'}
+        onSelect={(key) => {
+          if (picking === 'to') setTo(key);
+          else setFrom(key);
+          setPicking(null);
+          setError('');
+          invalidate();
         }}
         onClose={() => setPicking(null)}
       />

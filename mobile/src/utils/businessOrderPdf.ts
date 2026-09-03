@@ -2,7 +2,9 @@ import { Asset } from 'expo-asset';
 import * as Print from 'expo-print';
 import * as FileSystem from 'expo-file-system/legacy';
 import { BusinessOrderDetail } from '../services/businessOrderApi';
-import { buildBusinessOrderPdfHtml, buildPdfFileName } from './businessOrderPdfHtml';
+import {
+  buildBusinessOrderPdfHtml, buildCombinedOrderPdfHtml, buildPdfFileName,
+} from './businessOrderPdfHtml';
 
 /*
  * The document itself lives in `businessOrderPdfHtml`, which has no Expo
@@ -45,6 +47,43 @@ export async function generateOrderPdf(
 
   // Named for the business first, then the order. See buildPdfFileName.
   const fileName = buildPdfFileName(order.order_number, order.business_name);
+  return renameIntoCache(uri, fileName);
+}
+
+/**
+ * MANY ORDERS, ONE PDF — the Combine Order document.
+ *
+ * NOT A SECOND GENERATOR. It goes through the same `getLogoDataUri`, the same
+ * expo-print call and the same naming as the single-order PDF above, and each
+ * order inside it is rendered by the very function that draws the one-order
+ * document. What arrives is the existing Order Details page, once per order.
+ *
+ * THE ORDER OF THE ARRAY IS THE ORDER OF THE PAGES. Sorting belongs to the
+ * caller, which knows what it is sorting by; this only lays them out.
+ */
+export async function generateCombinedOrderPdf(
+  orders: BusinessOrderDetail[],
+  fileName: string
+): Promise<{ uri: string; fileName: string }> {
+  const logo = await getLogoDataUri();
+  const { uri } = await Print.printToFileAsync({
+    html: buildCombinedOrderPdfHtml(orders, logo),
+  });
+  return renameIntoCache(uri, fileName);
+}
+
+/**
+ * Moves a freshly printed PDF to `fileName` in the cache.
+ *
+ * The URI is percent-encoded because an order number contains `#`, which
+ * would otherwise be read as a URI fragment. Shared by both generators so
+ * Share and Download hand over the same file under the same name whichever
+ * document was built.
+ */
+async function renameIntoCache(
+  uri: string,
+  fileName: string
+): Promise<{ uri: string; fileName: string }> {
   const targetUri = `${FileSystem.cacheDirectory}${encodeURIComponent(fileName)}`;
   try {
     await FileSystem.deleteAsync(targetUri, { idempotent: true });
@@ -65,20 +104,63 @@ export async function generateOrderPdf(
 }
 
 /**
+ * The logo, resolved ONCE per app session.
+ *
+ * Null is not cached: a run that failed is retried by the next PDF, so one
+ * bad moment cannot cost every document afterwards.
+ */
+let logoDataUri: string | null = null;
+
+/**
  * Swachham logo, embedded as a data URI so the PDF renders it offline.
  *
  * Exported so other PDF generators — `batchDetailsPdf.ts` included — use the
  * same asset instead of loading it a second way.
+ *
+ * WHY THE PDF READS ITS OWN COPY OF THE MARK.
+ *
+ * `swachham-logo.png` is the 1254px app icon — 953 KB, which is ~1.3 MB once
+ * base64'd into the document. That made the logo NINETY-NINE PERCENT of the
+ * HTML handed to `Print.printToFileAsync` (1.31 MB against 8-31 KB of actual
+ * order), and the print snapshot is taken whether or not the WebView has
+ * finished decoding an image that size — which is why the mark appeared on
+ * some order PDFs and not others, from the same code, for the same business.
+ * `swachham-logo-pdf.png` is that identical artwork at 328px: 87 KB, still
+ * 288 dpi in the 82px box it is drawn into, so nothing about how the logo
+ * looks changes and the document no longer races its own decode.
+ *
+ * The result is held above because every PDF used to re-download, re-read and
+ * re-encode the file, giving each one its own fresh chance to fail.
  */
 export async function getLogoDataUri(): Promise<string | null> {
+  if (logoDataUri) return logoDataUri;
   try {
-    const asset = Asset.fromModule(require('../../assets/swachham-logo.png'));
+    const asset = Asset.fromModule(require('../../assets/swachham-logo-pdf.png'));
     await asset.downloadAsync();
     const uri = asset.localUri || asset.uri;
     if (!uri) return null;
-    const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
-    return `data:image/png;base64,${base64}`;
+
+    /*
+     * `readAsStringAsync` reads FILES. A bundled asset does not always
+     * resolve to one — in development it is an http URL served by Metro —
+     * and handing it a URL threw, which the catch below turned into a
+     * silently logo-less PDF. Anything that is not already a local file is
+     * fetched into the cache first and read from there.
+     */
+    let fileUri = uri;
+    if (!fileUri.startsWith('file://')) {
+      const cached = `${FileSystem.cacheDirectory}swachham-logo-pdf.png`;
+      const info = await FileSystem.getInfoAsync(cached);
+      if (!info.exists) await FileSystem.downloadAsync(uri, cached);
+      fileUri = cached;
+    }
+
+    const base64 = await FileSystem.readAsStringAsync(fileUri, { encoding: 'base64' });
+    logoDataUri = `data:image/png;base64,${base64}`;
+    return logoDataUri;
   } catch {
+    // A business with no logo, and a logo that could not be read, both leave
+    // the document exactly as it was: the header simply omits the image.
     return null;
   }
 }

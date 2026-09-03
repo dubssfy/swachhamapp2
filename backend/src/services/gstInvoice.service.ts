@@ -118,6 +118,41 @@ export interface InvoiceOrderRef {
  * One definition, so the invoice, its PDF, the payment receipt and the Order
  * Detail list cannot end up spelling the same invoice differently.
  */
+/** The prefix that says which kind of invoice this is. */
+const TYPE_PREFIX: Record<InvoiceLaundryType, string> = {
+  hotel: 'SWC/HL/INV',
+  guest: 'SWC/GL/INV',
+};
+/** An invoice covering both types, which only pre-split callers produce. */
+const UNTYPED_PREFIX = 'SWC/INV';
+
+/**
+ * The number an invoice is ISSUED under: a prefix for the type, and one
+ * global serial.
+ *
+ *   SWC/HL/INV/0059   hotel
+ *   SWC/GL/INV/0060   guest laundry
+ *
+ * THE SERIAL IS THE WHOLE POINT. It is allocated once, from one counter, for
+ * the entire application — not per business and not per type — so the digits
+ * run 0059, 0060, 0061 whoever issues the next invoice and whichever kind it
+ * is. `allocateInvoiceSerial` below is what hands them out.
+ */
+export function invoiceNumberForSerial(
+  serial: number,
+  laundryType?: InvoiceLaundryType | null
+): string {
+  const prefix = laundryType ? TYPE_PREFIX[laundryType] : UNTYPED_PREFIX;
+  return `${prefix}/${String(serial).padStart(4, '0')}`;
+}
+
+/**
+ * THE NUMBER AN INVOICE ISSUED BEFORE THE GLOBAL SERIAL CARRIES.
+ *
+ * Kept exactly as it was so every invoice already stored, and anything
+ * recorded against its number, still resolves to the same string. Nothing
+ * new is issued under this shape.
+ */
 export function invoiceNumberFor(
   businessId: string,
   from: string,
@@ -143,6 +178,125 @@ export function invoiceNumberFor(
   return laundryType ? `${base}/${laundryType.toUpperCase()}` : base;
 }
 
+/**
+ * The number this exact invoice should carry — reused if it has one, freshly
+ * allocated only when it is being issued for the first time.
+ *
+ * WHAT "THIS EXACT INVOICE" MEANS: one business, one period, one laundry
+ * type. Re-issuing that same invoice must NOT take a new serial, or every
+ * regeneration would mint a duplicate row and orphan any payment recorded
+ * against the previous number. So the stored row is consulted first, and an
+ * invoice issued before the global serial existed keeps its original number
+ * untouched.
+ *
+ * `allocate` is false for the PREVIEW: looking at what an invoice would come
+ * to must not consume a number from the sequence. The preview then shows the
+ * serial the invoice would take next, which is advisory — the number is
+ * fixed, and the row is written, only when the document is actually issued.
+ */
+export async function resolveInvoiceNumber(
+  businessId: string,
+  from: string,
+  to: string,
+  laundryType: InvoiceLaundryType | null,
+  opts: { allocate: boolean }
+): Promise<{ invoiceNumber: string; serial: number | null }> {
+  // Already issued? Then it keeps what it was issued under, whatever shape.
+  const existing = await query<{ invoice_number: string; serial: number | null }>(
+    `SELECT invoice_number, serial
+       FROM business_invoices
+      WHERE business_id = ? AND period_from = ? AND period_to = ?
+        AND ((laundry_type IS NULL AND ? IS NULL) OR laundry_type = ?)
+      LIMIT 1`,
+    [businessId, from, to, laundryType, laundryType]
+  );
+  if (existing.rows.length > 0) {
+    const row = existing.rows[0];
+    return {
+      invoiceNumber: row.invoice_number,
+      serial: row.serial === null ? null : Number(row.serial),
+    };
+  }
+
+  /*
+   * ALREADY CLAIMED A SERIAL?
+   *
+   * The invoice row is written after the document is rendered, and that write
+   * is not awaited — so between rendering and recording, and for good if the
+   * record ever fails, `business_invoices` cannot answer "what number did
+   * this invoice take?". The claim can, from the moment the serial is handed
+   * out, which is what stops a second download minting a second number.
+   */
+  const typeKey = laundryType ?? '';
+  const claimed = await query<{ serial: number }>(
+    `SELECT serial FROM invoice_serial_claims
+      WHERE business_id = ? AND period_from = ? AND period_to = ? AND laundry_type = ?
+      LIMIT 1`,
+    [businessId, from, to, typeKey]
+  );
+  if (claimed.rows.length > 0) {
+    const serial = Number(claimed.rows[0].serial);
+    return { invoiceNumber: invoiceNumberForSerial(serial, laundryType), serial };
+  }
+
+  if (!opts.allocate) {
+    // A peek, for the preview only: what the next one would be, without
+    // taking it. Two operators previewing at once may see the same figure;
+    // neither has reserved it, and issuing is what decides.
+    const peek = await query<{ next_value: number }>(
+      `SELECT next_value FROM invoice_number_sequence WHERE id = 1`
+    );
+    const next = peek.rows.length > 0 ? Number(peek.rows[0].next_value) : 1;
+    return { invoiceNumber: invoiceNumberForSerial(next, laundryType), serial: null };
+  }
+
+  const allocated = await allocateInvoiceSerial();
+  /*
+   * The claim is written under a unique key on the identity, so if a second
+   * request for the same invoice got here first its serial stands and ours is
+   * simply not used. Re-reading rather than trusting `allocated` is what makes
+   * both requests agree on one number.
+   */
+  await query(
+    `INSERT INTO invoice_serial_claims (business_id, period_from, period_to, laundry_type, serial)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE serial = serial`,
+    [businessId, from, to, typeKey, allocated]
+  );
+  const settled = await query<{ serial: number }>(
+    `SELECT serial FROM invoice_serial_claims
+      WHERE business_id = ? AND period_from = ? AND period_to = ? AND laundry_type = ?
+      LIMIT 1`,
+    [businessId, from, to, typeKey]
+  );
+  const serial = settled.rows.length > 0 ? Number(settled.rows[0].serial) : allocated;
+  return { invoiceNumber: invoiceNumberForSerial(serial, laundryType), serial };
+}
+
+/**
+ * Takes the next serial from the one global counter.
+ *
+ * ATOMIC, so two invoices issued at the same instant cannot take the same
+ * number. `LAST_INSERT_ID(expr)` makes MySQL compute the new value and hand
+ * it back on the SAME statement, under the row lock the UPDATE already
+ * holds — there is no read-then-write window for a second connection to slip
+ * into, and no explicit transaction is needed.
+ */
+async function allocateInvoiceSerial(): Promise<number> {
+  const updated = await query(
+    `UPDATE invoice_number_sequence
+        SET next_value = LAST_INSERT_ID(next_value) + 1
+      WHERE id = 1`
+  );
+  if (updated.rowCount === 0) {
+    throw new AppError('The invoice number sequence is missing. Run the migrations.', 500);
+  }
+  // LAST_INSERT_ID(next_value) handed back the value the counter was ON, and
+  // the counter moved past it in the same statement. That value is the serial.
+  const got = await query<{ serial: number }>(`SELECT LAST_INSERT_ID() AS serial`);
+  return Number(got.rows[0].serial);
+}
+
 /** How many characters of the invoice number are shown to people. */
 export const INVOICE_NUMBER_DISPLAY_LENGTH = 12;
 
@@ -165,7 +319,17 @@ export const INVOICE_NUMBER_DISPLAY_LENGTH = 12;
  * one.
  */
 export function displayInvoiceNumber(invoiceNumber: string): string {
-  return String(invoiceNumber ?? '').slice(0, INVOICE_NUMBER_DISPLAY_LENGTH);
+  const full = String(invoiceNumber ?? '');
+  /*
+   * A GLOBALLY SERIALLED NUMBER IS SHOWN WHOLE.
+   *
+   * `SWC/HL/INV/0059` carries nothing but the type and the serial, so there
+   * is nothing to trim — and trimming it to twelve characters would cut the
+   * serial in half. The rule below applies only to the older shape, whose
+   * tail is the period and the type and was never meant to be shown.
+   */
+  if (/^SWC\/(HL|GL)\/INV\//.test(full)) return full;
+  return full.slice(0, INVOICE_NUMBER_DISPLAY_LENGTH);
 }
 
 export interface GstInvoice {
@@ -175,6 +339,12 @@ export interface GstInvoice {
    * any future lookup.
    */
   invoice_number: string;
+  /**
+   * The global serial this invoice was issued under, or null for one issued
+   * before the sequence existed. The number above is what identifies it;
+   * this is what the sequence handed out.
+   */
+  invoice_serial: number | null;
   /**
    * The SHORT form shown to people: the first 10 characters of the full one.
    *
@@ -395,7 +565,13 @@ export async function buildInvoice(
    * Percentage taken off the subtotal before GST. Omitted means none, which
    * is what every caller that predates the field does.
    */
-  discountPercentInput?: unknown
+  discountPercentInput?: unknown,
+  /**
+   * True only when the invoice is actually being ISSUED — the download that
+   * puts it on record. That is the one moment a serial may be taken from the
+   * global sequence; a preview must never consume one.
+   */
+  issue: boolean = false
 ): Promise<GstInvoice> {
   /*
    * Two ways in.
@@ -607,9 +783,16 @@ export async function buildInvoice(
   );
   const invoiceDate = String(invoiceDateResult.rows[0].d);
 
-  // Readable, unique per business and period, and derivable again from the
-  // same inputs — regenerating the same invoice does not mint a new number.
-  const invoiceNumber = invoiceNumberFor(String(business.id), from, to, laundryType ?? null);
+  /*
+   * THE NUMBER. Reused if this invoice already has one, so regenerating it
+   * does not mint a second; a serial is taken from the one global sequence
+   * only when it is being issued for the first time.
+   */
+  const resolved = await resolveInvoiceNumber(
+    String(business.id), from, to, laundryType ?? null, { allocate: issue }
+  );
+  const invoiceNumber = resolved.invoiceNumber;
+  const invoiceSerial = resolved.serial;
 
   /*
    * THE FINAL PAYABLE FIGURE, NAMED ONCE.
@@ -642,6 +825,7 @@ export async function buildInvoice(
 
   return {
     invoice_number: invoiceNumber,
+    invoice_serial: invoiceSerial,
     invoice_number_display: displayInvoiceNumber(invoiceNumber),
     invoice_date: invoiceDate,
     laundry_type: laundryType ?? null,

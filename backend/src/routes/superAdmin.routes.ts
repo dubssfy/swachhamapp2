@@ -489,8 +489,13 @@ router.get('/businesses/:id/invoice.pdf', async (req: Request, res: Response, ne
   try {
     const authReq = req as AuthenticatedRequest;
     const laundryType = parseLaundryType(req.query.laundry_type);
+    /*
+     * `true` — this is the ISSUE. Downloading the document is what puts the
+     * invoice on record, so it is also what takes a serial from the global
+     * sequence. The preview endpoint above deliberately does not.
+     */
     const invoice = await buildInvoice(
-      req.params.id, req.query.from, req.query.to, laundryType, req.query.discount_percent
+      req.params.id, req.query.from, req.query.to, laundryType, req.query.discount_percent, true
     );
     const pdf = await renderInvoicePdf(invoice);
 

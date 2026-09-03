@@ -245,6 +245,52 @@ export interface PaymentContext {
 }
 
 /**
+ * The deduction the invoice for this period was ISSUED with.
+ *
+ * WHY THIS IS READ RATHER THAN RECOMPUTED. The discount is already applied by
+ * `buildInvoice`; all that is missing here is the percentage it was issued
+ * under, which lives on the stored invoice. Handing it back to the same
+ * builder makes the figure this screen and the Outstanding report show the
+ * amount actually billed, instead of the list price.
+ *
+ * WHY NOT THE STORED TOTAL ITSELF. A stored invoice is a snapshot of ONE
+ * laundry type at the moment it was issued; what is rebuilt here is BOTH
+ * types from the orders as they stand now. The two are different quantities —
+ * on this data they already differ by thousands with no discount anywhere —
+ * so substituting one for the other would move the figure for reasons that
+ * have nothing to do with a deduction. Only the percentage crosses over.
+ *
+ * A PERIOD WHOSE INVOICES DISAGREE GETS NONE. Hotel at 10% and Guest at 0%
+ * cannot be expressed as one percentage of a combined rebuild, and inventing
+ * a blend would be a new discount calculation. That case is left exactly as
+ * it behaves today and logged, rather than answered with a guess.
+ */
+async function issuedDiscountPercent(
+  businessId: string,
+  from: string,
+  to: string
+): Promise<number> {
+  const rows = await query<{ discount_percent: string | number }>(
+    `SELECT DISTINCT discount_percent
+       FROM business_invoices
+      WHERE business_id = ? AND period_from = ? AND period_to = ?`,
+    [businessId, from, to]
+  );
+  const percents = rows.rows
+    .map((row) => Number(row.discount_percent) || 0)
+    .filter((value) => value > 0);
+  if (percents.length === 0) return 0;
+  if (percents.length > 1) {
+    logger.warn(
+      `[PaymentContext] ${businessId} ${from}..${to} has invoices at different ` +
+        `discounts (${percents.join(', ')}%); billing the period undiscounted.`
+    );
+    return 0;
+  }
+  return percents[0];
+}
+
+/**
  * Everything the Payment Receipt form opens with.
  *
  * The LATEST invoice by default, so nothing has to be typed: the most recent
@@ -278,7 +324,12 @@ export async function getPaymentContext(
 
   for (const period of candidates) {
     try {
-      const invoice = await buildInvoice(business.id, period.from, period.to);
+      const invoice = await buildInvoice(
+        business.id, period.from, period.to, null,
+        // The deduction this period's invoice was issued with, so the amount
+        // shown is what was billed rather than the price before it.
+        await issuedDiscountPercent(business.id, period.from, period.to)
+      );
       const current = money(invoice.totals.grand_total);
 
       // Carried forward from EARLIER invoices only -- see previousBalanceFor.
@@ -428,7 +479,10 @@ export async function recordPayment(
 
   // Rebuilt, not trusted: this is what proves the invoice is this business's
   // and what its total actually is. Throws 404 when the period holds nothing.
-  const invoice = await buildInvoice(business.id, from, to);
+  const invoice = await buildInvoice(
+    business.id, from, to, null,
+    await issuedDiscountPercent(business.id, from, to)
+  );
   const currentInvoiceAmount = money(invoice.totals.grand_total);
 
   // Carried forward from EARLIER invoices only, so a second payment against

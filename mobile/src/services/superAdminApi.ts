@@ -765,6 +765,71 @@ export interface ItemKgRow {
   total_kg: number;
 }
 
+/**
+ * The window every KG report accepts, and the two selections that narrow it.
+ *
+ * `business_id` and `laundry_type` are OMITTED for All — an absence rather
+ * than a sentinel — so a report asked for without them is the report exactly
+ * as it was before the filters existed.
+ */
+export interface KgReportParams {
+  year?: number | string;
+  month?: number | string;
+  from?: string;
+  to?: string;
+  /** A business id, or omitted for every establishment. */
+  business_id?: string;
+  /** 'hotel' | 'guest', or omitted for both. */
+  laundry_type?: string;
+}
+
+/** One axis entry of a pivot: the key cells are addressed by, and its label. */
+export interface KgPivotAxis {
+  key: string;
+  label: string;
+}
+
+/**
+ * A KG grid — hotels or items down the side, months or items across the top.
+ *
+ * Every row carries every column, zero-filled by the server, so the screen
+ * never has to decide what a missing cell means.
+ */
+export interface KgPivotReport {
+  from: string;
+  to: string;
+  columns: KgPivotAxis[];
+  rows: Array<{
+    key: string;
+    label: string;
+    cells: Record<string, number>;
+    total_kg: number;
+  }>;
+  column_totals: Record<string, number>;
+  grand_total_kg: number;
+}
+
+/** One line of the day-wise report: a day, a hotel, an item and its KG. */
+export interface DayWiseKgRow {
+  date: string;
+  date_label: string;
+  business_id: string;
+  hotel_name: string;
+  laundry_type: 'hotel' | 'guest';
+  laundry_type_label: 'Hotel' | 'Guest';
+  item_id: string;
+  item_name: string;
+  total_qty: number;
+  total_kg: number;
+}
+
+export interface DayWiseKgReport {
+  from: string;
+  to: string;
+  rows: DayWiseKgRow[];
+  totals: { days: number; hotels: number; items: number; total_qty: number; total_kg: number };
+}
+
 export interface ItemKgReport {
   from: string;
   to: string;
@@ -2247,6 +2312,69 @@ const superAdminApi = {
       { params: { ...params, business_id: businessId || undefined } }
     );
     return res.data.data;
+  },
+
+  /**
+   * THE THREE KG PIVOTS — a grid, not a list.
+   *
+   * All three come back in ONE shape: `columns` across the top, `rows` down
+   * the side, `cells` keyed by column, plus the totals. The screen draws any
+   * of them without knowing which it is holding.
+   *
+   * The figures are the existing reports' own — these endpoints pivot them,
+   * they do not recompute them.
+   */
+  getHotelMonthlyKgReport: async (params?: KgReportParams): Promise<KgPivotReport> => {
+    const res = await apiClient.get<ApiResponse<KgPivotReport>>(
+      '/api/super-admin/reports/kg/hotel-monthly', { params }
+    );
+    return res.data.data;
+  },
+
+  getItemMonthlyKgReport: async (params?: KgReportParams): Promise<KgPivotReport> => {
+    const res = await apiClient.get<ApiResponse<KgPivotReport>>(
+      '/api/super-admin/reports/kg/item-monthly', { params }
+    );
+    return res.data.data;
+  },
+
+  getHotelItemKgReport: async (params?: KgReportParams): Promise<KgPivotReport> => {
+    const res = await apiClient.get<ApiResponse<KgPivotReport>>(
+      '/api/super-admin/reports/kg/hotel-item', { params }
+    );
+    return res.data.data;
+  },
+
+  /**
+   * DAY-WISE, HOTEL-WISE, ITEM-WISE KG — one line per day, hotel and item.
+   *
+   * The same KG the item reports carry, cut a day at a time and already
+   * ordered day, then hotel, then item by the server.
+   */
+  getDayWiseKgReport: async (params?: KgReportParams): Promise<DayWiseKgReport> => {
+    const res = await apiClient.get<ApiResponse<DayWiseKgReport>>(
+      '/api/super-admin/reports/kg/day-wise', { params }
+    );
+    return res.data.data;
+  },
+
+  /**
+   * The URL a KG report's PDF is downloaded from.
+   *
+   * The document is rendered by the SERVER from the same service the JSON
+   * above comes from, so what is printed cannot drift from what is shown.
+   * `FileSystem.downloadAsync` fetches it and needs the bearer token, which
+   * is why this hands back a URL rather than the bytes — see `authHeader`.
+   */
+  kgReportPdfUrl: (
+    report: 'hotel-monthly' | 'item-monthly' | 'hotel-item' | 'day-wise',
+    params: KgReportParams = {}
+  ): string => {
+    const query = Object.entries(params)
+      .filter(([, value]) => value !== undefined && value !== null && value !== '')
+      .map(([key, value]) => `${key}=${encodeURIComponent(String(value))}`)
+      .join('&');
+    return `${API_BASE_URL}/api/super-admin/reports/kg/${report}.pdf${query ? `?${query}` : ''}`;
   },
 
   /**

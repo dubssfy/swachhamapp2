@@ -81,9 +81,9 @@ const DATE_W_MAX = 44;
 const DATE_W_MIN = 18;
 
 /** The three closing columns, on the final block only. */
-const TOTAL_W = 36;
-const RATE_W = 44;
-const AMOUNT_W = 60;
+const TOTAL_W_BASE = 36;
+const RATE_W_BASE = 44;
+const AMOUNT_W_BASE = 60;
 
 /*
  * ------------------------------------------------------------------
@@ -221,7 +221,15 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
      * Measured against the FINAL block's width, which is the widest — sizing
      * to a middle block would let the last one overflow the page.
      */
-    const closingW = TOTAL_W + RATE_W + AMOUNT_W;
+    /*
+     * The closing three start at their comfortable widths and, like the item
+     * and date columns, may grow in the fill pass below. Held as locals so
+     * every reference further down reads the width actually used.
+     */
+    let TOTAL_W = TOTAL_W_BASE;
+    let RATE_W = RATE_W_BASE;
+    let AMOUNT_W = AMOUNT_W_BASE;
+    let closingW = TOTAL_W + RATE_W + AMOUNT_W;
     const plan = planColumns(report.dates.length, width - ITEM_W_MIN - closingW);
     let DATE_W = plan.dateW;
     // Whatever the dates did not need goes back to the item name, up to its
@@ -265,6 +273,31 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
     // 2. Then the item name, which ellipsises and so gains most from the rest.
     const itemRoom = Math.max(0, width - widestBlock(ITEM_W, DATE_W));
     ITEM_W += Math.max(0, Math.min(ITEM_W_FILL - ITEM_W, itemRoom));
+
+    /*
+     * 3. ANYTHING STILL LEFT IS SHARED OUT, IN PROPORTION.
+     *
+     * Steps 1 and 2 stop at their ceilings, and with only a few date columns
+     * those ceilings leave a blank strip down the right of the page — 270pt
+     * of it on a one-date report, a third of the sheet. The remainder is
+     * handed to EVERY column in proportion to the width it already holds, so
+     * the grid reaches the margin without any one column being stretched out
+     * of scale with the others.
+     *
+     * A long period never gets here: its slack is already nil, the factor is
+     * 1, and nothing about it changes. Only widths move — the fonts, and the
+     * dense/roomy decision that was taken from them, are untouched.
+     */
+    const grown = widestBlock(ITEM_W, DATE_W);
+    if (grown > 0 && width - grown > 0.5) {
+      const factor = width / grown;
+      ITEM_W *= factor;
+      DATE_W *= factor;
+      TOTAL_W *= factor;
+      RATE_W *= factor;
+      AMOUNT_W *= factor;
+      closingW = TOTAL_W + RATE_W + AMOUNT_W;
+    }
 
     /*
      * A dense grid drops to a smaller figure font and to DAY-ONLY headings.
@@ -427,14 +460,71 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
       const closingX = left + ITEM_W + blockDates.length * DATE_W;
       const tableW = ITEM_W + blockDates.length * DATE_W + (isLastBlock ? closingW : 0);
 
-      let maxOrderLinesInBlock = 2;
+      /*
+       * HOW TALL THE HEADING BAND HAS TO BE.
+       *
+       * MEASURED, not counted. An order number is much wider than a date
+       * column — about 55pt of ink against a column of 19-51pt — so it needs
+       * more than one line inside that column. Counting one line per order
+       * is what left the numbers nowhere to go but sideways, across the
+       * columns beside them. Each date's stack is measured at the very font
+       * and width it is drawn in, and the tallest stack sets the band.
+       */
+      const ORDER_FONT_MAX = Math.min(headFont, 6.5);
+      const ORDER_W = DATE_W - 3;
+
+      /**
+       * One order number, broken into the lines its column can hold.
+       *
+       * PDFKIT BREAKS LINES AT SPACES, AND AN ORDER NUMBER HAS NONE. Giving
+       * `text` a `width` therefore never contained it: the number was laid
+       * out as one unbreakable word and simply ran on past the column, across
+       * whatever was drawn beside it. Splitting at the character the column
+       * runs out at is what actually keeps it inside.
+       *
+       * The size is the one `figure` would have chosen — shrink to fit, and
+       * no smaller than 5.2pt — so the digits stay exactly the size they are
+       * on the sheet today and only their arrangement changes.
+       */
+      const orderLinesFor = (text: string) => {
+        doc.font('Helvetica').fontSize(ORDER_FONT_MAX);
+        const full = doc.widthOfString(text);
+        const size =
+          full > ORDER_W ? Math.max(5.2, (ORDER_FONT_MAX * ORDER_W) / full) : ORDER_FONT_MAX;
+        doc.fontSize(size);
+
+        const lines: string[] = [];
+        let current = '';
+        for (const ch of text) {
+          if (current && doc.widthOfString(current + ch) > ORDER_W) {
+            lines.push(current);
+            current = ch;
+          } else {
+            current += ch;
+          }
+        }
+        if (current) lines.push(current);
+        return { size, lineH: doc.currentLineHeight(), lines: lines.length ? lines : [text] };
+      };
+
+      /*
+       * HOW TALL THE HEADING BAND HAS TO BE — measured, not counted.
+       *
+       * A number that needs three lines is given three lines' worth of band,
+       * so the rows underneath start below it rather than through it.
+       */
+      // 8pt is the one order line the band has always carried, so a block
+      // with no order numbers keeps exactly the height it had.
+      let orderStackH = 8;
       blockDates.forEach((date) => {
         const list = report.orders_by_date?.[date] || [];
-        if (list.length > 0) {
-          maxOrderLinesInBlock = Math.max(maxOrderLinesInBlock, 1 + list.length);
-        }
+        const stack = list.reduce((sum, orderNo) => {
+          const { lines, lineH } = orderLinesFor(orderNo);
+          return sum + lines.length * lineH;
+        }, 0);
+        orderStackH = Math.max(orderStackH, stack);
       });
-      const blockHeadH = HEAD_H + (maxOrderLinesInBlock - 1) * 8;
+      const blockHeadH = HEAD_H + orderStackH;
 
       const head = (top: number): number => {
         doc.rect(left, top, tableW, blockHeadH).fill(THEME.PRIMARY);
@@ -477,17 +567,31 @@ export function renderItemQuantityReportPdf(report: ItemQuantityReport): Promise
             lineBreak: false,
           });
 
-          orderNumbers.forEach((orderNo, orderIdx) => {
-            const yPos = top + 5 + (orderIdx + 1) * 8;
-            doc.fillColor('#FFFFFF');
-            figure(
-              orderNo,
-              left + ITEM_W + i * DATE_W,
-              yPos,
-              DATE_W - 3,
-              Math.min(headFont, 6.5),
-              false
-            );
+          /*
+           * EACH NUMBER STAYS INSIDE ITS OWN COLUMN.
+           *
+           * `figure` draws on ONE line, and past its shrink-to-fit floor it
+           * simply overran: at 5.2pt an order number is 55.5pt of ink laid
+           * into a column of 19-51pt, so every number ran across the ones
+           * beside it — which is the overlap. Drawn as ordinary text bounded
+           * by the column, a number that does not fit takes another line
+           * within its own column rather than another column's space.
+           *
+           * The first line sits at top + 13, exactly where it always did, so
+           * a single order number is unmoved.
+           */
+          let orderY = top + 5 + 8;
+          orderNumbers.forEach((orderNo) => {
+            const { size, lineH, lines } = orderLinesFor(orderNo);
+            doc.font('Helvetica').fontSize(size).fillColor('#FFFFFF');
+            lines.forEach((line) => {
+              doc.text(line, left + ITEM_W + i * DATE_W, orderY, {
+                width: ORDER_W,
+                align: 'right',
+                lineBreak: false,
+              });
+              orderY += lineH;
+            });
           });
         });
         if (isLastBlock) {

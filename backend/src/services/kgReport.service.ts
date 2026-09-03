@@ -504,3 +504,462 @@ export async function itemWiseKg(
     sort: ITEM_SORTS[String(options.sort || 'kg_desc')] ? String(options.sort || 'kg_desc') : 'kg_desc',
   };
 }
+
+/* ===================================================================
+ * THE THREE PIVOTS
+ * ===================================================================
+ *
+ * Rows down one axis, columns across the other, KG in the cell. All three
+ * share ONE shape, so a single screen — and later a single PDF — can draw any
+ * of them without knowing which it is holding.
+ *
+ * NO NEW ARITHMETIC. Each reuses the definitions the existing reports use,
+ * pivoted rather than recomputed:
+ *
+ *   Hotel x Month   order weight   (`COUNTABLE_ORDERS` + `MONTH_SELECT`)
+ *   Item x Month    line weight    (the `itemWiseKg` join)
+ *   Hotel x Item    line weight    (the `itemWiseKg` join)
+ *
+ * WHY TWO WEIGHT SOURCES, AND WHY THEY ARE NOT RECONCILED HERE. An order
+ * carries its own `total_weight_kg`, and so does each of its lines. The
+ * existing per-customer report reads the first and the existing item report
+ * reads the second; that is a decision those reports already made, and a
+ * pivot is not the place to overturn it. It does mean a hotel's total on
+ * Report 1 need not equal its total on Report 3 — the same difference the two
+ * existing reports already carry between them.
+ */
+
+/**
+ * THE TWO NEW SELECTIONS, as SQL.
+ *
+ * ESTABLISHMENT and TYPE OF BUSINESS narrow which orders a KG report counts.
+ * They are a WHERE clause and nothing else: the grouping, the weights and the
+ * totals are untouched, so an unfiltered report is exactly the report it was
+ * before these existed.
+ *
+ * Both are an ABSENCE when set to All — no clause is added at all — rather
+ * than a sentinel value, so "every establishment" cannot collide with a real
+ * id and "both types" cannot collide with a real type.
+ *
+ * Every query these are spliced into aliases `orders` as `o` and
+ * `business_users` as `bu`, which is what lets one helper serve all four.
+ */
+export interface KgScope {
+  /** A business id, or undefined / '' / 'all' for every establishment. */
+  businessId?: unknown;
+  /** 'hotel', 'guest', or undefined / '' / 'all' for both. */
+  laundryType?: unknown;
+}
+
+/** Reads a type of business off a request, rejecting anything else. */
+function scopeLaundryType(value: unknown): 'hotel' | 'guest' | null {
+  if (value === undefined || value === null) return null;
+  const key = String(value).trim().toLowerCase();
+  if (key === '' || key === 'all') return null;
+  if (key === 'hotel' || key === 'guest') return key;
+  throw new AppError('Type of business must be All, Hotel or Guest.', 400);
+}
+
+function scopeFor(scope: KgScope = {}): { sql: string; values: unknown[] } {
+  let sql = '';
+  const values: unknown[] = [];
+
+  const raw = String(scope.businessId ?? '').trim();
+  if (raw !== '' && raw.toLowerCase() !== 'all') {
+    if (!/^\d+$/.test(raw)) throw new AppError('A valid establishment is required.', 400);
+    sql += ' AND bu.business_id = ?';
+    values.push(raw);
+  }
+
+  const type = scopeLaundryType(scope.laundryType);
+  if (type) {
+    sql += ' AND o.laundry_type = ?';
+    values.push(type);
+  }
+
+  return { sql, values };
+}
+
+export interface PivotAxis {
+  key: string;
+  label: string;
+}
+
+/** One cell address and its weight, before the rectangle is filled in. */
+interface PivotCell {
+  row: string;
+  column: string;
+  total_kg: number;
+}
+
+export interface PivotReport {
+  from: string;
+  to: string;
+  /** What the columns are, left to right, ready to print. */
+  columns: PivotAxis[];
+  rows: Array<{
+    key: string;
+    label: string;
+    /** Keyed by column key. Every column is present; empty ones are 0. */
+    cells: Record<string, number>;
+    total_kg: number;
+  }>;
+  /** The foot of each column. */
+  column_totals: Record<string, number>;
+  grand_total_kg: number;
+}
+
+/**
+ * Lays raw (row, column, kg) triples out as a rectangle.
+ *
+ * Every row gets every column, zero-filled: a missing cell is ambiguous
+ * between "none" and "not asked", the same reason the Order Summary prints
+ * "-" rather than nothing.
+ */
+function pivot(
+  cells: PivotCell[],
+  rowAxis: PivotAxis[],
+  columnAxis: PivotAxis[],
+  from: string,
+  to: string
+): PivotReport {
+  const byRow = new Map<string, Record<string, number>>();
+  for (const axis of rowAxis) byRow.set(axis.key, {});
+  for (const cell of cells) {
+    const row = byRow.get(cell.row);
+    if (row) row[cell.column] = kg((row[cell.column] || 0) + cell.total_kg);
+  }
+
+  const column_totals: Record<string, number> = {};
+  for (const column of columnAxis) column_totals[column.key] = 0;
+
+  const rows = rowAxis.map((axis) => {
+    const found = byRow.get(axis.key) || {};
+    const filled: Record<string, number> = {};
+    let total = 0;
+    for (const column of columnAxis) {
+      const value = kg(found[column.key] || 0);
+      filled[column.key] = value;
+      total += value;
+      column_totals[column.key] = kg(column_totals[column.key] + value);
+    }
+    return { key: axis.key, label: axis.label, cells: filled, total_kg: kg(total) };
+  });
+
+  return {
+    from,
+    to,
+    columns: columnAxis,
+    rows,
+    column_totals,
+    grand_total_kg: kg(rows.reduce((sum, row) => sum + row.total_kg, 0)),
+  };
+}
+
+/** The months of the window as columns, gap-free — the set the graph uses. */
+function monthColumns(from: string, to: string): PivotAxis[] {
+  return monthsBetween(from.slice(0, 7), to.slice(0, 7))
+    .map((month) => ({ key: month, label: label(month) }));
+}
+
+/** Establishments and items sort by the name they are printed under. */
+function byLabel(a: PivotAxis, b: PivotAxis): number {
+  return a.label.localeCompare(b.label);
+}
+
+/**
+ * REPORT 1 — Hotel-wise monthly KG. Rows are establishments, columns months.
+ *
+ * ORDER WEIGHT, counted once per order. `order_items` is deliberately not
+ * joined: joining it here would multiply every order's weight by its number
+ * of lines, which is the single most likely way to get this report wrong —
+ * see the note on `MONTH_SELECT`.
+ */
+export async function hotelMonthlyKg(
+  windowInput: ReportWindow = {},
+  scope: KgScope = {}
+): Promise<PivotReport> {
+  const { from, to } = resolveWindow(windowInput);
+  const tz = config.BUSINESS_TZ_OFFSET;
+  const narrow = scopeFor(scope);
+
+  const result = await query<{
+    business_id: string; name: string; month_key: string; total_kg: string;
+  }>(
+    `SELECT o_month.business_id,
+            COALESCE(NULLIF(b.establishment_name, ''), b.name) AS name,
+            o_month.month_key,
+            COALESCE(SUM(o_month.order_kg), 0) AS total_kg
+       FROM (${MONTH_SELECT} ${COUNTABLE_ORDERS}${narrow.sql}) AS o_month
+       JOIN businesses b ON b.id = o_month.business_id
+      GROUP BY o_month.business_id, name, o_month.month_key
+      ORDER BY name ASC, o_month.month_key ASC`,
+    [tz, tz, from, to, ...narrow.values]
+  );
+
+  const hotels = new Map<string, string>();
+  for (const row of result.rows) hotels.set(String(row.business_id), row.name);
+
+  return pivot(
+    result.rows.map((row) => ({
+      row: String(row.business_id),
+      column: row.month_key,
+      total_kg: kg(row.total_kg),
+    })),
+    [...hotels.entries()].map(([key, name]) => ({ key, label: name })).sort(byLabel),
+    monthColumns(from, to),
+    from,
+    to
+  );
+}
+
+/**
+ * REPORT 2 — Item-wise monthly KG. Rows are items, columns months.
+ *
+ * LINE WEIGHT. The join to `order_items` is the point of the report and is
+ * safe here because the aggregate is over the lines themselves — the same
+ * reasoning `itemWiseKg` sets out.
+ */
+export async function itemMonthlyKg(
+  windowInput: ReportWindow = {},
+  scope: KgScope = {}
+): Promise<PivotReport> {
+  const { from, to } = resolveWindow(windowInput);
+  const tz = config.BUSINESS_TZ_OFFSET;
+  const narrow = scopeFor(scope);
+
+  const result = await query<{
+    item_id: string; item_name: string; month_key: string; total_kg: string;
+  }>(
+    `SELECT oi.service_id AS item_id,
+            MAX(oi.service_name) AS item_name,
+            DATE_FORMAT(CONVERT_TZ(o.created_at, '+00:00', ?), '%Y-%m') AS month_key,
+            COALESCE(SUM(oi.total_weight_kg), 0) AS total_kg
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       JOIN business_users bu ON bu.id = o.business_user_id
+      WHERE o.business_user_id IS NOT NULL
+        AND o.status <> 'CANCELLED'
+        AND DATE(CONVERT_TZ(o.created_at, '+00:00', ?)) BETWEEN ? AND ?
+${narrow.sql}
+      GROUP BY oi.service_id, month_key
+      ORDER BY item_name ASC, month_key ASC`,
+    [tz, tz, from, to, ...narrow.values]
+  );
+
+  const items = new Map<string, string>();
+  for (const row of result.rows) {
+    if (!items.has(String(row.item_id))) items.set(String(row.item_id), row.item_name);
+  }
+
+  return pivot(
+    result.rows.map((row) => ({
+      row: String(row.item_id),
+      column: row.month_key,
+      total_kg: kg(row.total_kg),
+    })),
+    [...items.entries()].map(([key, name]) => ({ key, label: name })).sort(byLabel),
+    monthColumns(from, to),
+    from,
+    to
+  );
+}
+
+/**
+ * REPORT 3 — Hotel-wise item KG. Rows are establishments, columns items.
+ *
+ * LINE WEIGHT, as Report 2. The columns are whichever items actually moved in
+ * the window, so a sheet of empty columns is never printed for items nobody
+ * ordered.
+ */
+export async function hotelItemKg(
+  windowInput: ReportWindow = {},
+  scope: KgScope = {}
+): Promise<PivotReport> {
+  const { from, to } = resolveWindow(windowInput);
+  const tz = config.BUSINESS_TZ_OFFSET;
+  const narrow = scopeFor(scope);
+
+  const result = await query<{
+    business_id: string; name: string; item_id: string; item_name: string; total_kg: string;
+  }>(
+    `SELECT bu.business_id,
+            COALESCE(NULLIF(b.establishment_name, ''), b.name) AS name,
+            oi.service_id AS item_id,
+            MAX(oi.service_name) AS item_name,
+            COALESCE(SUM(oi.total_weight_kg), 0) AS total_kg
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       JOIN business_users bu ON bu.id = o.business_user_id
+       JOIN businesses b ON b.id = bu.business_id
+      WHERE o.business_user_id IS NOT NULL
+        AND o.status <> 'CANCELLED'
+        AND DATE(CONVERT_TZ(o.created_at, '+00:00', ?)) BETWEEN ? AND ?
+${narrow.sql}
+      GROUP BY bu.business_id, name, oi.service_id
+      ORDER BY name ASC, item_name ASC`,
+    [tz, from, to, ...narrow.values]
+  );
+
+  const hotels = new Map<string, string>();
+  const items = new Map<string, string>();
+  for (const row of result.rows) {
+    hotels.set(String(row.business_id), row.name);
+    if (!items.has(String(row.item_id))) items.set(String(row.item_id), row.item_name);
+  }
+
+  return pivot(
+    result.rows.map((row) => ({
+      row: String(row.business_id),
+      column: String(row.item_id),
+      total_kg: kg(row.total_kg),
+    })),
+    [...hotels.entries()].map(([key, name]) => ({ key, label: name })).sort(byLabel),
+    [...items.entries()].map(([key, name]) => ({ key, label: name })).sort(byLabel),
+    from,
+    to
+  );
+}
+
+/**
+ * DAY-WISE, HOTEL-WISE, ITEM-WISE KG — one line per (day, hotel, item).
+ *
+ * THE SAME FIGURES THE ITEM REPORTS ALREADY GIVE, cut a day at a time. It is
+ * `hotelItemKg`'s query with the date added to the grouping: the same join,
+ * the same countable-order rule, the same `order_items.total_weight_kg`. Roll
+ * this report up by day and you get that one, which is the point.
+ *
+ * ORDERED DAY, THEN HOTEL, THEN ITEM — the order the report is read in, done
+ * in SQL so the screen and the PDF cannot disagree about it.
+ */
+export interface DayWiseKgRow {
+  /** 'YYYY-MM-DD', so the client sorts without parsing prose. */
+  date: string;
+  /** '01 Sep 2026', ready to print. */
+  date_label: string;
+  business_id: string;
+  hotel_name: string;
+  laundry_type: 'hotel' | 'guest';
+  laundry_type_label: 'Hotel' | 'Guest';
+  item_id: string;
+  item_name: string;
+  total_qty: number;
+  total_kg: number;
+}
+
+export interface DayWiseKgReport {
+  from: string;
+  to: string;
+  rows: DayWiseKgRow[];
+  /** Distinct days, hotels and items on the report — the summary cards. */
+  totals: {
+    days: number;
+    hotels: number;
+    items: number;
+    total_qty: number;
+    total_kg: number;
+  };
+}
+
+const DAY_MONTHS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/** '2026-09-01' -> '01 Sep 2026'. */
+function dayLabel(iso: string): string {
+  const [y, m, d] = String(iso).split('-');
+  if (!y || !m || !d) return String(iso);
+  return `${d} ${DAY_MONTHS[Number(m) - 1] ?? m} ${y}`;
+}
+
+export async function dayWiseHotelItemKg(
+  windowInput: ReportWindow = {},
+  scope: KgScope = {}
+): Promise<DayWiseKgReport> {
+  const { from, to } = resolveWindow(windowInput);
+  const tz = config.BUSINESS_TZ_OFFSET;
+  const narrow = scopeFor(scope);
+
+  const result = await query<{
+    day: string; business_id: string; hotel_name: string;
+    laundry_type: string; item_id: string; item_name: string;
+    total_qty: string; total_kg: string;
+  }>(
+    `SELECT DATE_FORMAT(CONVERT_TZ(o.created_at, '+00:00', ?), '%Y-%m-%d') AS day,
+            bu.business_id,
+            COALESCE(NULLIF(b.establishment_name, ''), b.name) AS hotel_name,
+            o.laundry_type,
+            oi.service_id AS item_id,
+            MAX(oi.service_name) AS item_name,
+            COALESCE(SUM(oi.quantity), 0) AS total_qty,
+            COALESCE(SUM(oi.total_weight_kg), 0) AS total_kg
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       JOIN business_users bu ON bu.id = o.business_user_id
+       JOIN businesses b ON b.id = bu.business_id
+      WHERE o.business_user_id IS NOT NULL
+        AND o.status <> 'CANCELLED'
+        AND DATE(CONVERT_TZ(o.created_at, '+00:00', ?)) BETWEEN ? AND ?
+${narrow.sql}
+      GROUP BY day, bu.business_id, hotel_name, o.laundry_type, oi.service_id
+      ORDER BY day ASC, hotel_name ASC, item_name ASC
+      LIMIT 5000`,
+    [tz, tz, from, to, ...narrow.values]
+  );
+
+  const rows: DayWiseKgRow[] = result.rows.map((row) => {
+    const lType = (row.laundry_type === 'guest' ? 'guest' : 'hotel') as 'hotel' | 'guest';
+    return {
+      date: row.day,
+      date_label: dayLabel(row.day),
+      business_id: String(row.business_id),
+      hotel_name: row.hotel_name,
+      laundry_type: lType,
+      laundry_type_label: lType === 'guest' ? 'Guest' : 'Hotel',
+      item_id: String(row.item_id),
+      item_name: row.item_name,
+      total_qty: Number(row.total_qty || 0),
+      total_kg: kg(row.total_kg),
+    };
+  });
+
+  return {
+    from,
+    to,
+    rows,
+    totals: {
+      days: new Set(rows.map((r) => r.date)).size,
+      hotels: new Set(rows.map((r) => r.business_id)).size,
+      items: new Set(rows.map((r) => r.item_id)).size,
+      total_qty: rows.reduce((sum, r) => sum + r.total_qty, 0),
+      total_kg: kg(rows.reduce((sum, r) => sum + r.total_kg, 0)),
+    },
+  };
+}
+
+/**
+ * What the selections narrowed the report to, in words — or '' for none.
+ *
+ * Printed on the PDF so a filtered sheet says what it is filtered to. An
+ * UNFILTERED report returns the empty string and its document is therefore
+ * byte-for-byte the one it was before the filters existed.
+ */
+export async function scopeLabel(scope: KgScope = {}): Promise<string> {
+  const parts: string[] = [];
+
+  const raw = String(scope.businessId ?? '').trim();
+  if (raw !== '' && raw.toLowerCase() !== 'all') {
+    const found = await query<{ name: string }>(
+      `SELECT COALESCE(NULLIF(establishment_name, ''), name) AS name
+         FROM businesses WHERE id = ?`,
+      [raw]
+    );
+    parts.push(found.rows[0]?.name || `Establishment ${raw}`);
+  }
+
+  const type = scopeLaundryType(scope.laundryType);
+  if (type) parts.push(type === 'hotel' ? 'Hotel Laundry' : 'Guest Laundry');
+
+  return parts.join('  ·  ');
+}

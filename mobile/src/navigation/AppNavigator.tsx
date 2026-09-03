@@ -254,6 +254,8 @@ import SuperAdminReportsScreen from '../screens/superadmin/SuperAdminReportsScre
 import SuperAdminKgReportHubScreen from '../screens/superadmin/SuperAdminKgReportHubScreen';
 import SuperAdminKgReportScreen from '../screens/superadmin/SuperAdminKgReportScreen';
 import SuperAdminItemKgReportScreen from '../screens/superadmin/SuperAdminItemKgReportScreen';
+import SuperAdminKgPivotReportScreen from '../screens/superadmin/SuperAdminKgPivotReportScreen';
+import SuperAdminDayWiseKgReportScreen from '../screens/superadmin/SuperAdminDayWiseKgReportScreen';
 import SuperAdminOutstandingReportScreen from '../screens/superadmin/SuperAdminOutstandingReportScreen';
 import SuperAdminRequestsScreen from '../screens/superadmin/SuperAdminRequestsScreen';
 import SuperAdminManagersScreen from '../screens/superadmin/SuperAdminManagersScreen';
@@ -710,6 +712,9 @@ function SuperAdminStack() {
       <Stack.Screen name="SuperAdminKgReportHub" component={SuperAdminKgReportHubScreen} />
       <Stack.Screen name="SuperAdminKgReport" component={SuperAdminKgReportScreen} />
       <Stack.Screen name="SuperAdminItemKgReport" component={SuperAdminItemKgReportScreen} />
+      {/* The three KG grids, one screen — which is drawn comes from `variant`. */}
+      <Stack.Screen name="SuperAdminKgPivotReport" component={SuperAdminKgPivotReportScreen} />
+      <Stack.Screen name="SuperAdminDayWiseKgReport" component={SuperAdminDayWiseKgReportScreen} />
       <Stack.Screen
         name="SuperAdminOutstandingReport"
         component={SuperAdminOutstandingReportScreen}

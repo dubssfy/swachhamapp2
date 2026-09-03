@@ -50,6 +50,33 @@ export default function SuperAdminKgReportHubScreen({ navigation }: any) {
           subtitle="Item-wise pieces & KG"
           onPress={() => navigation.navigate('SuperAdminItemKgReport')}
         />
+        {/* The three grid formats. Same KG figures as the reports above,
+            laid out as rows x columns. */}
+        <ReportCard
+          icon="grid-outline"
+          title="HOTEL-WISE MONTHLY KG"
+          subtitle="Hotels down, months across"
+          onPress={() => navigation.navigate('SuperAdminKgPivotReport', { variant: 'hotel-monthly' })}
+        />
+        <ReportCard
+          icon="apps-outline"
+          title="ITEM-WISE MONTHLY KG"
+          subtitle="Items down, months across"
+          onPress={() => navigation.navigate('SuperAdminKgPivotReport', { variant: 'item-monthly' })}
+        />
+        <ReportCard
+          icon="business-outline"
+          title="HOTEL-WISE ITEM KG"
+          subtitle="Hotels down, items across"
+          onPress={() => navigation.navigate('SuperAdminKgPivotReport', { variant: 'hotel-item' })}
+        />
+        {/* One month at a time: a line per day, hotel and item. */}
+        <ReportCard
+          icon="calendar-outline"
+          title="DAY-WISE ITEM KG"
+          subtitle="Date, hotel, item — one month"
+          onPress={() => navigation.navigate('SuperAdminDayWiseKgReport')}
+        />
       </ScrollView>
     </SafeAreaView>
   );
