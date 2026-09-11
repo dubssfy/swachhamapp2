@@ -12,6 +12,7 @@ import ticketApi, {
   PRIORITY_LABELS,
 } from '../../services/ticketApi';
 import { extractErrorMessage } from '../../services/api';
+import businessDoorApi from '../../services/businessDoorApi';
 
 /**
  * THE TICKET LIST — one screen for every role.
@@ -89,6 +90,56 @@ export default function TicketsScreen({ navigation }: any) {
       load();
     }, [load])
   );
+
+  /*
+   * RIDER TICKETS — a hotel's only. Riders raise tickets the hotel must
+   * answer (an uncounted pickup, a quantity that did not match), and they
+   * live on their own screen with Accept and Reject. This entry puts them in
+   * the Ticket Section too, with how many are waiting. The count is a hint:
+   * a failure to fetch it leaves the entry showing without one.
+   */
+  const isBusiness = meta?.role === 'BUSINESS';
+  const [riderTicketsWaiting, setRiderTicketsWaiting] = useState<number | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!isBusiness) return;
+      businessDoorApi
+        .getInboxCounts()
+        .then((r) =>
+          setRiderTicketsWaiting(
+            (r.data?.pending_tickets ?? 0) + (r.data?.pending_item_tickets ?? 0)
+          )
+        )
+        .catch(() => setRiderTicketsWaiting(null));
+    }, [isBusiness])
+  );
+
+  const riderTicketsEntry = isBusiness ? (
+    <TouchableOpacity
+      style={styles.riderEntry}
+      onPress={() => navigation.navigate('BusinessDoorTicketsScreen')}
+      activeOpacity={0.85}
+      accessibilityRole="button"
+      accessibilityLabel="Rider tickets"
+    >
+      <Ionicons name="bicycle-outline" size={22} color={COLORS.Primary} />
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={styles.riderEntryTitle}>Rider tickets</Text>
+        <Text style={styles.riderEntrySub} numberOfLines={1}>
+          {riderTicketsWaiting
+            ? `${riderTicketsWaiting} waiting for your approval`
+            : 'Uncounted pickups and quantity mismatches'}
+        </Text>
+      </View>
+      {riderTicketsWaiting ? (
+        <View style={styles.riderEntryBadge}>
+          <Text style={styles.riderEntryBadgeText}>{riderTicketsWaiting}</Text>
+        </View>
+      ) : null}
+      <Ionicons name="chevron-forward" size={20} color={COLORS.TextSecondary} />
+    </TouchableOpacity>
+  ) : null;
 
   /** One filter changed. The list reloads from the server, never in memory. */
   const apply = (patch: Partial<TicketFilters>) => {
@@ -289,7 +340,10 @@ export default function TicketsScreen({ navigation }: any) {
             />
           }
           ListHeaderComponent={
-            total > 0 ? <Text style={styles.count}>{total} ticket(s)</Text> : null
+            <>
+              {riderTicketsEntry}
+              {total > 0 ? <Text style={styles.count}>{total} ticket(s)</Text> : null}
+            </>
           }
           ListEmptyComponent={
             <View style={styles.centered}>
@@ -331,6 +385,34 @@ function Chip({ on, label, onPress }: { on: boolean; label: string; onPress: () 
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
+  riderEntry: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    backgroundColor: COLORS.Surface,
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
+    borderColor: COLORS.Accent,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+    ...SHADOWS.light,
+  },
+  riderEntryTitle: {
+    fontSize: TYPOGRAPHY.sizes.base,
+    fontWeight: TYPOGRAPHY.weights.semibold,
+    color: COLORS.TextPrimary,
+  },
+  riderEntrySub: { fontSize: TYPOGRAPHY.sizes.xs, color: COLORS.TextSecondary, marginTop: 2 },
+  riderEntryBadge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    paddingHorizontal: 6,
+    backgroundColor: COLORS.Warning,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  riderEntryBadgeText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,

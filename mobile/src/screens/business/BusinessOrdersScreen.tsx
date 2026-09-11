@@ -114,7 +114,10 @@ export default function BusinessOrdersScreen({ navigation }: any) {
   const loadPendingTickets = useCallback(async () => {
     try {
       const response = await businessDoorApi.getInboxCounts();
-      setPendingTickets(response.data?.pending_tickets ?? 0);
+      // Uncounted pickups and quantity mismatches both wait on this business.
+      setPendingTickets(
+        (response.data?.pending_tickets ?? 0) + (response.data?.pending_item_tickets ?? 0)
+      );
     } catch {
       // Ignored: the orders list is the screen, the dot is a hint.
     }

@@ -385,7 +385,7 @@ async function invoicePositionFor(orderId: string): Promise<InvoicePosition | nu
  * agreed when the order was placed stays as it is, and so do the coupon
  * discount and the tax, all of which are snapshots of that moment.
  */
-async function recalculateOrderTotals(
+export async function recalculateOrderTotals(
   connection: any,
   orderId: string
 ): Promise<AdjustedOrderTotals> {
@@ -584,11 +584,15 @@ export async function adjustDefectiveQuantity(params: {
        * through — it would then subtract 20 from a colour count of 10 and
        * leave the effective count negative.
        *
-       * The counts come from `pending_item`, which exists only once the line
-       * has been counted. A line that has NOT been counted is checked on the
-       * total alone: there is no white or colour figure to be too large for,
-       * and refusing the defect because nobody has counted yet would block
-       * the shop floor from recording damage it can plainly see.
+       * The counts come from `pending_item` — the figures saved in the
+       * line's Cloth Count card. A line that has NOT been counted is checked
+       * on the total alone: there is no white or colour figure to be too
+       * large for.
+       *
+       * ONCE COUNTED, AN EMPTY COLOUR IS 0, not "no limit". The card treats
+       * an empty box as none of that colour, so a defect of that colour
+       * cannot exist. The form applies the identical rule, so what it allows
+       * and what this accepts are the same.
        */
       const [countRows]: any = await connection.execute(
         `SELECT white_cloth_count, color_cloth_count
@@ -598,24 +602,20 @@ export async function adjustDefectiveQuantity(params: {
       const counts = countRows[0];
 
       if (counts) {
-        const whiteAvailable = counts.white_cloth_count === null
-          ? null
-          : Number(counts.white_cloth_count);
-        const colorAvailable = counts.color_cloth_count === null
-          ? null
-          : Number(counts.color_cloth_count);
+        const whiteAvailable = Number(counts.white_cloth_count ?? 0);
+        const colorAvailable = Number(counts.color_cloth_count ?? 0);
 
-        if (whiteAvailable !== null && whiteDefective > whiteAvailable) {
+        if (whiteDefective > whiteAvailable) {
           throw new AppError(
-            `Only ${whiteAvailable} white piece(s) were counted on this item, so ` +
-              `${whiteDefective} cannot be defective.`,
+            `White Defective Quantity cannot be more than the ${whiteAvailable} White Cloths ` +
+              `saved in Cloth Count. Enter 0 to ${whiteAvailable}.`,
             400
           );
         }
-        if (colorAvailable !== null && colorDefective > colorAvailable) {
+        if (colorDefective > colorAvailable) {
           throw new AppError(
-            `Only ${colorAvailable} colour piece(s) were counted on this item, so ` +
-              `${colorDefective} cannot be defective.`,
+            `Color Defective Quantity cannot be more than the ${colorAvailable} Color Cloths ` +
+              `saved in Cloth Count. Enter 0 to ${colorAvailable}.`,
             400
           );
         }

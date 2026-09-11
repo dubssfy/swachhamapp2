@@ -195,6 +195,24 @@ export default function RiderDashboardScreen() {
     );
   }, [awaitingTicket?.status, awaitingTicket?.job_id, clearAwaitingTicket, navigation]);
 
+  /*
+   * The refusal. The uncounted answer is withdrawn on the server, so the
+   * order's Accept Order step is open again — with counting as the only way
+   * on. The rider is taken straight there.
+   */
+  useEffect(() => {
+    if (!awaitingTicket || awaitingTicket.status !== 'REJECTED') return;
+
+    const jobId = awaitingTicket.job_id;
+    clearAwaitingTicket();
+
+    Alert.alert(
+      'Business rejected',
+      'They did not agree to this order being collected without counting. Count every item and submit the check to continue.',
+      [{ text: 'Count items', onPress: () => navigation.navigate('RiderJobDetails', { jobId }) }]
+    );
+  }, [awaitingTicket?.status, awaitingTicket?.job_id, clearAwaitingTicket, navigation]);
+
   const isOnline = Boolean(profile?.is_online);
   const carryingJobs = summary?.carrying_jobs ?? 0;
 

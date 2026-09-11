@@ -649,13 +649,26 @@ async function dispatchJob(
   );
 
   if (riders.length === 0) {
-    await query(
-      `UPDATE rider_jobs
-          SET status = 'UNASSIGNED', dispatch_attempts = dispatch_attempts + 1
-        WHERE id = ?`,
-      [jobId]
-    );
-    logger.warn(`[Dispatch] No rider available for job ${jobId} (order ${job.order_number})`);
+    /*
+     * NO ROUND WAS SPENT, SO NO ATTEMPT IS COUNTED.
+     *
+     * `MAX_DISPATCH_ATTEMPTS` limits how many times a job is FANNED OUT to
+     * riders — so riders who keep letting it lapse are not pestered forever.
+     * A pass that found nobody offered it to anyone.
+     *
+     * Counting these was fatal: `redispatchStaleJobs` runs on every rider's
+     * offer poll (every ~10 s), so a job placed while every rider was busy or
+     * offline burned all three attempts in under a minute, dropped out of the
+     * sweep for good, and was never offered again — even to a rider who came
+     * free moments later. Left uncounted, the sweep keeps looking until
+     * someone is in range, and the ceiling still applies to real offer rounds.
+     */
+    await query(`UPDATE rider_jobs SET status = 'UNASSIGNED' WHERE id = ?`, [jobId]);
+
+    // Once per job becoming unassigned, not on every sweep that re-checks it.
+    if (job.status !== 'UNASSIGNED') {
+      logger.warn(`[Dispatch] No rider available for job ${jobId} (order ${job.order_number})`);
+    }
     return { offered: 0, job: await getJobById(jobId) };
   }
 

@@ -2,8 +2,10 @@ import { create } from 'zustand';
 import * as Location from 'expo-location';
 import { getNotifications } from '../services/expoNotifications';
 import riderApi, {
+  CheckedItemInput,
   DoorTicket,
   HeldJob,
+  ItemCheckResult,
   JobOffer,
   RiderJob,
   RiderProfile,
@@ -121,10 +123,18 @@ export interface RiderState {
     jobId: string,
     pieceCount: number
   ) => Promise<{ ok: boolean; message: string }>;
+  /**
+   * "With Counting & Checked" — the item-by-item checking sheet. Also used to
+   * recheck the lines the business rejected.
+   */
+  submitItemCheck: (
+    jobId: string,
+    items: CheckedItemInput[]
+  ) => Promise<{ ok: boolean; message: string; result?: ItemCheckResult }>;
   /** "Without Counting & Checked" — accept, raise a ticket, then wait. */
   acceptOfferWithoutCounting: (jobId: string) => Promise<{ ok: boolean; message: string }>;
   /** One poll of the ticket the rider is waiting on. */
-  pollAwaitingTicket: () => Promise<{ accepted: boolean }>;
+  pollAwaitingTicket: () => Promise<{ accepted: boolean; rejected?: boolean }>;
   /** Restores a wait that outlived the app being closed. */
   refreshDoorTickets: () => Promise<void>;
   /** Drops the waiting card once the rider has been shown the outcome. */
@@ -397,6 +407,45 @@ export const useRiderStore = create<RiderState>((set, get) => ({
   },
 
   /**
+   * "With Counting & Checked" — item by item.
+   *
+   * Matched lines need nothing; every mismatched line becomes a ticket the
+   * business answers, and the handover waits until it has. The rider stays on
+   * the job screen, which polls the sheet — so nothing is set here beyond the
+   * usual refresh.
+   */
+  submitItemCheck: async (jobId: string, items: CheckedItemInput[]) => {
+    set({ isSubmittingDoorChoice: true });
+    try {
+      const response = await riderApi.submitItemCheck(jobId, items);
+      const result = response.data;
+      set({ offers: get().offers.filter((o) => o.job_id !== jobId) });
+      await get().refreshJobs();
+
+      const pending = result?.pending_tickets ?? 0;
+      return {
+        ok: true,
+        result,
+        message: result?.already_submitted
+          ? 'This check was already submitted.'
+          : pending > 0
+            ? `${pending} item${pending === 1 ? '' : 's'} did not match. The business has been ` +
+              'asked to approve — you can continue once they answer.'
+            : result?.recheck
+              ? 'Recheck matched the order. You can continue.'
+              : 'Every item matched. The business has been told the order was checked at the door.',
+      };
+    } catch (error: any) {
+      return {
+        ok: false,
+        message: extractErrorMessage(error, 'Could not submit the check. Try again.'),
+      };
+    } finally {
+      set({ isSubmittingDoorChoice: false });
+    }
+  },
+
+  /**
    * "Without Counting & Checked."
    *
    * Claims the job and raises the ticket, then puts the rider into the
@@ -452,6 +501,12 @@ export const useRiderStore = create<RiderState>((set, get) => ({
       if (ticket.status === 'ACCEPTED') {
         set({ awaitingTicket: { ...ticket } });
         return { accepted: true };
+      }
+
+      // Refused: the dashboard sends the rider back into the order to count.
+      if (ticket.status === 'REJECTED') {
+        set({ awaitingTicket: { ...ticket } });
+        return { accepted: false, rejected: true };
       }
 
       return { accepted: false };

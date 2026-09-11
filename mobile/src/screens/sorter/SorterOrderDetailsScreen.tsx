@@ -275,6 +275,18 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
    */
   /** The line whose Mark Defective form is open, or null. */
   const [defectiveFor, setDefectiveFor] = useState<SorterOrderItem | null>(null);
+  /**
+   * Set only when the form was opened by EDIT DEFECTIVE: the saved reason and
+   * a fresh nonce, handed to the form so it re-seeds from the saved values.
+   * Cleared whenever the form closes, so a SAVE DEFECTIVE opening afterwards
+   * behaves exactly as it always has.
+   */
+  const [editPrefill, setEditPrefill] = useState<{ reason: string | null; nonce: number } | null>(null);
+  /** The line whose saved defect is being fetched for editing. */
+  const [editFetchingId, setEditFetchingId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!defectiveFor) setEditPrefill(null);
+  }, [defectiveFor]);
   const [savingAdjustment, setSavingAdjustment] = useState(false);
   const [sendingAdjustmentWhatsApp, setSendingAdjustmentWhatsApp] = useState(false);
   /** The item whose status is being changed, so only its own row spins. */
@@ -506,6 +518,42 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
       setError(
         extractErrorMessage(err, `Saved the defect, but could not update the cloth count for ${item.item_name}`)
       );
+    }
+  };
+
+  /**
+   * EDIT DEFECTIVE: reopen the Mark Defective form on a line's SAVED defect.
+   *
+   * Fetches the order afresh first, so the form is filled from what the server
+   * holds now — not from a screen that may be stale, or from figures another
+   * Sorter has since changed. The line's quantities come from that fetch, and
+   * its reason from the newest adjustment recorded against it.
+   *
+   * Nothing new is written here. The form saves through the same
+   * `onReportPiece` → `persistAdjustment` workflow as SAVE DEFECTIVE, so an
+   * edit is recorded exactly like any other correction.
+   */
+  const openEditDefective = async (item: SorterOrderItem) => {
+    if (editFetchingId) return;
+    setEditFetchingId(item.id);
+    setError('');
+    try {
+      const detail = await sorterApi.getOrderById(String(orderId));
+      setOrder(detail.data);
+      const fresh = detail.data.items.find((line) => line.id === item.id);
+      if (!fresh) {
+        setError('This item is no longer on the order.');
+        return;
+      }
+      const latest = (detail.data.adjustments || [])
+        .filter((a) => a.order_item_id === item.id)
+        .sort((a, b) => (a.adjusted_at < b.adjusted_at ? 1 : -1))[0];
+      setEditPrefill({ reason: latest?.reason ?? null, nonce: Date.now() });
+      setDefectiveFor(fresh);
+    } catch (err: any) {
+      setError(extractErrorMessage(err, 'Could not load the saved defective pieces'));
+    } finally {
+      setEditFetchingId(null);
     }
   };
 
@@ -1001,21 +1049,24 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
   const showWorkingCards = !order.accepted_at;
 
   /**
-   * The counted white and colour cloth on the line the defect form is open
-   * for, or nulls when that line has never been counted.
+   * The ceilings for the defect form: the White Cloths and Color Cloths SAVED
+   * in this line's Cloth Count card, read from `pending_items` because that
+   * is where the counts live.
    *
-   * Read from `pending_items` rather than from the item, because that is
-   * where the counts live. The server sends them net of the defect already
-   * recorded, which is what the modal expects.
+   * ONCE THE LINE HAS SAVED COUNTS, AN EMPTY COLOUR IS 0. The card treats an
+   * empty box as none of that colour, so no defective piece of it can exist;
+   * passing null there would have meant "no ceiling" and let any number
+   * through. Nulls are passed only for a line with no saved counts at all.
    */
   const countsForDefectiveLine = (() => {
     if (!defectiveFor) return { white: null, colour: null };
     const record = (order.pending_items ?? []).find(
       (r) => r.order_item_id === defectiveFor.id
     );
+    if (!record) return { white: null, colour: null };
     return {
-      white: record?.white_cloth_count ?? null,
-      colour: record?.color_cloth_count ?? null,
+      white: record.white_cloth_count ?? 0,
+      colour: record.color_cloth_count ?? 0,
     };
   })();
 
@@ -1345,10 +1396,39 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
                   >
                     <Ionicons name="alert-circle-outline" size={16} color={COLORS.Error} />
                     <Text style={styles.markDefectiveText}>
-                      {isAdjusted ? 'EDIT DEFECTIVE' : 'MARK DEFECTIVE'}
+                      {isAdjusted ? 'SAVE DEFECTIVE' : 'MARK DEFECTIVE'}
                     </Text>
                   </TouchableOpacity>
                 )}
+
+                {/* EDIT DEFECTIVE — reopens the form on the SAVED defect.
+                    Disabled until this line has one: `isAdjusted` comes from
+                    the server, so it turns on only once a save has actually
+                    landed. Gone once accepted, like the button above. */}
+                {!defectsLocked ? (
+                  <TouchableOpacity
+                    style={[
+                      styles.markDefectiveButton,
+                      (!isAdjusted || editFetchingId !== null) && styles.buttonDisabled,
+                    ]}
+                    onPress={() => openEditDefective(item)}
+                    disabled={!isAdjusted || editFetchingId !== null}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !isAdjusted || editFetchingId !== null }}
+                    accessibilityLabel={
+                      isAdjusted
+                        ? `Edit the saved defective pieces for ${item.item_name}`
+                        : `Save defective pieces for ${item.item_name} before editing them`
+                    }
+                  >
+                    {editFetchingId === item.id ? (
+                      <ActivityIndicator size="small" color={COLORS.Error} />
+                    ) : (
+                      <Ionicons name="create-outline" size={16} color={COLORS.Error} />
+                    )}
+                    <Text style={styles.markDefectiveText}>EDIT DEFECTIVE</Text>
+                  </TouchableOpacity>
+                ) : null}
 
               </View>
             );
@@ -1785,6 +1865,11 @@ export default function SorterOrderDetailsScreen({ navigation, route }: any) {
          */
         availableWhite={countsForDefectiveLine.white}
         availableColour={countsForDefectiveLine.colour}
+        prefill={editPrefill}
+        /* EDIT's correction save: the existing counts-only path —
+           persistAdjustment (which also moves the cloth counts), then the
+           optional "Send WhatsApp" choice. No camera. */
+        onSaveEdit={saveAdjustment}
       />
 
       {/* Which items are pending, asked only after the Sorter says some are. */}

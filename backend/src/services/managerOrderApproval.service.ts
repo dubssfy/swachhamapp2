@@ -1,4 +1,5 @@
 import { query, getClient } from '../config/database';
+import { config } from '../config/env';
 import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
 import socketService from './socket.service';
@@ -210,6 +211,35 @@ export async function listPendingOrders(source: RequestSource): Promise<PendingO
 const RESCHEDULABLE_STATUSES = ['ORDER_PLACED', 'PICKUP_SCHEDULED', 'PICKUP_ASSIGNED'];
 
 /**
+ * THE TWO FURTHER CONDITIONS A SCHEDULED PICKUP MUST STILL MEET TO BE MOVED.
+ *
+ *   1. NOT PICKED UP. The rider's collection writes three things in one
+ *      transaction: the pickup job to COLLECTED, the order to PICKED_UP and
+ *      the `pickups` row to COMPLETED with `picked_up_at`. The status list
+ *      above already excludes PICKED_UP; the `pickups` row is read as well,
+ *      so an order whose collection is recorded there can never be offered
+ *      even if its status were moved by something else.
+ *
+ *   2. NOT PAST ITS TIME. The scheduled moment is `assigned_pickup_date` +
+ *      `assigned_pickup_time`, both in BUSINESS time (IST), so "now" is taken
+ *      in the same timezone rather than comparing an IST wall clock against
+ *      the database's UTC. Equal still counts: the order stays until the
+ *      pickup minute has fully passed. "Now" is truncated to the minute so
+ *      this and the screen, which works in minutes, drop an order together.
+ *
+ * A pickup with no time recorded is treated as the end of its day rather than
+ * dropped on the spot — it has a date, and nothing says it is late yet.
+ *
+ * One SQL fragment, used by the list AND by the reschedule guard, so what is
+ * offered and what is allowed cannot drift apart. Expects `orders o` and
+ * `pickups pk` in scope, and ONE bound value: the business timezone offset.
+ */
+const STILL_RESCHEDULABLE_SQL = `
+  (pk.order_id IS NULL OR (COALESCE(pk.status, '') <> 'COMPLETED' AND pk.picked_up_at IS NULL))
+  AND TIMESTAMP(o.assigned_pickup_date, COALESCE(o.assigned_pickup_time, '23:59:59'))
+      >= DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?), '%Y-%m-%d %H:%i:00')`;
+
+/**
  * Accepted orders whose collection has not happened yet, soonest first.
  *
  * THE THIRD TAB, and the answer to "a Manager changes the pickup later".
@@ -247,9 +277,11 @@ export async function listScheduledOrders(): Promise<PendingOrderRow[]> {
        LEFT JOIN pickups pk        ON pk.order_id = o.id
       WHERE o.assigned_pickup_date IS NOT NULL
         AND o.status IN (${RESCHEDULABLE_STATUSES.map(() => '?').join(',')})
+        -- Not picked up, and not past its pickup time. See STILL_RESCHEDULABLE_SQL.
+        AND ${STILL_RESCHEDULABLE_SQL}
       ORDER BY o.assigned_pickup_date ASC, o.assigned_pickup_time ASC, o.id ASC
       LIMIT 100`,
-    RESCHEDULABLE_STATUSES
+    [...RESCHEDULABLE_STATUSES, config.BUSINESS_TZ_OFFSET]
   );
 
   return result.rows.map((row) => ({
@@ -601,6 +633,36 @@ export async function reschedulePickup(
           : order.status === PENDING_STATUS
             ? 'This booking has not been accepted yet. Accept it to set its pickup.'
             : 'This order has already been collected, so its pickup can no longer be changed.',
+        409
+      );
+    }
+
+    /*
+     * THE TIME AND PICKUP CONDITIONS, checked against the pickup as it stands
+     * BEFORE this change -- the same rule the Scheduled tab lists by. A screen
+     * left open past the pickup time, or after the rider collected, is
+     * refused here rather than allowed to move a collection that is no longer
+     * the Manager's to move.
+     *
+     * Only applied when a pickup is actually scheduled: an order with no
+     * assigned date has no time that could have passed.
+     */
+    const [eligibility]: any = await connection.execute(
+      `SELECT o.assigned_pickup_date IS NOT NULL AS has_schedule,
+              (${STILL_RESCHEDULABLE_SQL}) AS still_reschedulable,
+              (pk.order_id IS NOT NULL
+                 AND (COALESCE(pk.status, '') = 'COMPLETED' OR pk.picked_up_at IS NOT NULL)) AS picked_up
+         FROM orders o
+         LEFT JOIN pickups pk ON pk.order_id = o.id
+        WHERE o.id = ?`,
+      [config.BUSINESS_TZ_OFFSET, id]
+    );
+    const check = eligibility[0];
+    if (check && Number(check.has_schedule) === 1 && Number(check.still_reschedulable) !== 1) {
+      throw new AppError(
+        Number(check.picked_up) === 1
+          ? 'This order has already been picked up by a rider, so its pickup can no longer be changed.'
+          : 'The scheduled pickup time for this order has passed, so it can no longer be rescheduled.',
         409
       );
     }

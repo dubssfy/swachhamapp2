@@ -130,6 +130,14 @@ export interface RiderJob {
   /** Total pieces counted. Only ever set when the mode is WITH_COUNT. */
   accepted_piece_count: number | null;
   door_accepted_at: string | null;
+  /**
+   * The scheduled pickup, as the Manager assigned it. DISPLAY ONLY — there is
+   * no rider call that writes either field. Null until one is scheduled.
+   */
+  /** YYYY-MM-DD, business time. */
+  assigned_pickup_date: string | null;
+  /** HH:MM:SS, business time. */
+  assigned_pickup_time: string | null;
   weight_kg: number;
   item_count: number;
   total_quantity: number;
@@ -145,7 +153,69 @@ export interface RiderJob {
 
 /** Job detail adds the piece list. Quantities only — never an amount. */
 export interface RiderJobDetail extends RiderJob {
-  items: Array<{ item_name: string; quantity: number }>;
+  items: Array<{ order_item_id: string; item_name: string; quantity: number }>;
+  /** The uncounted ticket, when the rider chose Without Counting. */
+  door_ticket: DoorTicket | null;
+  /** The live item-by-item checking sheet. Empty until it is submitted. */
+  item_checks: DoorItemCheck[];
+  /**
+   * Why the handover must wait — the business has not answered, or rejected a
+   * line that needs rechecking. Null when the rider may continue. The server
+   * refuses the handover for the same reason, so this only explains it.
+   */
+  handover_block_reason: string | null;
+}
+
+/** The rider's reason for a line that did not match. Exactly these three. */
+export type DoorCheckRemark = 'DAMAGED_ITEM' | 'QUANTITY_MISMATCHED' | 'OTHER';
+
+export const DOOR_CHECK_REMARKS: Array<{ value: DoorCheckRemark; label: string }> = [
+  { value: 'DAMAGED_ITEM', label: 'Damaged Item' },
+  { value: 'QUANTITY_MISMATCHED', label: 'Quantity Mismatched' },
+  { value: 'OTHER', label: 'Other' },
+];
+
+export type DoorTicketStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED';
+
+/** One line of the door checking sheet. `ticket_status` null = matched. */
+export interface DoorItemCheck {
+  check_id: string;
+  order_id: string;
+  order_number: string | null;
+  order_item_id: string;
+  job_id: string;
+  item_name: string;
+  ordered_quantity: number;
+  checked_quantity: number;
+  difference: number;
+  remark: DoorCheckRemark | null;
+  remark_label: string | null;
+  /** The rider's own words. Only set when the remark is OTHER. */
+  remark_note?: string | null;
+  ticket_status: DoorTicketStatus | null;
+  quantity_before: number | null;
+  created_at: string;
+  resolved_at: string | null;
+  superseded: boolean;
+}
+
+/** One line as the rider submits it. */
+export interface CheckedItemInput {
+  order_item_id: string;
+  checked_quantity: number;
+  remark: DoorCheckRemark | null;
+  /** Required when the remark is OTHER; ignored otherwise. */
+  remark_note: string | null;
+}
+
+export interface ItemCheckResult {
+  job: RiderJob | null;
+  messaged: boolean;
+  piece_count: number;
+  checks: DoorItemCheck[];
+  pending_tickets: number;
+  recheck: boolean;
+  already_submitted: boolean;
 }
 
 export interface RiderSummary {
@@ -165,17 +235,19 @@ export type DoorAcceptanceMode = 'WITH_COUNT' | 'WITHOUT_COUNT';
 /**
  * The ticket raised when a load was taken WITHOUT being counted.
  *
- * PENDING until the business accepts it. The rider does not proceed while it
- * is pending, which is the whole point of it existing.
+ * PENDING until the business answers it. The rider does not proceed while it
+ * is pending, which is the whole point of it existing. REJECTED sends the
+ * rider back to count the load instead.
  */
 export interface DoorTicket {
   ticket_id: string;
   order_id: string;
   order_number: string | null;
   job_id: string;
-  status: 'PENDING' | 'ACCEPTED';
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED';
   created_at: string;
   accepted_at: string | null;
+  rejected_at?: string | null;
 }
 
 /** A job parked until the rider has room, with its reclaim countdown. */
@@ -278,6 +350,24 @@ const riderApi = {
     jobId: string
   ): Promise<ApiResponse<{ job: RiderJob; ticket: DoorTicket }>> => {
     const response = await apiClient.post(`/api/rider/offers/${jobId}/accept-without-counting`);
+    return response.data;
+  },
+
+  /**
+   * "With Counting & Checked" — the item-by-item checking sheet.
+   *
+   * Every line of the order, with the quantity the rider checked. A line that
+   * differs from the order carries a remark and becomes a ticket the business
+   * accepts or rejects. Sent again after a rejection, it rechecks the rejected
+   * lines; a duplicate send writes nothing and returns the sheet as it stands.
+   */
+  submitItemCheck: async (
+    jobId: string,
+    items: CheckedItemInput[]
+  ): Promise<ApiResponse<ItemCheckResult>> => {
+    const response = await apiClient.post(`/api/rider/offers/${jobId}/accept-with-counting`, {
+      items,
+    });
     return response.data;
   },
 

@@ -573,6 +573,9 @@ function BusinessHomeStack() {
       <Stack.Screen name="TicketsScreen" component={TicketsScreen} />
       <Stack.Screen name="TicketDetailScreen" component={TicketDetailScreen} />
       <Stack.Screen name="CreateTicketScreen" component={CreateTicketScreen} />
+      {/* Rider tickets (uncounted pickups and quantity mismatches), reached
+          from the top of Tickets as well as from the Your Orders header. */}
+      <Stack.Screen name="BusinessDoorTicketsScreen" component={BusinessDoorTicketsScreen} />
     </Stack.Navigator>
   );
 }

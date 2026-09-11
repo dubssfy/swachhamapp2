@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -53,6 +53,8 @@ export default function MarkDefectiveModal({
   onReportPiece,
   availableWhite,
   availableColour,
+  prefill = null,
+  onSaveEdit,
 }: {
   visible: boolean;
   /** Null while closing, so the modal can animate out without flashing empty. */
@@ -69,20 +71,35 @@ export default function MarkDefectiveModal({
    */
   onReportPiece: (defectiveQuantity: number, reason: string, split: DefectiveSplit) => void;
   /**
-   * The cloth counted on this line, so each box can be checked against its
-   * OWN pile rather than against the line total.
+   * THE CEILING FOR EACH BOX: the White Cloths and Color Cloths SAVED in this
+   * line's Cloth Count card — exactly the figures that card shows.
    *
-   * NULL means that colour has not been counted, and then there is no ceiling
-   * to enforce: refusing damage the Sorter can plainly see, because nobody
-   * has counted yet, would stop the shop floor recording it at all. The
-   * server applies the same rule.
-   *
-   * These arrive already NET of any defect currently recorded, so re-opening
-   * the form on an adjusted line must add that figure back before checking —
-   * see `availableFor` below.
+   * Once the line's counts are saved, an EMPTY colour arrives as 0, not null:
+   * the card treats an empty box as none of that colour, so no defective
+   * piece of that colour can exist. NULL only reaches here for a line with no
+   * saved counts at all, which then has no ceiling — but Mark Defective is
+   * not offered until the counts are saved, so in practice that does not
+   * occur. The server applies the same rule.
    */
   availableWhite: number | null;
   availableColour: number | null;
+  /**
+   * EDIT DEFECTIVE ONLY. Passed when the form is reopened to change a defect
+   * that was already saved: the reason recorded with it, and a `nonce` that is
+   * new on every such opening so the form re-seeds from the freshly fetched
+   * figures even when they have not changed since the last visit.
+   *
+   * Every other caller passes nothing, which leaves the seeding below exactly
+   * as it was — same key, same blank reason.
+   */
+  prefill?: { reason: string | null; nonce: number } | null;
+  /**
+   * EDIT DEFECTIVE's own save: records a CORRECTION to a defect that already
+   * has its photo — no camera, nothing sent automatically. Only offered when
+   * the form was opened by EDIT (`prefill` set), and only for changes that do
+   * not add defective pieces; see `editAddsPieces` below.
+   */
+  onSaveEdit?: (defectiveQuantity: number, reason: string, split: DefectiveSplit) => void;
 }) {
   /*
    * TWO BOXES, ONE PER COLOUR.
@@ -103,33 +120,34 @@ export default function MarkDefectiveModal({
 
   // Re-seed whenever a different line is opened.
   const seedKey = item
-    ? `${item.id}:${item.defective_quantity}:${item.white_defective_quantity}:${item.color_defective_quantity}`
+    ? `${item.id}:${item.defective_quantity}:${item.white_defective_quantity}:${item.color_defective_quantity}` +
+      // Only an EDIT opening adds to the key; see `prefill`.
+      (prefill ? `:edit:${prefill.nonce}` : '')
     : '';
   const [lastSeed, setLastSeed] = useState('');
+  /** The figures the form was opened with — what an EDIT is compared against. */
+  const seeded = useRef({ white: '', colour: '', reason: '' });
   if (visible && seedKey && seedKey !== lastSeed) {
     setLastSeed(seedKey);
     const white = item!.white_defective_quantity;
     const colour = item!.color_defective_quantity;
     const hasSplit = white !== null || colour !== null;
-    setWhiteText(String(hasSplit ? white || 0 : item!.defective_quantity || 0));
-    setColourText(String(hasSplit ? colour || 0 : 0));
-    setReason('');
+    const seedWhite = String(hasSplit ? white || 0 : item!.defective_quantity || 0);
+    const seedColour = String(hasSplit ? colour || 0 : 0);
+    // The saved reason on an EDIT opening; blank otherwise, as before.
+    const seedReason = prefill?.reason || '';
+    setWhiteText(seedWhite);
+    setColourText(seedColour);
+    setReason(seedReason);
+    seeded.current = { white: seedWhite, colour: seedColour, reason: seedReason };
     setTouched(false);
   }
 
   /*
-   * The ceiling for each box is the count AS COUNTED.
-   *
-   * `availableWhite` / `availableColour` are the original figures — the
-   * server stores and returns the count off the pile, with the defective
-   * pieces subtracted only where they are displayed. So they are the ceiling
-   * directly: a line counted at 20 white can have at most 20 white defective,
-   * whatever is already recorded against it.
-   *
-   * That also makes a correction work without arithmetic here. An earlier
-   * version received these already net of the recorded defect and had to add
-   * it back before comparing, which was one more place for the two figures to
-   * drift apart.
+   * The ceiling for each box is the figure saved in the Cloth Count card —
+   * White Defective <= White Cloths, Color Defective <= Color Cloths — used
+   * as it arrives, with no arithmetic here, so the form checks against the
+   * very number the Sorter sees on the card.
    */
   const whiteCeiling = availableWhite;
   const colourCeiling = availableColour;
@@ -138,7 +156,13 @@ export default function MarkDefectiveModal({
    * One box's own rules. The server enforces all of these again — this is a
    * convenience so the Sorter is told at the keyboard, never the guard.
    */
-  const checkBox = (raw: string, label: string, ceiling: number | null) => {
+  const checkBox = (
+    raw: string,
+    label: string,
+    ceiling: number | null,
+    /** The Cloth Count field this box is capped by, for the message. */
+    clothField: string
+  ) => {
     const trimmed = raw.trim();
     // An empty box is none of that colour, not an error: a line can be all
     // white, and forcing a "0" into the colour box to say so is friction.
@@ -151,8 +175,12 @@ export default function MarkDefectiveModal({
     }
     const value = Number(trimmed);
     if (ceiling !== null && value > ceiling) {
+      // Names the Cloth Count figure it was checked against, and the range
+      // that IS allowed, so the Sorter knows what to type instead.
       return {
-        error: `${label}: only ${ceiling} piece(s) counted, so ${value} cannot be defective.`,
+        error:
+          `${label} Defective Quantity cannot be more than the ${ceiling} ${clothField} ` +
+          `saved in Cloth Count. Enter 0 to ${ceiling}.`,
         value: null,
       };
     }
@@ -160,10 +188,10 @@ export default function MarkDefectiveModal({
   };
 
   const validation = useMemo(() => {
-    const white = checkBox(whiteText, 'White', whiteCeiling);
+    const white = checkBox(whiteText, 'White', whiteCeiling, 'White Cloths');
     if (white.error) return { error: white.error, white: null, colour: null, total: null };
 
-    const colour = checkBox(colourText, 'Colour', colourCeiling);
+    const colour = checkBox(colourText, 'Color', colourCeiling, 'Color Cloths');
     if (colour.error) return { error: colour.error, white: null, colour: null, total: null };
 
     const total = (white.value || 0) + (colour.value || 0);
@@ -184,6 +212,41 @@ export default function MarkDefectiveModal({
 
   const showError = touched && validation.error;
   const canSave = !saving && validation.error === null;
+
+  /*
+   * EDIT MODE — correcting a defect that was already reported.
+   *
+   * `savedTotal` is what the server holds for the line, from the fetch EDIT
+   * made on the way in. Going ABOVE it means more damaged pieces than were
+   * reported, and new damage needs evidence: that change must go through the
+   * photo button, so SAVE CHANGES refuses it. Anything at or below it — a
+   * lower count, a different white/colour split, a new reason, or zero when
+   * it turns out nothing was damaged — is a correction and saves directly.
+   *
+   * SAVE CHANGES also waits for an actual change, so a tap cannot record an
+   * identical adjustment just because the form was opened.
+   */
+  const isEdit = Boolean(prefill && onSaveEdit);
+  const savedTotal = item?.defective_quantity ?? 0;
+  const editAddsPieces =
+    isEdit && validation.total !== null && validation.total > savedTotal;
+  const editChanged =
+    whiteText.trim() !== seeded.current.white ||
+    colourText.trim() !== seeded.current.colour ||
+    reason.trim() !== seeded.current.reason.trim();
+  const canSaveEdit = isEdit && canSave && editChanged && !editAddsPieces;
+
+  /*
+   * A PHOTO ONLY WHEN THERE IS DAMAGE TO PHOTOGRAPH.
+   *
+   * With White and Color defective both empty or 0 there is no damaged piece,
+   * so the photo button is off — a report would be a photo of nothing. On an
+   * EDIT opening that zero is a correction ("it was not damaged after all")
+   * and is recorded by SAVE CHANGES, which takes no photo. Above 0 the photo
+   * button works exactly as before, so new damage still carries its evidence.
+   */
+  const zeroDefective = validation.error === null && defective === 0;
+  const canReportPhoto = canSave && !zeroDefective;
 
   /** What the two boxes come to, for the parent. */
   const split: DefectiveSplit = {
@@ -298,27 +361,56 @@ export default function MarkDefectiveModal({
                 <Text style={styles.cancelText}>CANCEL</Text>
               </TouchableOpacity>
               {/*
-                SAVE ADJUSTMENT WAS REMOVED, and its handler with it.
-                It recorded a defective quantity and stopped there — no photo,
-                nothing sent — which was the one way to mark a piece defective
-                without evidence. A defect is a claim against a customer's
-                garment, so the photo is not optional and there is now exactly
-                one way to record one: the button below.
+                A NEW DEFECT STILL NEEDS ITS PHOTO. Recording damage for the
+                first time — or adding pieces to it — goes only through the
+                photo button below, because a defect is a claim against a
+                customer's garment and must carry evidence.
+
+                SAVE CHANGES exists only on an EDIT opening, where the photo
+                was already taken. It records a correction that adds no new
+                damage (see `editAddsPieces`), without re-photographing and
+                without messaging the customer again for a typo.
               */}
+              {isEdit ? (
+                <TouchableOpacity
+                  style={[styles.button, styles.save, !canSaveEdit && styles.buttonDisabled]}
+                  onPress={() => {
+                    setTouched(true);
+                    if (!canSaveEdit || validation.total === null) return;
+                    onSaveEdit!(validation.total, reason.trim(), split);
+                  }}
+                  disabled={!canSaveEdit}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: !canSaveEdit }}
+                  accessibilityLabel="Save the corrected defective pieces"
+                >
+                  <Text style={styles.saveText}>SAVE CHANGES</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
+
+            {/* Why SAVE CHANGES is off when the count went up. */}
+            {editAddsPieces ? (
+              <Text style={styles.error}>
+                You have added {(validation.total ?? 0) - savedTotal} more defective piece(s)
+                than were saved. New damage needs a photo — use REPORT DEFECTIVE PIECE (PHOTO)
+                below.
+              </Text>
+            ) : null}
 
             {/* THE DEFECTIVE PIECE ITSELF. Saves the figures above, then
                 opens the camera — one action, so the photo and the count it
                 belongs to can never describe different things. */}
             <TouchableOpacity
-              style={[styles.reportButton, !canSave && styles.buttonDisabled]}
+              style={[styles.reportButton, !canReportPhoto && styles.buttonDisabled]}
               onPress={() => {
                 setTouched(true);
-                if (validation.total === null) return;
+                if (!canReportPhoto || validation.total === null) return;
                 onReportPiece(validation.total, reason.trim(), split);
               }}
-              disabled={!canSave}
+              disabled={!canReportPhoto}
               accessibilityRole="button"
+              accessibilityState={{ disabled: !canReportPhoto }}
               accessibilityLabel="Report the defective piece with a photo"
             >
               <Ionicons name="camera" size={18} color={COLORS.Primary} />
@@ -328,6 +420,13 @@ export default function MarkDefectiveModal({
               Saves the figures above, then takes the photo and sends the report to the
               customer and the sorting desk on WhatsApp. The photo is required.
             </Text>
+            {zeroDefective ? (
+              <Text style={styles.reportHint}>
+                {isEdit
+                  ? '0 defective pieces — no photo needed. Use SAVE CHANGES to record the correction.'
+                  : 'No photo needed for 0 defective pieces. Enter a White or Color defective quantity above 0 to report a damaged piece.'}
+              </Text>
+            ) : null}
           </ScrollView>
         </View>
       </KeyboardAvoidingView>

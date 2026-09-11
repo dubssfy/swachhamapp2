@@ -487,7 +487,14 @@ async function listOrders(
   if (targetDate) {
     // Compared in the business timezone, so an order placed just after
     // midnight IST is not filed under the previous UTC day.
-    dateClause = ` AND DATE(CONVERT_TZ(o.created_at, '+00:00', ?)) = ?`;
+    //
+    // FROM THE SESSION'S OWN ZONE, not a hardcoded '+00:00'. `created_at` is
+    // stamped by CURRENT_TIMESTAMP in whatever zone the database runs in, and
+    // that database runs in +05:30 — so treating the stored value as UTC added
+    // the offset a second time and filed every order placed after 18:30 IST
+    // under the NEXT day, off the Sorter's Today list. Converting from
+    // @@session.time_zone is correct whether the database is set to UTC or IST.
+    dateClause = ` AND DATE(CONVERT_TZ(o.created_at, @@session.time_zone, ?)) = ?`;
     params.push(config.BUSINESS_TZ_OFFSET, targetDate);
   }
 

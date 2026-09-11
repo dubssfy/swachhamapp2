@@ -13,6 +13,7 @@ import {
   getJobById,
   HOLD_MAX_MINUTES,
 } from './dispatch.service';
+import { doorStateForJob, doorHandoverBlockReason } from './riderDoorAcceptance.service';
 
 /**
  * ===================================================================
@@ -354,6 +355,11 @@ async function listJobs(riderId: string, scope: 'active' | 'completed' = 'active
     // `business_user_id` is what decides whether the acceptance section is
     // shown; it lives on the order, so `rj.*` alone does not carry it.
     `SELECT rj.*, o.order_number, o.business_user_id,
+            -- The scheduled pickup, as the Manager assigned it. DATE_FORMAT so
+            -- the date cannot reach the app as a timestamp the phone shifts
+            -- into another day -- the same reason the Manager tab formats it.
+            DATE_FORMAT(o.assigned_pickup_date, '%Y-%m-%d') AS assigned_pickup_date,
+            o.assigned_pickup_time,
             (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
             (SELECT COALESCE(SUM(oi.quantity),0) FROM order_items oi WHERE oi.order_id = o.id) AS total_quantity
        FROM rider_jobs rj
@@ -398,13 +404,32 @@ function toJobPayload(r: any, includeContact: boolean) {
      * exists so the rider is told before they tap, not after.
      */
     has_business: Boolean(r.business_user_id),
-    acceptance_required: Boolean(r.business_user_id) && !r.door_acceptance_mode,
+    /*
+     * PICKUPS ONLY. A dispatch (DELIVERY) carries finished laundry the
+     * facility has already counted and processed, so there is no With /
+     * Without Counting question to answer at its door.
+     */
+    acceptance_required:
+      r.job_type === 'PICKUP' && Boolean(r.business_user_id) && !r.door_acceptance_mode,
     door_acceptance_mode: r.door_acceptance_mode || null,
     accepted_piece_count:
       r.accepted_piece_count === null || r.accepted_piece_count === undefined
         ? null
         : Number(r.accepted_piece_count),
     door_accepted_at: r.door_accepted_at || null,
+    /*
+     * THE SCHEDULED PICKUP, DISPLAY ONLY.
+     *
+     * `orders.assigned_pickup_*` is the Manager's decision — the same pair the
+     * Manager's Scheduled tab and the customer are shown. It is deliberately
+     * NOT the `pickups` row: on a Business order that row starts life as a
+     * placeholder, and showing it would give the rider a time nobody chose.
+     *
+     * Null when no pickup has been scheduled. There is no rider endpoint that
+     * writes either field; this only reads them.
+     */
+    assigned_pickup_date: r.assigned_pickup_date || null,
+    assigned_pickup_time: r.assigned_pickup_time || null,
     weight_kg: Number(r.total_weight_kg || 0),
     item_count: Number(r.item_count || 0),
     total_quantity: Number(r.total_quantity || 0),
@@ -421,6 +446,11 @@ function toJobPayload(r: any, includeContact: boolean) {
 async function getJobDetail(riderId: string, jobId: string): Promise<any> {
   const result = await query<any>(
     `SELECT rj.*, o.order_number, o.business_user_id,
+            -- The scheduled pickup, as the Manager assigned it. DATE_FORMAT so
+            -- the date cannot reach the app as a timestamp the phone shifts
+            -- into another day -- the same reason the Manager tab formats it.
+            DATE_FORMAT(o.assigned_pickup_date, '%Y-%m-%d') AS assigned_pickup_date,
+            o.assigned_pickup_time,
             (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
             (SELECT COALESCE(SUM(oi.quantity),0) FROM order_items oi WHERE oi.order_id = o.id) AS total_quantity
        FROM rider_jobs rj
@@ -433,17 +463,29 @@ async function getJobDetail(riderId: string, jobId: string): Promise<any> {
   if (!row) throw new AppError('Job not found or not assigned to you', 404);
 
   const items = await query<any>(
-    `SELECT service_name, quantity FROM order_items WHERE order_id = ? ORDER BY id ASC`,
+    `SELECT id, service_name, quantity FROM order_items WHERE order_id = ? ORDER BY id ASC`,
     [row.order_id]
   );
+
+  /*
+   * THE DOOR, as it stands: the uncounted ticket, the item-by-item checking
+   * sheet, and why the handover must wait (or null). Quantities and statuses
+   * only — no amounts, the same rule as the item list.
+   */
+  const door = await doorStateForJob(String(row.id));
 
   return {
     ...toJobPayload(row, true),
     // Pieces only. No unit price, no line amount, no order total.
     items: items.rows.map((i) => ({
+      // The line's id, so the checking sheet can name which line it counted.
+      order_item_id: String(i.id),
       item_name: i.service_name,
       quantity: Number(i.quantity || 0),
     })),
+    door_ticket: door.door_ticket,
+    item_checks: door.item_checks,
+    handover_block_reason: door.handover_block_reason,
   };
 }
 
@@ -629,11 +671,23 @@ async function completeJob(
      * to raise a ticket with, so requiring a mode there would block a flow
      * that cannot satisfy it.
      */
-    if (job.business_user_id && !job.door_acceptance_mode) {
+    // PICKUPS ONLY: a dispatch has no counting step (see `toJobPayload`).
+    if (job.job_type === 'PICKUP' && job.business_user_id && !job.door_acceptance_mode) {
       throw new AppError(
         'Choose With Counting or Without Counting before confirming this handover.',
         409
       );
+    }
+
+    /*
+     * AND THE HOTEL MUST HAVE ANSWERED. An uncounted ticket still pending, a
+     * quantity mismatch not yet decided, or one the hotel rejected and the
+     * rider has not rechecked — each holds the order at the door. Read on
+     * this transaction's connection, beside the lock taken above.
+     */
+    if (job.job_type === 'PICKUP' && job.business_user_id) {
+      const blocked = await doorHandoverBlockReason(String(job.id), connection);
+      if (blocked) throw new AppError(blocked, 409);
     }
 
     const given = String(handoverCode || '').trim();
@@ -816,6 +870,11 @@ async function dropAtFacility(
 async function listHeldJobs(riderId: string): Promise<any[]> {
   const result = await query<any>(
     `SELECT rj.*, o.order_number, o.business_user_id,
+            -- The scheduled pickup, as the Manager assigned it. DATE_FORMAT so
+            -- the date cannot reach the app as a timestamp the phone shifts
+            -- into another day -- the same reason the Manager tab formats it.
+            DATE_FORMAT(o.assigned_pickup_date, '%Y-%m-%d') AS assigned_pickup_date,
+            o.assigned_pickup_time,
             TIMESTAMPDIFF(MINUTE, rj.held_at, NOW()) AS held_minutes,
             (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
             (SELECT COALESCE(SUM(oi.quantity),0) FROM order_items oi WHERE oi.order_id = o.id) AS total_quantity

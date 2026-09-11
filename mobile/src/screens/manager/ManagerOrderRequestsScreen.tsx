@@ -11,7 +11,7 @@ import { sa } from '../superadmin/styles';
 import DateStrip from '../../components/business/DateStrip';
 import TimeSlotRow from '../../components/business/TimeSlotRow';
 import PickupScheduleCard from '../../components/PickupScheduleCard';
-import { dateRange, todayIST } from '../../utils/istDates';
+import { dateRange, todayIST, currentMinutesIST } from '../../utils/istDates';
 import managerApi, {
   ManagerPickupTime, OrderRequestSource, PendingOrderRequest,
 } from '../../services/managerApi';
@@ -60,6 +60,32 @@ import managerApi, {
  */
 
 type Tab = OrderRequestSource | 'SCHEDULED';
+
+/**
+ * Is this scheduled pickup still ahead of us, in IST?
+ *
+ * The Scheduled tab only offers orders that can still be rescheduled, and one
+ * whose pickup moment has passed cannot be. The server already leaves those
+ * out; this takes them off a screen that was loaded BEFORE the moment passed,
+ * so the list does not wait for a refresh to become right.
+ *
+ * Equal counts as still ahead, to the minute — the same resolution the server
+ * uses, so the two drop an order at the same time. A pickup with no time is
+ * kept until its date is over, matching the server's end-of-day treatment.
+ */
+function pickupStillAhead(
+  date: string | null | undefined,
+  time: string | null | undefined,
+  todayKey: string,
+  nowMinutes: number
+): boolean {
+  if (!date) return true;
+  if (date > todayKey) return true;
+  if (date < todayKey) return false;
+  if (!time) return true;
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m >= nowMinutes;
+}
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: 'CUSTOMER', label: 'Customer' },
@@ -179,6 +205,30 @@ export default function ManagerOrderRequestsScreen({ navigation, route }: any) {
   // Re-read on focus, so a booking placed while this screen was in the
   // background appears on return without anything having to push it.
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  /*
+   * THE SCHEDULED TAB KEEPS ITSELF CURRENT.
+   *
+   * `clock` ticks every 30 seconds so an order drops off the moment its
+   * pickup time passes, without anything being fetched. Every second tick
+   * also re-reads the list quietly, which is how an order a rider has just
+   * collected leaves without the Manager having to pull to refresh.
+   *
+   * The re-read is SKIPPED while a picker is open: it clears the cached
+   * times, and pulling those out from under a Manager part-way through
+   * choosing one would be worse than a list that is a minute behind.
+   */
+  const [clock, setClock] = useState(0);
+  const anyPickerOpen = Object.values(editing).some(Boolean);
+  useEffect(() => {
+    if (tab !== 'SCHEDULED') return undefined;
+    const timer = setInterval(() => setClock((c) => c + 1), 30 * 1000);
+    return () => clearInterval(timer);
+  }, [tab]);
+  useEffect(() => {
+    if (tab === 'SCHEDULED' && clock > 0 && clock % 2 === 0 && !anyPickerOpen) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clock]);
 
   /**
    * The times bookable on a date, fetched once and remembered.
@@ -352,6 +402,19 @@ export default function ManagerOrderRequestsScreen({ navigation, route }: any) {
 
   const isScheduledTab = tab === 'SCHEDULED';
 
+  /*
+   * On the Scheduled tab, only pickups still ahead of us. Read on every render
+   * — `clock` above is what makes it re-render — so the filter always uses the
+   * current time. The pending tabs are shown exactly as they come back.
+   */
+  const todayKey = todayIST();
+  const nowMinutes = currentMinutesIST();
+  const visibleRows = isScheduledTab
+    ? rows.filter((row) =>
+        pickupStillAhead(row.assigned_pickup_date, row.assigned_pickup_time, todayKey, nowMinutes)
+      )
+    : rows;
+
   return (
     <SafeAreaView style={sa.container} edges={['top']}>
       <View style={sa.header}>
@@ -415,14 +478,14 @@ export default function ManagerOrderRequestsScreen({ navigation, route }: any) {
             </View>
           )}
 
-          {rows.length === 0 ? (
+          {visibleRows.length === 0 ? (
             <Text style={sa.empty}>
               {isScheduledTab
                 ? 'No accepted orders are waiting to be collected.'
                 : `No ${tab === 'CUSTOMER' ? 'customer' : 'business'} orders are waiting.`}
             </Text>
           ) : (
-            rows.map((row) => {
+            visibleRows.map((row) => {
               const draft = drafts[row.id];
               const ready = !!draft?.date && !!draft?.timeId;
               const busy = submitting === row.id;

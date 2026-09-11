@@ -36,7 +36,12 @@ import {
 import { getProfile, updateProfile, getOwnedBusinessId } from '../services/businessProfile.service';
 import {
   listPendingTicketsForBusiness,
+  listDoorTicketsForBusiness,
   acceptTicketAsBusiness,
+  rejectTicketAsBusiness,
+  listItemTicketsForBusiness,
+  acceptItemTicketAsBusiness,
+  rejectItemTicketAsBusiness,
   listMessagesForBusiness,
   businessInboxCounts,
   markBusinessMessagesRead,
@@ -499,16 +504,91 @@ router.post('/orders', async (req: Request, res: Response, next: NextFunction) =
 // same id every other route in this file uses. It is never read from the body
 // or a path parameter, so one hotel cannot answer another's ticket.
 
-/** Tickets waiting on this hotel. */
+/**
+ * Tickets waiting on this hotel.
+ *
+ * `?scope=recent` returns the ones it has answered in the last 30 days
+ * instead; with no scope the response is exactly what it always was.
+ */
 router.get('/door-tickets', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authReq = req as AuthenticatedRequest;
+    if (req.query.scope === 'recent') {
+      const recent = await listDoorTicketsForBusiness(String(authReq.user!.id), 'recent');
+      return sendSuccess(res, recent, 'Answered door tickets');
+    }
     const tickets = await listPendingTicketsForBusiness(String(authReq.user!.id));
     return sendSuccess(res, tickets, 'Pending door tickets');
   } catch (error) {
     return next(error);
   }
 });
+
+/**
+ * The hotel's "Rejected" on an uncounted pickup. The order does not proceed:
+ * the rider is sent back to count it item by item.
+ */
+router.post('/door-tickets/:ticketId/reject', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const result = await rejectTicketAsBusiness(
+      String(req.params.ticketId),
+      String(authReq.user!.id)
+    );
+    return sendSuccess(res, result, 'Ticket rejected');
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * Quantity mismatch tickets from the rider's item-by-item check.
+ * `?scope=recent` for the answered ones; pending by default.
+ */
+router.get('/door-item-tickets', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const scope = req.query.scope === 'recent' ? 'recent' : 'pending';
+    const tickets = await listItemTicketsForBusiness(String(authReq.user!.id), scope);
+    return sendSuccess(res, tickets, scope === 'recent' ? 'Answered mismatches' : 'Pending mismatches');
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/** Accept a mismatch: that order line takes the rider's checked quantity. */
+router.post(
+  '/door-item-tickets/:checkId/accept',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const result = await acceptItemTicketAsBusiness(
+        String(req.params.checkId),
+        String(authReq.user!.id)
+      );
+      return sendSuccess(res, result, 'Mismatch accepted');
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
+/** Reject a mismatch: the quantity stays, and the rider must recheck. */
+router.post(
+  '/door-item-tickets/:checkId/reject',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const result = await rejectItemTicketAsBusiness(
+        String(req.params.checkId),
+        String(authReq.user!.id)
+      );
+      return sendSuccess(res, result, 'Mismatch rejected');
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
 
 /**
  * The hotel's "Accepted".

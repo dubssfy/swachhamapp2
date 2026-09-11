@@ -19,6 +19,7 @@ import {
 import { acceptJob, declineJob, holdJob } from '../services/dispatch.service';
 import {
   acceptWithCounting,
+  acceptWithItemCheck,
   raiseUncountedTicket,
   getTicketForRider,
   listPendingTicketsForRider,
@@ -164,12 +165,35 @@ router.post(
 
 /**
  * "With Counting & Checked" — record the count, and tell the hotel what was
- * checked. Body: `{ pieceCount }` — the total pieces, required.
+ * checked.
+ *
+ * Body, either:
+ *   `{ items: [{ order_item_id, checked_quantity, remark? }] }` — the
+ *      item-by-item checking sheet. Each line that differs from the order
+ *      needs a remark (DAMAGED_ITEM | QUANTITY_MISMATCHED | OTHER) and becomes
+ *      a ticket for the hotel. Sent again after a rejection, it rechecks the
+ *      rejected lines.
+ *   `{ pieceCount }` — the total pieces only, for older clients.
  */
 router.post(
   '/offers/:jobId/accept-with-counting',
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
+      if (req.body?.items !== undefined) {
+        const checked = await acceptWithItemCheck(
+          String(req.params.jobId),
+          riderId(req),
+          req.body.items
+        );
+        return sendSuccess(
+          res,
+          checked,
+          checked.pending_tickets > 0
+            ? 'Checked. Waiting for the business to approve the mismatches.'
+            : 'Order accepted with counting'
+        );
+      }
+
       const result = await acceptWithCounting(
         String(req.params.jobId),
         riderId(req),
