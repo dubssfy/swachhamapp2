@@ -542,6 +542,146 @@ export async function sendAccountReadyMessage(params: {
 }
 
 /**
+ * Sends the LOGIN OTP to one number, as an approved AUTHENTICATION template.
+ *
+ * ============================================================
+ * IT DOES NOT GENERATE, STORE OR CHECK ANYTHING
+ * ============================================================
+ *
+ * The code is handed in. `auth.service.sendOtpInternal` generates it, hashes
+ * it into `otp_verifications` and owns its expiry, its resend cooldown, its
+ * attempt ceiling and its device binding — all of which are untouched. This
+ * is delivery and nothing else, which is what keeps the code the user reads
+ * on WhatsApp identical to the one the existing verification expects.
+ *
+ * ============================================================
+ * WHY A TEMPLATE AND NOT A PLAIN MESSAGE
+ * ============================================================
+ *
+ * A login OTP is BUSINESS-INITIATED by definition: the person is signing in,
+ * not replying. Meta delivers free-form text only inside the 24-hour customer
+ * service window — i.e. only to someone who has messaged the business number
+ * recently — so a plain `sendTextMessage` here would be delivered for almost
+ * nobody, and would fail in the one case that matters: a new user's first
+ * sign-in.
+ *
+ * Meta also requires OTPs to go out under the AUTHENTICATION category
+ * specifically. That is a policy rule, not just a technical one, so there is
+ * deliberately NO free-form fallback on this path — unlike
+ * `sendAccountReadyMessage`, whose copy is an ordinary notice. When the
+ * template fails, the caller falls back to the EXISTING sms service instead,
+ * which is exactly what it did before this change.
+ *
+ * ============================================================
+ * THE BUTTON, AND WHY IT IS CONFIGURABLE
+ * ============================================================
+ *
+ * Meta requires an authentication template to carry a button — "Copy code" or
+ * one-tap autofill — and the code has to be repeated as that button's own
+ * parameter as well as in the body. Sending the button component to a
+ * template that has none fails the whole message on a parameter-count error,
+ * and vice versa, so which shape to send cannot be guessed here: whoever had
+ * the template approved knows, and says so with
+ * WHATSAPP_OTP_TEMPLATE_HAS_BUTTON. It defaults to TRUE because that is the
+ * shape Meta's own authentication templates are created in.
+ *
+ * THE TEMPLATE TAKES ONE BODY PARAMETER: {{1}} is the code. An authentication
+ * template's copy is fixed by Meta ("<CODE> is your verification code."), so
+ * there is nothing else to substitute.
+ *
+ * Never throws. Returns the real reason on failure so the caller can log it
+ * and fall back.
+ */
+export async function sendOtpTemplate(params: {
+  to: string;
+  /** The code the existing flow just generated. Never produced here. */
+  otp: string;
+  /** For the log line only. THE CODE IS NEVER LOGGED. */
+  label: string;
+}): Promise<WhatsAppSendResult> {
+  if (!isWhatsAppConfigured()) {
+    return {
+      ok: false,
+      messageId: null,
+      error:
+        'WhatsApp is not configured on the server (WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_ACCESS_TOKEN).',
+    };
+  }
+
+  const templateName = config.WHATSAPP_OTP_TEMPLATE;
+  if (!templateName) {
+    return {
+      ok: false,
+      messageId: null,
+      error:
+        'No WhatsApp OTP template is configured (WHATSAPP_OTP_TEMPLATE). It must name an '
+        + 'APPROVED template in Meta\'s AUTHENTICATION category.',
+    };
+  }
+
+  try {
+    const components: any[] = [
+      { type: 'body', parameters: [{ type: 'text', text: params.otp }] },
+    ];
+
+    /*
+     * THE SAME CODE AGAIN, for the button. Meta's authentication templates
+     * carry the value twice — once as the body text the person reads, once as
+     * the button parameter the handset copies or autofills — and they must
+     * match, or the button pastes a different code from the one shown.
+     */
+    if (config.WHATSAPP_OTP_TEMPLATE_HAS_BUTTON) {
+      components.push({
+        type: 'button',
+        sub_type: 'url',
+        index: '0',
+        parameters: [{ type: 'text', text: params.otp }],
+      });
+    }
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: params.to,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: config.WHATSAPP_TEMPLATE_LANG },
+        components,
+      },
+    };
+
+    const response = await fetch(graphUrl('messages'), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const body: any = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = describeGraphError(response.status, body);
+      logger.warn(
+        `[WhatsApp] OTP template "${templateName}" refused for ${params.label}: ${error}`
+      );
+      return { ok: false, messageId: null, error };
+    }
+
+    const messageId = body?.messages?.[0]?.id ? String(body.messages[0].id) : null;
+    // The NUMBER is logged, never the code. A log line carrying a live OTP
+    // would defeat the point of hashing it in the database.
+    logger.info(`[WhatsApp] OTP template sent to ${params.label} (${messageId})`);
+    return { ok: true, messageId, error: null };
+  } catch (error: any) {
+    const message = error?.message || 'Unknown WhatsApp error';
+    logger.error(`[WhatsApp] OTP send threw for ${params.label}: ${message}`);
+    return { ok: false, messageId: null, error: String(message).slice(0, 500) };
+  }
+}
+
+/**
  * Sends the defect template to one customer.
  *
  * Never throws: a failure is returned as `{ ok: false, error }` so the caller

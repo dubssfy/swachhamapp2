@@ -2,8 +2,11 @@ import { getClient, query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
 import socketService from './socket.service';
-import { createNotification } from './notification.service';
-import { sendToOwner, PushOwner } from './push.service';
+import {
+  notifyOrderParty,
+  notifyOrderPartyOnce,
+  NOTIFICATION_TYPES,
+} from './orderNotification.service';
 import {
   dispatchJob,
   expireStaleOffers,
@@ -593,21 +596,47 @@ async function updateJobStatus(riderId: string, jobId: string, target: string): 
       ? 'Your rider is at the pickup point.'
       : 'Your rider is at your door with your order.';
 
-    await notifyOrderParty(
+    /*
+     * ONCE PER JOB, not once per call.
+     *
+     * The transition table above already refuses a second ARRIVED — the
+     * status is ARRIVED by the time a repeat arrives, and `ARRIVED: []`
+     * allows nothing out of it — so this is the belt to that braces. It
+     * matters because the failure it prevents is a hotel's phone buzzing
+     * twice for one rider standing at one door, which is the thing people
+     * actually complain about.
+     *
+     * KEYED BY THE JOB, NOT THE ORDER. A pickup and a dispatch are separate
+     * jobs against the same order and BOTH have a rider arriving at a door;
+     * keying on the order would silence the delivery because the pickup had
+     * already rung. See migration 072.
+     */
+    await notifyOrderPartyOnce(
       orderId,
-      'RIDER_ARRIVED',
-      'Your rider has arrived',
-      code
-        ? `${ask} Share this handover code with them to confirm: ${code}`
-        : `${ask} Please share your handover code.`
+      `${NOTIFICATION_TYPES.RIDER_ARRIVED}:job=${jobId}`,
+      {
+        type: NOTIFICATION_TYPES.RIDER_ARRIVED,
+        title: 'Rider Arrived',
+        body: code
+          ? `${ask} Share this handover code with them to confirm: ${code}`
+          : `${ask} Please share your handover code.`,
+        data: {
+          jobId: String(jobId),
+          jobType: String(job.job_type),
+          riderStatus: 'ARRIVED',
+          /*
+           * The code is NOT in the data payload. It is in the body, which is
+           * what the recipient reads; putting it in a machine-readable field
+           * as well would spread the one secret in this flow across two
+           * places for no gain.
+           */
+        },
+      }
     );
 
     /*
      * And to the log, matching what `sms.service` already does for login
-     * OTPs in development. This is the only channel that reaches a BUSINESS
-     * order today: `notifyOrderParty` cannot write a notification row for one
-     * (the FK points at `users`, hotels live in `business_users`) and falls
-     * back to a socket the app has no client for.
+     * OTPs in development.
      */
     if (code) {
       logger.info(
@@ -765,14 +794,25 @@ async function completeJob(
     socketService.emitOrderStatusUpdate(orderId, { orderId, status: orderStatus });
     socketService.emitJobUpdate(orderId, { jobId, status: 'COMPLETED' });
 
-    await notifyOrderParty(
-      orderId,
-      isPickup ? 'PICKUP_COMPLETED' : 'DELIVERED',
-      isPickup ? 'Order collected' : 'Order delivered',
-      isPickup
+    /*
+     * The existing completion message, unchanged in wording and in type —
+     * only the call shape moved. It gains the data payload every
+     * notification now carries, so the app can open this order from it like
+     * any other.
+     */
+    await notifyOrderParty(orderId, {
+      type: isPickup ? 'PICKUP_COMPLETED' : 'DELIVERED',
+      title: isPickup ? 'Order collected' : 'Order delivered',
+      body: isPickup
         ? 'Your laundry has been collected and is on its way to us.'
-        : 'Your order has been delivered. Thank you for using Swachham.'
-    );
+        : 'Your order has been delivered. Thank you for using Swachham.',
+      data: {
+        jobId: String(jobId),
+        jobType: isPickup ? 'PICKUP' : 'DELIVERY',
+        riderStatus: isPickup ? 'COLLECTED' : 'COMPLETED',
+        orderStatus,
+      },
+    });
 
     logger.info(
       `[Rider] Job ${jobId} ${isPickup ? 'collected' : 'delivered'} by rider ${riderId} ` +
@@ -1075,92 +1115,20 @@ async function getSummary(riderId: string): Promise<any> {
   };
 }
 
-/**
- * Notify whoever placed the order — customer or business contact.
+/*
+ * NOTIFYING THE ORDER'S PARTY NOW LIVES IN `orderNotification.service`.
  *
- * A business order hangs off `business_user_id`, and `business_users` is not
- * `users`, so a notification row (whose FK points at `users`) can only be
- * written for a customer order. The business case is delivered over the
- * socket only, rather than being dropped or crashing on a foreign key.
+ * The function that used to sit here — resolve the order's customer or
+ * establishment, write the durable row that account can actually read, push
+ * to their handsets — was correct and was reachable only from this file.
+ * Three more moments need exactly the same thing (a Manager assigning a
+ * collection, a rider accepting a pickup, a rider arriving), so it moved to
+ * a service all four can call rather than being copied into each.
+ *
+ * The behaviour is unchanged for the two calls in this file: the same
+ * `notifications` row for a customer, the same `business_messages` row for a
+ * hotel, the same best-effort push, the same swallowed failures.
  */
-async function notifyOrderParty(
-  orderId: string,
-  type: string,
-  title: string,
-  body: string
-): Promise<void> {
-  try {
-    const result = await query<any>(
-      `SELECT user_id, business_user_id FROM orders WHERE id = ?`,
-      [orderId]
-    );
-    const row = result.rows[0];
-    if (!row) return;
-
-    /*
-     * THE PUSH IS AN ADDITION TO THE DURABLE ROW, NEVER INSTEAD OF IT.
-     *
-     * Every branch below still writes what it always wrote — a customer's
-     * `notifications` row, an establishment's `business_messages` row — and
-     * those remain the record. What they cannot do is reach a phone that
-     * nobody is looking at, which for the handover code is the whole
-     * problem: a rider is at the door waiting for a number to be read out.
-     *
-     * `sendToOwner` never throws and reports its own failures, so a device
-     * that is off, uninstalled or unregistered cannot affect the status
-     * change that triggered this.
-     */
-    const push = (owner: PushOwner) =>
-      sendToOwner(owner, { title, body, data: { orderId, type } });
-
-    if (row.user_id) {
-      await createNotification(String(row.user_id), orderId, type, title, body, { orderId });
-      await push({ userId: String(row.user_id) });
-    } else if (row.business_user_id) {
-      /*
-       * A BUSINESS ORDER NOW GETS A DURABLE MESSAGE, not just a socket emit.
-       *
-       * The emit below stays, but on its own it delivered nothing: the mobile
-       * app has no socket client (`socket.io-client` is not a dependency), so
-       * every notification to a hotel — including "your rider has arrived",
-       * which carries the handover code — was written to a channel with no
-       * listener. A hotel could not learn its own code, and the handover
-       * could not be completed.
-       *
-       * `business_messages` is the table that exists for exactly this (see
-       * migration 062), and the hotel reads it on the Pickup Approvals
-       * screen.
-       *
-       * WRAPPED SEPARATELY so that a missing table — migration 062 not yet
-       * run — degrades to the old behaviour instead of failing the status
-       * change that triggered it.
-       */
-      try {
-        await query(
-          `INSERT INTO business_messages (business_user_id, order_id, ticket_id, type, body, is_read)
-           VALUES (?, ?, NULL, ?, ?, false)`,
-          [String(row.business_user_id), orderId, type, body]
-        );
-      } catch (error) {
-        logger.warn(
-          `[Rider] Could not write business message for order ${orderId} ` +
-            `(is migration 062 applied?): ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-
-      await push({ businessUserId: String(row.business_user_id) });
-
-      socketService.emitJobUpdate(orderId, { orderId, type, title, body });
-    } else {
-      socketService.emitJobUpdate(orderId, { orderId, type, title, body });
-    }
-  } catch (error) {
-    logger.error(
-      `[Rider] Could not notify the party on order ${orderId}: ` +
-        `${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
 
 export {
   getOrCreateProfile,

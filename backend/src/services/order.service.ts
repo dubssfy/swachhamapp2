@@ -7,7 +7,14 @@ import { notifyNearbyRidersOfNewOrder } from './dispatch.service';
 import { requireCustomerPrices, priceKey } from './priceList.service';
 import { normaliseMobileOrNull } from './businessContact.service';
 import { config } from '../config/env';
-import { quoteForAddress } from './deliveryFee.service';
+import { quoteForAddress, quoteForPoint } from './deliveryFee.service';
+import {
+  ManualAddress,
+  hasManualAddress,
+  parseManualAddress,
+  pickupAddressOf,
+} from './manualAddress.service';
+import { provisionalPickup } from './pickupSlot.service';
 import { AppError } from '../utils/appError';
 
 /* Delivery is quoted by distance -- see `deliveryFee.service`. The flat
@@ -123,10 +130,36 @@ export async function generateCustomerOrderNumber(connection: any): Promise<stri
 }
 
 export interface CreateOrderInput {
-  address_id: string;
-  pickup_date: string;
-  pickup_slot_start: string;
-  pickup_slot_end: string;
+  /**
+   * A SAVED address. Optional now, because `manual_address` is the other way
+   * to answer the same question — exactly one of the two is required, which
+   * `resolveOrderAddress` enforces.
+   */
+  address_id?: string;
+  /**
+   * AN ADDRESS TYPED FOR THIS ORDER ALONE, from "Enter Address Manually" at
+   * checkout. Stored on the order rather than in the address book; see
+   * `manualAddress.service` and migration 071.
+   */
+  manual_address?: unknown;
+  /*
+   * THE PICKUP IS NO LONGER CHOSEN BY THE CUSTOMER, so all three are
+   * optional.
+   *
+   * The booking flow used to ask for a day and a window. It does not any
+   * more: a Manager assigns the collection when they accept the order, which
+   * is the only moment anyone has actually committed to one. An order that
+   * arrives without them gets `pickupSlot.provisionalPickup()` — a
+   * placeholder in the `pickups` row that nothing displays, kept only because
+   * every reader of that table expects a row to exist.
+   *
+   * THEY ARE STILL ACCEPTED. An older build in the field still sends them and
+   * still has them honoured and validated; the Manager's assignment
+   * overwrites either way.
+   */
+  pickup_date?: string;
+  pickup_slot_start?: string;
+  pickup_slot_end?: string;
   delivery_date?: string;
   delivery_slot_start?: string;
   delivery_slot_end?: string;
@@ -193,6 +226,54 @@ export interface OrderRow {
 }
 
 /**
+ * WHERE THIS ORDER IS COLLECTED FROM: a saved address, or a typed one.
+ *
+ * EXACTLY ONE OF THE TWO, and that is a rule rather than a preference. An
+ * order whose `address_id` and `manual_address_line` were both set would have
+ * two answers to "where do I send the rider?", and every screen would be free
+ * to pick a different one. So a request carrying both is refused here rather
+ * than resolved by a precedence rule nobody can see from the data.
+ *
+ * NEITHER IS ALSO REFUSED. `address_id` used to be required by the validator;
+ * making it optional so a typed address can stand in its place would
+ * otherwise let an order through with no address at all — which is an order
+ * no rider can complete, discovered at a door rather than at checkout.
+ */
+function resolveOrderAddress(input: CreateOrderInput): {
+  addressId: string | null;
+  manual: ManualAddress | null;
+} {
+  const addressId = String(input.address_id ?? '').trim();
+  const wantsManual = hasManualAddress(input.manual_address);
+
+  if (addressId && wantsManual) {
+    throw new AppError(
+      'Choose a saved address or enter one manually, not both.',
+      400
+    );
+  }
+
+  if (wantsManual) {
+    // Throws the customer-facing message for whichever field is wrong.
+    return { addressId: null, manual: parseManualAddress(input.manual_address) };
+  }
+
+  if (!addressId) {
+    throw new AppError('A pickup address is required.', 400);
+  }
+  /*
+   * Digits only. `address_id` is a BIGINT primary key, and anything else is
+   * either a client bug or an attempt at the parameter — MySQL would coerce
+   * 'abc' to 0 and quietly find no address rather than saying so.
+   */
+  if (!/^\d+$/.test(addressId)) {
+    throw new AppError('That pickup address is not valid.', 400);
+  }
+
+  return { addressId, manual: null };
+}
+
+/**
  * Customer order creation, against the MySQL schema the rest of the app uses
  * (the original body was unported Postgres — `$n` placeholders, RETURNING and
  * a generate_order_number() function that does not exist on MySQL).
@@ -224,6 +305,32 @@ async function createOrder(
    * database access, and failing here means nothing has to be rolled back.
    */
   const paymentMethod = parsePaymentMethod(input.payment_method);
+
+  /*
+   * THE ADDRESS IS RESOLVED BEFORE THE TRANSACTION OPENS, for the same reason
+   * the payment method is: a typed address with a missing PIN needs no
+   * database access to refuse, and refusing it here means nothing has to be
+   * rolled back and no cart is touched.
+   */
+  const { addressId, manual } = resolveOrderAddress(input);
+
+  /*
+   * AND SO IS THE PICKUP, whether the customer chose one or not.
+   *
+   * `pickups` needs a row for every order — the rider's job and the
+   * delivery-turnaround rule both read it — but nobody chooses a collection
+   * at checkout any more. When the request carries one it is used; when it
+   * does not, the server's own placeholder stands in and
+   * `orders.assigned_pickup_date` stays NULL, which is what every screen
+   * tests before showing a collection at all.
+   */
+  const pickupChosen = Boolean(
+    input.pickup_date && input.pickup_slot_start && input.pickup_slot_end
+  );
+  const placeholder = pickupChosen ? null : await provisionalPickup();
+  const pickupDate = pickupChosen ? String(input.pickup_date) : placeholder!.date;
+  const pickupStart = pickupChosen ? String(input.pickup_slot_start) : placeholder!.slot.start;
+  const pickupEnd = pickupChosen ? String(input.pickup_slot_end) : placeholder!.slot.end;
 
   const connection = await getClient();
   try {
@@ -315,10 +422,25 @@ async function createOrder(
      * item prices are: a request that named its own delivery charge could
      * otherwise set it to zero.
      */
-    const deliveryQuote = await quoteForAddress(userId, input.address_id, {
-      latitude: input.latitude,
-      longitude: input.longitude,
-    });
+    /*
+     * A TYPED ADDRESS IS QUOTED FROM ITS OWN POINT WHERE IT HAS ONE.
+     *
+     * "Use my current location" fills the form from a fix the customer asked
+     * for by name, and that fix is the honest place to measure from. Where
+     * the address was typed from memory it has no point of its own, and the
+     * device's fix — which `requireServiceArea` has already validated — is
+     * the same fallback a saved address with no coordinates uses. Both paths
+     * end at `quoteForPoint`, so a manual address is never charged by a
+     * different rule from a saved one.
+     */
+    const deliveryQuote = manual
+      ? manual.latitude !== null && manual.longitude !== null
+        ? await quoteForPoint(manual.latitude, manual.longitude)
+        : await quoteForPoint(input.latitude, input.longitude)
+      : await quoteForAddress(userId, addressId, {
+          latitude: input.latitude,
+          longitude: input.longitude,
+        });
     const delivery_charge = deliveryQuote.charge;
 
     // 4) Validate coupon if provided
@@ -352,14 +474,21 @@ async function createOrder(
          user_id, address_id, placed_by_mobile, order_number, status, subtotal,
          delivery_charge, delivery_distance_km, delivery_store_id,
          coupon_discount, coupon_id, total, total_weight_kg,
-         payment_method, payment_status, special_notes
+         payment_method, payment_status, special_notes,
+         -- The typed address, all NULL on an order that used a saved one.
+         -- Written here with the order because it IS part of the order: a
+         -- snapshot nothing can later edit out from under it (migration 071).
+         manual_address_line, manual_landmark, manual_city, manual_state,
+         manual_pincode, manual_contact_name, manual_contact_mobile,
+         manual_latitude, manual_longitude
        )
-       VALUES (?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
+       VALUES (?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       // `placed_by_mobile` is written ONCE, here, and never updated: changing
       // the profile number later must not rewrite what an order already says.
       [
         userId,
-        input.address_id,
+        addressId,
         normaliseMobileOrNull(placedByMobile),
         orderNumber,
         subtotal,
@@ -374,6 +503,15 @@ async function createOrder(
         totalWeightKg,
         paymentMethod,
         input.notes || null,
+        manual?.addressLine ?? null,
+        manual?.landmark ?? null,
+        manual?.city ?? null,
+        manual?.state ?? null,
+        manual?.pincode ?? null,
+        manual?.contactName ?? null,
+        manual?.contactMobile ?? null,
+        manual?.latitude ?? null,
+        manual?.longitude ?? null,
       ]
     );
     const orderId = String(orderInsert.insertId);
@@ -434,7 +572,7 @@ async function createOrder(
     await connection.execute(
       `INSERT INTO pickups (order_id, scheduled_date, time_slot_start, time_slot_end, status)
        VALUES (?, ?, ?, ?, 'SCHEDULED')`,
-      [orderId, input.pickup_date, input.pickup_slot_start, input.pickup_slot_end]
+      [orderId, pickupDate, pickupStart, pickupEnd]
     );
 
     // 11) INSERT delivery (if delivery date provided)
@@ -616,6 +754,17 @@ async function getOrderById(userId: string, orderId: string): Promise<OrderRow |
     pickup: pickup.rows[0] ?? null,
     delivery: delivery.rows[0] ?? null,
     address: address.rows[0] ?? null,
+    /*
+     * THE ADDRESS THIS ORDER IS ACTUALLY FOR, in one field.
+     *
+     * `address` above is the saved row and is NULL on an order whose address
+     * was typed at checkout — so a screen reading it alone would show nothing
+     * for exactly the orders whose address is least guessable. This resolves
+     * the two sources into the single shape every screen reads, and is the
+     * same field the Manager's queue, the business order and the rider's job
+     * carry.
+     */
+    pickup_address: pickupAddressOf(order as any, address.rows[0] ?? null),
   } as OrderRow;
 }
 
@@ -716,14 +865,37 @@ async function getOrderTracking(userId: string, orderId: string): Promise<object
              * collection into the previous day for anyone west of IST.
              */
             DATE_FORMAT(o.assigned_pickup_date, '%Y-%m-%d') AS assigned_pickup_date,
-            o.assigned_pickup_time
+            o.assigned_pickup_time,
+            /*
+             * WHERE THE ORDER IS COLLECTED FROM, both sources.
+             *
+             * The tracker never showed the address at all, which was
+             * tolerable while every order pointed at an address the customer
+             * could look up in their own address book. An address TYPED for
+             * one order exists nowhere else, so the order is the only place
+             * it can be read back from — and a customer checking what they
+             * booked is exactly who needs to see it.
+             */
+            o.manual_address_line, o.manual_landmark, o.manual_city,
+            o.manual_state, o.manual_pincode, o.manual_contact_name,
+            o.manual_contact_mobile, o.manual_latitude, o.manual_longitude,
+            ca.address_label, ca.full_address, ca.city, ca.pincode, ca.area,
+            ca.latitude, ca.longitude
        FROM orders o
+       LEFT JOIN customer_addresses ca ON ca.id = o.address_id
       WHERE o.id = ? AND o.user_id = ?`,
     [orderId, userId]
   );
 
   const order = orderResult.rows[0];
   if (!order) return null;
+
+  /*
+   * The two address sources collapse into one field before anything else
+   * sees them, so the columns selected above never reach the app as a set of
+   * loose `manual_*` / `ca.*` values a screen would have to reason about.
+   */
+  const pickupAddress = pickupAddressOf(order, order.full_address ? order : null);
 
   const pickup = await query<any>(
     `SELECT * FROM pickups WHERE order_id = ? LIMIT 1`,
@@ -773,6 +945,8 @@ async function getOrderTracking(userId: string, orderId: string): Promise<object
      * would refuse. Same arrangement `businessOrder.service` already uses.
      */
     can_cancel: canCancelStatus(order.status),
+    /** The same shape `getOrderById` returns, so both agree. */
+    pickup_address: pickupAddress,
   };
 }
 

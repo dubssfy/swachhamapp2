@@ -4,6 +4,7 @@ import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
 import socketService from './socket.service';
 import { createNotification } from './notification.service';
+import { notifyOrderPartyOnce, NOTIFICATION_TYPES } from './orderNotification.service';
 
 /**
  * ===================================================================
@@ -141,9 +142,36 @@ async function resolvePickupPoint(orderId: string): Promise<{
             o.placed_by_mobile,
             ca.latitude        AS cust_lat,
             ca.longitude       AS cust_lng,
-            ca.full_address    AS cust_address,
-            u.name             AS cust_name,
-            u.mobile_number    AS cust_mobile,
+            /*
+             * THE ADDRESS THE ORDER WAS PLACED TO, typed or saved.
+             *
+             * A customer who used Enter Address Manually has no
+             * customer_addresses row at all, so reading ca.full_address
+             * alone sent the rider to an empty string -- for precisely the
+             * orders whose address is a one-off nobody can guess. The typed
+             * address wins where there is one; the two are never both set.
+             */
+            COALESCE(
+              NULLIF(CONCAT_WS(', ',
+                NULLIF(TRIM(o.manual_address_line), ''),
+                NULLIF(TRIM(o.manual_landmark), ''),
+                NULLIF(TRIM(o.manual_city), ''),
+                NULLIF(TRIM(o.manual_pincode), '')
+              ), ''),
+              ca.full_address
+            )                  AS cust_address,
+            o.manual_latitude  AS manual_lat,
+            o.manual_longitude AS manual_lng,
+            NULLIF(TRIM(o.manual_contact_name), '')   AS manual_contact_name,
+            NULLIF(TRIM(o.manual_contact_mobile), '') AS manual_contact_mobile,
+            /*
+             * WHO THE RIDER ASKS FOR, when the order names somebody other
+             * than the account holder -- which a manual address often does,
+             * being a relative's flat or an office. Falls back to the
+             * account exactly as it always has.
+             */
+            COALESCE(NULLIF(TRIM(o.manual_contact_name), ''), u.name) AS cust_name,
+            COALESCE(NULLIF(TRIM(o.manual_contact_mobile), ''), u.mobile_number) AS cust_mobile,
             b.latitude         AS biz_lat,
             b.longitude        AS biz_lng,
             COALESCE(b.establishment_address, b.address) AS biz_address,
@@ -187,7 +215,15 @@ async function resolvePickupPoint(orderId: string): Promise<{
    * order has only ever had the one source and is unaffected.
    */
   const point =
-    (isBusiness ? pair(row.biz_lat, row.biz_lng) : null) ?? pair(row.cust_lat, row.cust_lng);
+    (isBusiness ? pair(row.biz_lat, row.biz_lng) : null) ??
+    /*
+     * A TYPED ADDRESS'S OWN FIX FIRST. When the customer filled the form
+     * with "Use my current location" the point came from where they were
+     * standing, and no saved address describes that place at all. Falls
+     * through to the saved address's coordinates for every other order.
+     */
+    pair(row.manual_lat, row.manual_lng) ??
+    pair(row.cust_lat, row.cust_lng);
 
   return {
     order_number: row.order_number,
@@ -197,10 +233,26 @@ async function resolvePickupPoint(orderId: string): Promise<{
     location_label:
       (isBusiness ? row.biz_name || row.biz_address : row.cust_address) || 'this address',
     address_text: (isBusiness ? row.biz_address : row.cust_address) || null,
-    contact_name: (isBusiness ? row.biz_name : row.cust_name) || null,
-    // The number the order was actually placed from wins: for a business it
-    // is whichever contact signed in, which is who the rider should call.
-    contact_mobile: row.placed_by_mobile || (isBusiness ? row.biz_mobile : row.cust_mobile) || null,
+    /*
+     * WHOEVER THE ORDER NAMES AT THE DOOR COMES FIRST.
+     *
+     * An address typed at checkout may carry its own contact, and it is
+     * there precisely because the person meeting the rider is NOT the
+     * account holder — a relative's flat, an office, a parent's house. A
+     * fallback that preferred the account would ring the one person who is
+     * not there.
+     *
+     * Nothing else changes. With no typed contact this is exactly the
+     * expression it has always been: `placed_by_mobile` still wins for a
+     * business order (whichever contact signed in is who the rider should
+     * call), and a customer order still falls through to the account.
+     */
+    contact_name: row.manual_contact_name || (isBusiness ? row.biz_name : row.cust_name) || null,
+    contact_mobile:
+      row.manual_contact_mobile ||
+      row.placed_by_mobile ||
+      (isBusiness ? row.biz_mobile : row.cust_mobile) ||
+      null,
   };
 }
 
@@ -846,6 +898,52 @@ async function acceptJob(jobId: string, riderId: string): Promise<RiderJob> {
 
     logger.info(`[Dispatch] Job ${jobId} accepted by rider ${riderId}`);
 
+    /*
+     * ============================================================
+     * THE CUSTOMER OR HOTEL IS TOLD A RIDER IS COMING
+     * ============================================================
+     *
+     * HERE, AND NOT WHERE THE OFFER IS SENT. `dispatchJob` fans the job out
+     * to every nearby rider; none of them has agreed to anything at that
+     * point, and telling a hotel "a rider has accepted" because five phones
+     * lit up would be a claim about something that has not happened. This
+     * runs after the conditional claim above has actually matched a row,
+     * which is the moment one specific rider took it.
+     *
+     * AFTER THE COMMIT, AND UNABLE TO FAIL IT. The rider has the job; a
+     * notification problem must not be reported to them as a failed accept,
+     * and `notifyOrderPartyOnce` never throws.
+     *
+     * PICKUP AND DISPATCH STAY SEPARATE, down to the notification type and
+     * the wording. A pickup is someone coming to collect from you; a
+     * dispatch is someone bringing your laundry back. They are two
+     * workflows, and an app deciding what to show must not have to unpick
+     * which from a shared type.
+     *
+     * DEDUPLICATED BY JOB. The claim above can only succeed once per job —
+     * every later attempt throws "Another rider has already taken this job"
+     * before reaching here — so the key is a second line of defence against
+     * a retry or a second process, not the primary guard.
+     */
+    const isPickupJob = jobRows[0].job_type === 'PICKUP';
+    const acceptType = isPickupJob
+      ? NOTIFICATION_TYPES.RIDER_ACCEPTED_PICKUP
+      : NOTIFICATION_TYPES.RIDER_ACCEPTED_DELIVERY;
+
+    await notifyOrderPartyOnce(orderId, `${acceptType}:job=${jobId}`, {
+      type: acceptType,
+      title: 'Rider Assigned',
+      body: isPickupJob
+        ? 'Your pickup request has been accepted by a rider.'
+        : 'Your delivery has been accepted by a rider and is on its way.',
+      data: {
+        jobId: String(jobId),
+        jobType: isPickupJob ? 'PICKUP' : 'DELIVERY',
+        riderStatus: 'ASSIGNED',
+        orderStatus,
+      },
+    });
+
     const job = await getJobById(jobId);
     if (!job) throw new AppError('Job not found after accept', 500);
     return job;
@@ -1077,6 +1175,9 @@ async function redispatchStaleJobs(): Promise<number> {
               -- Or the address behind it has one now, so a backfill will work.
               OR (b.latitude IS NOT NULL AND b.longitude IS NOT NULL)
               OR (ca.latitude IS NOT NULL AND ca.longitude IS NOT NULL)
+              -- Or the order carries a typed address with its own fix, which
+              -- is the only point an Enter Address Manually order ever has.
+              OR (o.manual_latitude IS NOT NULL AND o.manual_longitude IS NOT NULL)
             )`,
     [MAX_DISPATCH_ATTEMPTS]
   );

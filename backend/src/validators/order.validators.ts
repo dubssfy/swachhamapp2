@@ -2,52 +2,38 @@ import { body } from 'express-validator';
 
 const PAYMENT_METHODS = ['CASH_ON_DELIVERY', 'ONLINE', 'WALLET'] as const;
 
+/*
+ * NOT MOUNTED ON ANY ROUTE, and deliberately left that way.
+ *
+ * `POST /api/orders` validates inside `order.service.createOrder`, where the
+ * cart, the price list and the business clock are all available — none of
+ * which express-validator can see. This list is kept because the remaining
+ * rules are worth stating, and is corrected here rather than left describing
+ * a contract that no longer exists: wiring a stale validator onto the route
+ * would reject every valid booking the app sends.
+ *
+ * WHAT CHANGED, AND WHY:
+ *
+ *   address_id       no longer required, and never a UUID — ids in this
+ *                    schema are BIGINT. An order may instead carry
+ *                    `manual_address`, and `resolveOrderAddress` is what
+ *                    enforces "exactly one of the two".
+ *
+ *   pickup_*         no longer required at all. The customer does not choose
+ *                    a collection; a Manager assigns it on approval. See
+ *                    `pickupSlot.provisionalPickup`.
+ */
 const createOrderValidation = [
   body('address_id')
+    .optional()
     .trim()
-    .notEmpty()
-    .withMessage('Address is required')
-    .isUUID()
-    .withMessage('address_id must be a valid UUID'),
+    .matches(/^\d+$/)
+    .withMessage('address_id must be an order address id'),
 
-  body('pickup_date')
-    .notEmpty()
-    .withMessage('Pickup date is required')
-    .isISO8601()
-    .withMessage('pickup_date must be a valid ISO 8601 date')
-    .custom((value: string) => {
-      const date = new Date(value);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (date < today) {
-        throw new Error('Pickup date cannot be in the past');
-      }
-      return true;
-    }),
-
-  body('pickup_time_slot')
-    .notEmpty()
-    .withMessage('Pickup time slot is required')
+  body('manual_address')
+    .optional()
     .isObject()
-    .withMessage('pickup_time_slot must be an object'),
-
-  body('pickup_time_slot.start')
-    .notEmpty()
-    .withMessage('Pickup time slot start is required')
-    .matches(/^([01]\d|2[0-3]):([0-5]\d)$/)
-    .withMessage('pickup_time_slot.start must be in HH:MM format'),
-
-  body('pickup_time_slot.end')
-    .notEmpty()
-    .withMessage('Pickup time slot end is required')
-    .matches(/^([01]\d|2[0-3]):([0-5]\d)$/)
-    .withMessage('pickup_time_slot.end must be in HH:MM format')
-    .custom((value: string, { req }) => {
-      if (value <= req.body.pickup_time_slot?.start) {
-        throw new Error('Pickup time slot end must be after start');
-      }
-      return true;
-    }),
+    .withMessage('manual_address must be an object'),
 
   body('payment_method')
     .notEmpty()

@@ -1,4 +1,7 @@
 import apiClient from './api';
+/* The address shape lives beside the component that renders it, so the
+   payload type and the card cannot describe different fields. */
+import type { PickupAddress } from '../components/PickupAddressCard';
 import { ApiResponse } from '../types';
 import { DEMO_MODE } from '../demo/demoMode';
 import demoBusinessOrderApi from '../demo/demoBusinessOrderApi';
@@ -98,20 +101,28 @@ export interface BusinessTimeSlot {
  *
  * THE BUSINESS NO LONGER CHOOSES THIS. The Review Order page used to collect
  * a pickup and an optional delivery; both sections are gone, and a Manager
- * sets the collection when they accept the order. The Review page now sends a
- * placeholder pickup purely because the endpoint still demands one, and no
- * delivery at all.
+ * sets the collection when they accept the order. The Review page now sends
+ * NEITHER: the server writes its own placeholder into the `pickups` row (see
+ * `pickupSlot.provisionalPickup`), so the app has nothing to guess at.
  *
- * The shape is unchanged so the endpoint's contract is unchanged. Pickup and
- * delivery each still carry their own date AND their own slot — they are
- * separate bookings on separate days, never one date shared between them —
- * and the server re-validates every field.
+ * The shape is otherwise unchanged, so the endpoint's contract is unchanged.
+ * Pickup and delivery each still carry their own date AND their own slot —
+ * they are separate bookings on separate days, never one date shared between
+ * them — and the server re-validates every field it is given.
  */
 export interface BusinessPickupSchedule {
-  /** YYYY-MM-DD in IST. */
-  pickupDate: string;
-  /** Pickup slot id, e.g. "11-13". */
-  pickupSlot: string;
+  /**
+   * YYYY-MM-DD in IST.
+   *
+   * OPTIONAL, WITH `pickupSlot`, AND ONLY AS A PAIR. Nothing in the app sends
+   * either any more. The server fills in a placeholder when both are absent
+   * and still validates them when they are present, so a caller with a
+   * reason to name a collection can, and one carrying only half a pickup is
+   * still refused — half a pickup is a bug, not a partial booking.
+   */
+  pickupDate?: string | null;
+  /** Pickup slot id, e.g. "11-13". Optional, paired with `pickupDate`. */
+  pickupSlot?: string | null;
   /**
    * YYYY-MM-DD in IST, always a later day than `pickupDate`.
    *
@@ -332,6 +343,12 @@ export interface BusinessOrderTracking {
    */
   assigned_pickup_date?: string | null;
   assigned_pickup_time?: string | null;
+  /**
+   * Where the order is collected from — the establishment's own address for
+   * a hotel booking, or an address typed onto the order where one exists.
+   * Resolved by the server into one shape; `PickupAddressCard` renders it.
+   */
+  pickup_address?: PickupAddress | null;
 }
 
 export interface BusinessProfile {

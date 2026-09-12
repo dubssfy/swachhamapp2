@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
   TextInput,
@@ -12,7 +12,6 @@ import {
 import customerCartApi, {
   CustomerCart,
   customerOrderApi,
-  PickupSlotOption,
   DeliveryQuote,
   CUSTOMER_PAYMENT_METHODS,
   CustomerPaymentMethod,
@@ -23,152 +22,107 @@ import { detectCurrentAddress } from '../../services/currentLocation';
 /**
  * CHECKOUT — the last step before an order exists.
  *
- * THIS SCREEN WAS A MOCKUP: a hardcoded item list, `totalEstimatedPay = 42.00`
- * from nowhere, a pickup date written into the JSX, and a Book Order button
- * whose handler was `console.log('Book Order')`.
- *
  * WHAT AN ORDER NEEDS, and why each is asked for here:
  *
  *   ADDRESS      where the laundry is collected -- and what the delivery
- *                charge is measured from.
- *   PICKUP       a day and a window; they become the `pickups` row.
- *   DELIVERY     a day and a window, optional; they become the `deliveries`
- *                row. Always LATER than the pickup, because the laundry has
- *                to be washed in between.
+ *                charge is measured from. EITHER a saved address OR one
+ *                typed for this order alone; see "TWO WAYS TO SAY WHERE"
+ *                below.
  *   PAYMENT      validated against the `orders.payment_method` ENUM.
  *   LOCATION     `POST /api/orders` sits behind `requireServiceArea` and
  *                answers 428 without coordinates. The one input nobody types.
+ *
+ * ============================================================
+ * THE PICKUP IS NOT ASKED FOR ANY MORE
+ * ============================================================
+ *
+ * This screen used to carry a pickup DAY and a pickup TIME, and would not let
+ * the order be placed until both were chosen. Both are gone, along with the
+ * validation behind them.
+ *
+ * A customer choosing a collection window was choosing something NOBODY HAD
+ * AGREED TO: the order goes to a Manager, who approves it and names the
+ * collection. So the flow is now
+ *
+ *     customer books  ->  Manager approves  ->  Manager assigns the pickup
+ *                     ->  the customer is told, and sees it on the order
+ *
+ * and the time the customer sees is one somebody has actually committed to.
+ * `PickupScheduleCard` on the tracker shows it the moment it is assigned, and
+ * a push notification announces it.
+ *
+ * THE SERVER STILL WRITES A `pickups` ROW, with a placeholder of its own
+ * (`pickupSlot.provisionalPickup`), because the rider's job and several
+ * reports read that table. Nothing displays it, and
+ * `orders.assigned_pickup_date` — the column every screen actually tests —
+ * stays NULL until the Manager decides.
+ *
+ * ============================================================
+ * TWO WAYS TO SAY WHERE
+ * ============================================================
+ *
+ *   SAVED     pick one of the account's addresses. `address_id`, as before.
+ *
+ *   MANUAL    type one for this order. It is sent as `manual_address` and
+ *             stored ON THE ORDER, not in the address book — so a one-off
+ *             address does not become an entry the customer has to tidy up,
+ *             and an order placed to one cannot lose its address later when
+ *             the address book is edited.
+ *
+ * They are MUTUALLY EXCLUSIVE, and the server refuses an order carrying both.
+ * The mode below is what makes that true here: switching to manual clears the
+ * selected id, and choosing a saved address leaves manual mode.
  *
  * NO ARITHMETIC HERE. Every figure is the server's, and the order is priced
  * again when it is created, so this screen cannot make the total disagree
  * with the bill.
  */
 
-/** How many days ahead a pickup can be booked. Today counts as day one. */
-const BOOKABLE_DAYS = 5;
+/** Which of the two ways the customer is using to give an address. */
+type AddressMode = 'SAVED' | 'MANUAL';
 
-/** How far past the pickup a delivery can be scheduled. */
-const DELIVERY_WINDOW_DAYS = 6;
-
-/** YYYY-MM-DD in the device's own calendar, which is what the API expects. */
-function ymd(date: Date): string {
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
-function addDays(from: Date, count: number): Date {
-  const next = new Date(from);
-  next.setDate(from.getDate() + count);
-  return next;
-}
-
-function shortDate(date: Date): string {
-  return `${date.getDate()} ${date.toLocaleDateString(undefined, { month: 'short' })}`;
-}
-
-/** A row of day chips, used for both legs. */
-function DayPicker({
-  days, value, onChange,
-}: {
-  days: Array<{ value: string; label: string; date: Date }>;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-      <View style={styles.chipRow}>
-        {days.map((day) => {
-          const on = day.value === value;
-          return (
-            <TouchableOpacity
-              key={day.value}
-              style={[styles.dayChip, on && styles.dayChipOn]}
-              onPress={() => onChange(day.value)}
-              accessibilityRole="radio"
-              accessibilityState={{ selected: on }}
-              accessibilityLabel={`${day.label} ${shortDate(day.date)}`}
-            >
-              <Text style={[styles.dayChipLabel, on && styles.dayChipLabelOn]}>{day.label}</Text>
-              <Text style={[styles.dayChipDate, on && styles.dayChipDateOn]}>
-                {shortDate(day.date)}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </ScrollView>
-  );
-}
-
-/** A wrap of slot chips. Unavailable windows are shown, struck through. */
-function SlotPicker({
-  slots, value, onChange, emptyText,
-}: {
-  slots: PickupSlotOption[];
-  value: string;
-  onChange: (value: string) => void;
-  emptyText: string;
-}) {
-  if (slots.length === 0 || slots.every((s) => !s.available)) {
-    return <Text style={styles.muted}>{emptyText}</Text>;
-  }
-  return (
-    <View style={styles.chipWrap}>
-      {slots.map((option) => {
-        const on = option.id === value;
-        return (
-          <TouchableOpacity
-            key={option.id}
-            style={[
-              styles.slotChip,
-              on && styles.slotChipOn,
-              !option.available && styles.slotChipOff,
-            ]}
-            disabled={!option.available}
-            onPress={() => onChange(option.id)}
-            accessibilityRole="radio"
-            accessibilityState={{ selected: on, disabled: !option.available }}
-          >
-            <Text
-              style={[
-                styles.slotChipText,
-                on && styles.slotChipTextOn,
-                !option.available && styles.slotChipTextOff,
-              ]}
-            >
-              {option.label}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
-    </View>
-  );
-}
+/*
+ * `DayPicker` and `SlotPicker` used to live here, one for the pickup day and
+ * one for the pickup window. Both are gone with the pickers they drew — the
+ * customer chooses neither now. `DateStrip` and `TimeSlotRow`, the components
+ * the rest of the app uses for the same job, are untouched.
+ */
 
 export default function CheckoutScreen({ navigation }: any) {
   const [cart, setCart] = useState<CustomerCart | null>(null);
   const [addresses, setAddresses] = useState<AddressData[]>([]);
-  const [pickupSlots, setPickupSlots] = useState<PickupSlotOption[]>([]);
-  const [deliverySlots, setDeliverySlots] = useState<PickupSlotOption[]>([]);
   const [quote, setQuote] = useState<DeliveryQuote | null>(null);
 
   const [addressId, setAddressId] = useState('');
-  const [pickupDate, setPickupDate] = useState('');
-  const [pickupSlotId, setPickupSlotId] = useState('');
-  const [deliveryDate, setDeliveryDate] = useState('');
-  const [deliverySlotId, setDeliverySlotId] = useState('');
   const [payment, setPayment] = useState<CustomerPaymentMethod>('CASH_ON_DELIVERY');
   const [notes, setNotes] = useState('');
 
-  /* The inline address form. Checkout used to dead-end for an account with
-     no saved address — the button simply stayed off with nowhere to go. */
-  const [addingAddress, setAddingAddress] = useState(false);
-  const [newAddress, setNewAddress] = useState('');
-  const [newCity, setNewCity] = useState('');
-  const [newPincode, setNewPincode] = useState('');
-  const [savingAddress, setSavingAddress] = useState(false);
-  /** The fix from "Use my current location", when it was used. See `saveAddress`. */
+  /*
+   * WHICH WAY THE ADDRESS IS BEING GIVEN.
+   *
+   * One piece of state rather than a flag per form, because the two ways are
+   * exclusive and the server refuses an order that carries both. Everything
+   * that reads the address — the blocker, the quote, the order body — asks
+   * this first, so there is one place the exclusivity is decided.
+   */
+  const [addressMode, setAddressMode] = useState<AddressMode>('SAVED');
+
+  /*
+   * THE TYPED ADDRESS.
+   *
+   * These fields used to back an "add an address" form that SAVED to the
+   * address book and then selected the new row. They now back Enter Address
+   * Manually, which sends the address WITH THE ORDER and saves nothing — see
+   * the note at the top of this file. The three required ones are checked
+   * here and again on the server.
+   */
+  const [manualLine, setManualLine] = useState('');
+  const [manualLandmark, setManualLandmark] = useState('');
+  const [manualCity, setManualCity] = useState('');
+  const [manualPincode, setManualPincode] = useState('');
+  const [manualContactName, setManualContactName] = useState('');
+  const [manualContactMobile, setManualContactMobile] = useState('');
+  /** The fix from "Use my current location", when it was used. */
   const [detectedCoords, setDetectedCoords] =
     useState<{ latitude: number; longitude: number } | null>(null);
   const [locating, setLocating] = useState(false);
@@ -189,9 +143,18 @@ export default function CheckoutScreen({ navigation }: any) {
     }
     const found = result.address;
     // Only empty fields: anything already typed is the customer's own.
-    setNewAddress((current) => current || found.full_address);
-    setNewCity((current) => current || found.city);
-    setNewPincode((current) => current || found.pincode);
+    setManualLine((current) => current || found.full_address);
+    setManualCity((current) => current || found.city);
+    setManualPincode((current) => current || found.pincode);
+    /*
+     * THE POINT IS KEPT, AND IT TRAVELS WITH THE ORDER.
+     *
+     * The delivery charge is measured from where the laundry is collected,
+     * and a typed address has no coordinates of its own unless this button
+     * gave it some. Sending them means a manual address is charged from the
+     * place the customer pointed at rather than from wherever the handset
+     * happened to be when Book Order was tapped.
+     */
     setDetectedCoords({ latitude: found.latitude, longitude: found.longitude });
     setLocationNote(
       found.full_address || found.city
@@ -201,46 +164,27 @@ export default function CheckoutScreen({ navigation }: any) {
     setLocating(false);
   }, [locating]);
 
+  /**
+   * Back to the saved addresses, with one actually selected.
+   *
+   * Switching to MANUAL clears `addressId` — that is what makes the two modes
+   * exclusive — so coming back has to choose one again, or the customer lands
+   * on a list with nothing selected and a button that will not light up. The
+   * default address, falling back to the first, which is the same preference
+   * `loadAddresses` applies at load.
+   */
+  const useSavedAddresses = useCallback(() => {
+    setAddressMode('SAVED');
+    setAddressId((current) => {
+      if (current) return current;
+      const preferred = addresses.find((a) => a.is_default) ?? addresses[0];
+      return preferred?.id ? String(preferred.id) : '';
+    });
+  }, [addresses]);
+
   const [loading, setLoading] = useState(true);
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState('');
-
-  const today = useMemo(() => new Date(), []);
-
-  const pickupDays = useMemo(
-    () => Array.from({ length: BOOKABLE_DAYS }, (_, index) => {
-      const date = addDays(today, index);
-      return {
-        value: ymd(date),
-        label: index === 0 ? 'Today' : index === 1 ? 'Tomorrow'
-          : date.toLocaleDateString(undefined, { weekday: 'short' }),
-        date,
-      };
-    }),
-    [today]
-  );
-
-  /*
-   * DELIVERY DAYS START THE DAY AFTER THE PICKUP.
-   *
-   * Same-day is not offered because the laundry has to be washed between the
-   * two, and a delivery booked before its own pickup is not a thing the
-   * schedule can mean.
-   */
-  const deliveryDays = useMemo(() => {
-    if (!pickupDate) return [];
-    const [year, month, day] = pickupDate.split('-').map(Number);
-    const pickup = new Date(year, month - 1, day);
-    return Array.from({ length: DELIVERY_WINDOW_DAYS }, (_, index) => {
-      const date = addDays(pickup, index + 1);
-      return {
-        value: ymd(date),
-        label: index === 0 ? 'Next day'
-          : date.toLocaleDateString(undefined, { weekday: 'short' }),
-        date,
-      };
-    });
-  }, [pickupDate]);
 
   /* ---------------------------------------------------------------- load */
   const loadAddresses = useCallback(async (selectId?: string) => {
@@ -262,9 +206,16 @@ export default function CheckoutScreen({ navigation }: any) {
         const loadedCart = await customerCartApi.getCart();
         if (!alive) return;
         setCart(loadedCart);
-        await loadAddresses();
+        const list = await loadAddresses();
         if (!alive) return;
-        setPickupDate(pickupDays[0].value);
+        /*
+         * AN ACCOUNT WITH NO SAVED ADDRESS STARTS IN THE FORM.
+         *
+         * It has nothing to choose from, and landing on an empty picker with
+         * a disabled button is the dead end this screen used to have. The
+         * customer can still switch back once they save one elsewhere.
+         */
+        if (list.length === 0) setAddressMode('MANUAL');
       } catch (e: any) {
         if (alive) setError(e?.response?.data?.message || e.message || 'Could not load checkout');
       } finally {
@@ -272,64 +223,28 @@ export default function CheckoutScreen({ navigation }: any) {
       }
     })();
     return () => { alive = false; };
-  }, [pickupDays, loadAddresses]);
+  }, [loadAddresses]);
 
-  /* Slots depend on the day: a window that has already begun today is not
-     bookable, and the server decides which those are. */
-  const loadSlots = useCallback(async (
-    date: string,
-    apply: (slots: PickupSlotOption[]) => void,
-    keep: (id: string) => void,
-    current: string
-  ) => {
-    try {
-      const list = await customerOrderApi.getPickupSlots(date);
-      apply(list);
-      const stillOpen = list.find((s) => s.id === current && s.available);
-      keep(stillOpen ? current : (list.find((s) => s.available)?.id ?? ''));
-    } catch (e: any) {
-      apply([]);
-      keep('');
-      /* Said out loud rather than left as an empty list: an empty picker with
-         no explanation looks like "fully booked" when it is a failed call. */
-      setError(
-        e?.response?.data?.message ||
-        'Pickup times could not be loaded. Check your connection and try again.'
-      );
-    }
-  }, []);
-
+  /*
+   * The delivery charge follows the ADDRESS, so it is re-quoted whenever the
+   * address changes rather than read once at load.
+   *
+   * A TYPED ADDRESS CANNOT BE QUOTED FROM HERE. `GET /api/orders/delivery-quote`
+   * takes a saved address id, and an address that has not been saved has
+   * none. The quote is cleared rather than left showing the previous
+   * address's figure — the bill then says the charge is worked out once we
+   * know where to collect from, which is the truth, and the SERVER computes
+   * the real charge when the order is created either way.
+   */
   useEffect(() => {
-    if (!pickupDate) return;
-    loadSlots(pickupDate, setPickupSlots, setPickupSlotId, pickupSlotId);
-    // Keep the delivery on the first available day after the new pickup.
-    setDeliveryDate((current) => {
-      const options = deliveryDays.map((d) => d.value);
-      return options.includes(current) ? current : (options[0] ?? '');
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pickupDate]);
-
-  useEffect(() => {
-    if (!deliveryDate) { setDeliverySlots([]); setDeliverySlotId(''); return; }
-    loadSlots(deliveryDate, setDeliverySlots, setDeliverySlotId, deliverySlotId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deliveryDate]);
-
-  /* The delivery charge follows the ADDRESS, so it is re-quoted whenever the
-     address changes rather than read once at load. */
-  useEffect(() => {
-    if (!addressId) { setQuote(null); return; }
+    if (addressMode === 'MANUAL' || !addressId) { setQuote(null); return; }
     let alive = true;
     customerOrderApi
       .getDeliveryQuote(addressId)
       .then((q) => { if (alive) setQuote(q); })
       .catch(() => { if (alive) setQuote(null); });
     return () => { alive = false; };
-  }, [addressId]);
-
-  const pickupSlot = pickupSlots.find((s) => s.id === pickupSlotId) ?? null;
-  const deliverySlot = deliverySlots.find((s) => s.id === deliverySlotId) ?? null;
+  }, [addressId, addressMode]);
 
   /*
    * THE TOTAL SHOWN HERE USES THE QUOTE, not the cart's delivery line.
@@ -344,72 +259,55 @@ export default function CheckoutScreen({ navigation }: any) {
 
   const unpriced = (cart?.items ?? []).filter((line) => line.price === null);
 
+  /*
+   * WHAT A TYPED ADDRESS MUST HAVE, checked as the customer types.
+   *
+   * The same three fields the server requires, and they are required for the
+   * same reasons: a rider cannot be sent to a city, the city is on every
+   * label, and the PIN is the one field that is checkable. The PIN pattern is
+   * the server's — six digits not starting with zero, because there is no
+   * postal region 0.
+   *
+   * SHOWN AS A BLOCKER, NOT AS AN ERROR. The customer is told what is still
+   * missing while they fill the form in, rather than after they tap a button
+   * that then refuses them.
+   */
+  const manualBlocker = (): string => {
+    if (manualLine.trim().length < 5) return 'Enter the flat, building or street.';
+    if (!manualCity.trim()) return 'Enter the city.';
+    if (!/^[1-9][0-9]{5}$/.test(manualPincode.trim())) return 'Enter a valid 6-digit PIN code.';
+    const mobile = manualContactMobile.trim().replace(/[\s-]/g, '').replace(/^(\+?91)/, '');
+    // Optional — but a WRONG number is worse than none: the rider rings it,
+    // gets nobody, and never thinks to try the account's own number.
+    if (mobile && !/^[6-9][0-9]{9}$/.test(mobile)) {
+      return 'Enter a valid 10-digit contact number, or leave it blank.';
+    }
+    return '';
+  };
+
   const blocker =
     !cart || cart.items.length === 0 ? 'Your cart is empty.'
       : unpriced.length > 0 ? 'An item in your cart no longer has a price. Remove it to continue.'
+      : addressMode === 'MANUAL' ? manualBlocker()
       : !addressId ? 'Add a pickup address to continue.'
-      : !pickupSlot ? 'Choose a pickup time.'
       : '';
 
-  /* ------------------------------------------------------ add an address */
-  const saveAddress = useCallback(async () => {
-    if (savingAddress) return;
-    if (!newAddress.trim() || !newCity.trim()) {
-      setError('The address and the city are both needed.');
-      return;
-    }
-    setSavingAddress(true);
-    setError('');
-    try {
-      /*
-       * The address is saved WITH COORDINATES where the phone can supply
-       * them, because the delivery charge is measured from them. Without
-       * them the order falls back to the device fix taken at booking.
-       *
-       * A fix taken by "Use my current location" WINS over the ambient one:
-       * the customer pressed a button to say "here", and a silent last-known
-       * reading could be from wherever they were an hour ago.
-       */
-      let coords: { latitude?: number; longitude?: number } = detectedCoords ?? {};
-      if (!detectedCoords) {
-        const permission = await Location.getForegroundPermissionsAsync();
-        if (permission.granted) {
-          const position = await Location.getLastKnownPositionAsync({ maxAge: 5 * 60 * 1000 });
-          if (position) {
-            coords = {
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-            };
-          }
-        }
-      }
-
-      const created = await addressApi.addAddress({
-        address_label: 'Home',
-        full_address: newAddress.trim(),
-        city: newCity.trim(),
-        state: 'Maharashtra',
-        pincode: newPincode.trim(),
-        ...coords,
-      } as any);
-
-      await loadAddresses(String(created.data?.id ?? ''));
-      setAddingAddress(false);
-      setNewAddress('');
-      setNewCity('');
-      setNewPincode('');
-      setDetectedCoords(null);
-      setLocationNote('');
-    } catch (e: any) {
-      setError(e?.response?.data?.message || e.message || 'That address could not be saved.');
-    } finally {
-      setSavingAddress(false);
-    }
-  }, [savingAddress, newAddress, newCity, newPincode, detectedCoords, loadAddresses]);
+  /*
+   * THERE IS NO "SAVE ADDRESS" STEP ANY MORE.
+   *
+   * This screen used to POST the typed address to `/api/addresses`, wait for
+   * the new row, and then select it — so booking to a one-off address left an
+   * entry in the customer's address book, and a network failure halfway
+   * through left them with an address and no order.
+   *
+   * The address now travels WITH the order in one request. Nothing is saved,
+   * nothing to undo, and one thing to fail instead of two. Adding a permanent
+   * address is still the Addresses screen's job, where it belongs.
+   */
 
   /* -------------------------------------------------------------- place */
   const placeOrder = useCallback(async () => {
-    if (placing || blocker || !pickupSlot) return;
+    if (placing || blocker) return;
     setPlacing(true);
     setError('');
     try {
@@ -434,20 +332,33 @@ export default function CheckoutScreen({ navigation }: any) {
       }
 
       const order = await customerOrderApi.placeOrder({
-        address_id: addressId,
-        pickup_date: pickupDate,
-        // The slot's own TIME values, sent back unparsed.
-        pickup_slot_start: pickupSlot.start,
-        pickup_slot_end: pickupSlot.end,
-        /* All three delivery fields go together or none do — the server only
-           writes the `deliveries` row when it has the day and both ends. */
-        ...(deliverySlot && deliveryDate
+        /*
+         * ONE OF THE TWO, NEVER BOTH. The server refuses an order that
+         * carries a saved address id and a typed address together — two
+         * answers to "where do I send the rider?" — so the mode decides
+         * which key is present rather than both being sent and one ignored.
+         */
+        ...(addressMode === 'MANUAL'
           ? {
-              delivery_date: deliveryDate,
-              delivery_slot_start: deliverySlot.start,
-              delivery_slot_end: deliverySlot.end,
+              manual_address: {
+                address_line: manualLine.trim(),
+                city: manualCity.trim(),
+                pincode: manualPincode.trim(),
+                landmark: manualLandmark.trim() || undefined,
+                contact_name: manualContactName.trim() || undefined,
+                contact_mobile: manualContactMobile.trim() || undefined,
+                /* Only when "Use my current location" gave us one. */
+                ...(detectedCoords ?? {}),
+              },
             }
-          : {}),
+          : { address_id: addressId }),
+        /*
+         * NO PICKUP AND NO DELIVERY ARE SENT.
+         *
+         * The customer chooses neither, and the server writes its own
+         * placeholder into the `pickups` row for the readers that need one.
+         * The real collection is the Manager's to assign on approval.
+         */
         payment_method: payment,
         notes: notes.trim() || undefined,
         latitude: position.coords.latitude,
@@ -465,10 +376,12 @@ export default function CheckoutScreen({ navigation }: any) {
         orderNumber: order.order_number,
         total: Number(order.total_amount),
         paymentMethod: payment,
-        pickupLabel: `${pickupDays.find((d) => d.value === pickupDate)?.label ?? pickupDate}, ${pickupSlot.label}`,
-        deliveryLabel: deliverySlot
-          ? `${deliveryDays.find((d) => d.value === deliveryDate)?.label ?? deliveryDate}, ${deliverySlot.label}`
-          : '',
+        /*
+         * NO pickupLabel. There is no pickup to name yet — a Manager assigns
+         * it after approving the order, and the confirmation screen says so
+         * rather than printing a placeholder the customer would read as an
+         * appointment.
+         */
       });
     } catch (e: any) {
       // The server owns validation; its wording is shown as-is so the two
@@ -478,8 +391,10 @@ export default function CheckoutScreen({ navigation }: any) {
       setPlacing(false);
     }
   }, [
-    placing, blocker, pickupSlot, deliverySlot, addressId, pickupDate, deliveryDate,
-    payment, notes, pickupDays, deliveryDays, navigation,
+    placing, blocker, addressMode, addressId,
+    manualLine, manualCity, manualPincode, manualLandmark,
+    manualContactName, manualContactMobile, detectedCoords,
+    payment, notes, navigation,
   ]);
 
   /* ---------------------------------------------------------------- view */
@@ -541,13 +456,17 @@ export default function CheckoutScreen({ navigation }: any) {
         {/* ---- ADDRESS ---- */}
         <Text style={styles.sectionTitle}>Pickup address</Text>
         <View style={styles.card}>
-          {addresses.map((option, index) => {
+          {/*
+            THE SAVED ADDRESSES. Choosing one leaves manual mode, which is
+            what keeps the two exclusive without a second flag to forget.
+          */}
+          {addressMode === 'SAVED' && addresses.map((option, index) => {
             const on = String(option.id) === addressId;
             return (
               <TouchableOpacity
                 key={String(option.id)}
                 style={[styles.pickRow, index > 0 && styles.divided]}
-                onPress={() => setAddressId(String(option.id))}
+                onPress={() => { setAddressMode('SAVED'); setAddressId(String(option.id)); }}
                 accessibilityRole="radio"
                 accessibilityState={{ selected: on }}
               >
@@ -559,7 +478,7 @@ export default function CheckoutScreen({ navigation }: any) {
                 <View style={styles.flex}>
                   <Text style={styles.pickTitle}>
                     {option.address_label || 'Address'}
-                    {option.is_default ? '  ·  Default' : ''}
+                    {option.is_default ? '  \u00b7  Default' : ''}
                   </Text>
                   <Text style={styles.pickMeta} numberOfLines={2}>{option.full_address}</Text>
                 </View>
@@ -567,7 +486,7 @@ export default function CheckoutScreen({ navigation }: any) {
             );
           })}
 
-          {addingAddress ? (
+          {addressMode === 'MANUAL' ? (
             <View style={[addresses.length > 0 && styles.divided, { paddingVertical: SPACING.sm }]}>
               {/* The shortcut past the fields. Typing below is untouched. */}
               <TouchableOpacity
@@ -582,103 +501,143 @@ export default function CheckoutScreen({ navigation }: any) {
                   ? <ActivityIndicator size="small" color={C.Primary} />
                   : <Ionicons name="locate-outline" size={18} color={C.Primary} />}
                 <Text style={styles.locateBtnText}>
-                  {locating ? 'Finding you…' : 'Use My Current Location'}
+                  {locating ? 'Finding you\u2026' : 'Use My Current Location'}
                 </Text>
               </TouchableOpacity>
               {!!locationNote && <Text style={styles.locateNote}>{locationNote}</Text>}
 
+              {/* REQUIRED. The blocker under the Book Order button names
+                  whichever of these is still missing, so the asterisks are a
+                  reminder rather than the only signal. */}
               <TextInput
                 style={styles.input}
-                placeholder="Flat / building / street"
+                placeholder="Flat / building / street *"
                 placeholderTextColor={C.TextSecondary}
-                value={newAddress}
-                onChangeText={setNewAddress}
-                accessibilityLabel="Address"
+                value={manualLine}
+                onChangeText={setManualLine}
+                accessibilityLabel="Flat, building or street. Required."
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Landmark (optional)"
+                placeholderTextColor={C.TextSecondary}
+                value={manualLandmark}
+                onChangeText={setManualLandmark}
+                accessibilityLabel="Landmark. Optional."
               />
               <View style={{ flexDirection: 'row', gap: SPACING.xs }}>
                 <TextInput
                   style={[styles.input, styles.flex]}
-                  placeholder="City"
+                  placeholder="City *"
                   placeholderTextColor={C.TextSecondary}
-                  value={newCity}
-                  onChangeText={setNewCity}
-                  accessibilityLabel="City"
+                  value={manualCity}
+                  onChangeText={setManualCity}
+                  accessibilityLabel="City. Required."
                 />
                 <TextInput
                   style={[styles.input, { width: 110 }]}
-                  placeholder="PIN"
+                  placeholder="PIN *"
                   placeholderTextColor={C.TextSecondary}
                   keyboardType="number-pad"
-                  value={newPincode}
-                  onChangeText={setNewPincode}
-                  accessibilityLabel="Pincode"
+                  maxLength={6}
+                  value={manualPincode}
+                  onChangeText={setManualPincode}
+                  accessibilityLabel="PIN code. Required, six digits."
                 />
               </View>
+
+              {/*
+                WHO THE RIDER ASKS FOR, when it is not the person who booked.
+                Optional, because a manual address is often still the
+                customer's own -- dispatch falls back to the account's name
+                and number when these are blank.
+              */}
+              <Text style={styles.formHint}>
+                Someone else meeting the rider? Leave blank to use your own details.
+              </Text>
               <View style={{ flexDirection: 'row', gap: SPACING.xs }}>
-                <TouchableOpacity
-                  style={[styles.smallBtn, styles.smallBtnPrimary]}
-                  onPress={saveAddress}
-                  disabled={savingAddress}
-                  accessibilityRole="button"
-                >
-                  {savingAddress
-                    ? <ActivityIndicator size="small" color={C.OnPrimary} />
-                    : <Text style={styles.smallBtnPrimaryText}>Save address</Text>}
-                </TouchableOpacity>
+                <TextInput
+                  style={[styles.input, styles.flex]}
+                  placeholder="Contact name (optional)"
+                  placeholderTextColor={C.TextSecondary}
+                  value={manualContactName}
+                  onChangeText={setManualContactName}
+                  accessibilityLabel="Contact name at this address. Optional."
+                />
+                <TextInput
+                  style={[styles.input, { width: 140 }]}
+                  placeholder="Mobile"
+                  placeholderTextColor={C.TextSecondary}
+                  keyboardType="phone-pad"
+                  maxLength={13}
+                  value={manualContactMobile}
+                  onChangeText={setManualContactMobile}
+                  accessibilityLabel="Contact mobile number at this address. Optional."
+                />
+              </View>
+
+              {/* Only offered when there is something to go back to. */}
+              {addresses.length > 0 && (
                 <TouchableOpacity
                   style={styles.smallBtn}
-                  onPress={() => setAddingAddress(false)}
+                  onPress={useSavedAddresses}
                   accessibilityRole="button"
+                  accessibilityLabel="Use one of my saved addresses instead"
                 >
-                  <Text style={styles.smallBtnText}>Cancel</Text>
+                  <Text style={styles.smallBtnText}>Use a saved address</Text>
                 </TouchableOpacity>
-              </View>
+              )}
             </View>
           ) : (
             <TouchableOpacity
               style={[styles.pickRow, addresses.length > 0 && styles.divided]}
-              onPress={() => setAddingAddress(true)}
+              onPress={() => {
+                /* The id is cleared as the mode changes, so the two can never
+                   both be set -- the same rule the server enforces. */
+                setAddressId('');
+                setAddressMode('MANUAL');
+              }}
               accessibilityRole="button"
-              accessibilityLabel="Add a new pickup address"
+              accessibilityLabel="Enter a pickup address manually"
             >
-              <Ionicons name="add-circle-outline" size={20} color={C.Primary} />
-              <Text style={styles.pickTitle}>
-                {addresses.length === 0 ? 'Add your pickup address' : 'Use a different address'}
-              </Text>
+              <Ionicons name="create-outline" size={20} color={C.Primary} />
+              <View style={styles.flex}>
+                <Text style={styles.pickTitle}>Enter Address Manually</Text>
+                <Text style={styles.pickMeta}>
+                  Type where to collect from. Used for this order only.
+                </Text>
+              </View>
             </TouchableOpacity>
           )}
         </View>
 
-        {/* ---- PICKUP ---- */}
-        <Text style={styles.sectionTitle}>Pickup day</Text>
-        <DayPicker days={pickupDays} value={pickupDate} onChange={setPickupDate} />
-
-        <Text style={styles.sectionTitle}>Pickup time</Text>
-        <SlotPicker
-          slots={pickupSlots}
-          value={pickupSlotId}
-          onChange={setPickupSlotId}
-          emptyText="No pickup window is left on that day. Choose another."
-        />
-
         {/*
-          ---- DELIVERY: NOT ASKED FOR ----
+          ---- PICKUP: NOT ASKED FOR ----
 
-          Neither the delivery DAY nor the delivery TIME is shown. The customer
-          books a collection; when it comes back is ours to schedule.
+          The pickup DAY and the pickup TIME used to be chosen here, and the
+          order could not be placed without both. Neither is now: a Manager
+          assigns the collection when they approve the order, and the customer
+          is told the time once somebody has actually committed to it.
 
-          BOTH ARE STILL CHOSEN AND STILL SENT. `deliveryDate` defaults to the
-          first day after the pickup and `loadSlots` selects the first
-          available window on it, exactly as they did when the pickers drove
-          them — the effects that maintain them are untouched, so the values
-          simply come from the defaults now.
+          NOTHING IS SENT FOR THEM EITHER. The server writes its own
+          placeholder into the pickups row -- see provisionalPickup -- so
+          every reader of that table still finds one, while
+          orders.assigned_pickup_date stays NULL until the decision is made.
 
-          THAT IS DELIBERATE, NOT LEFTOVER STATE. The server writes the
-          `deliveries` row only when it has the day AND both ends of a window;
-          sending none of them would stop delivery being booked at all, and
-          the rider would have nothing to work from. Removing the fields
-          removes the CHOICE, not the booking.
+          The DELIVERY leg was already not asked for, for the same reason.
+
+          THE NOTICE BELOW IS NOT DECORATION. Removing a picker without
+          replacing it with anything leaves a customer wondering when their
+          laundry is being collected, which is the one question this step used
+          to answer. It says who decides and that they will be told.
         */}
+        <View style={styles.noticeBox}>
+          <Ionicons name="information-circle-outline" size={18} color={C.Primary} />
+          <Text style={styles.noticeText}>
+            We will confirm your pickup date and time once your order is approved,
+            and let you know as soon as it is scheduled.
+          </Text>
+        </View>
 
         {/* ---- PAYMENT ---- */}
         <Text style={styles.sectionTitle}>Payment</Text>
@@ -757,9 +716,14 @@ export default function CheckoutScreen({ navigation }: any) {
           <Text style={styles.barLabel}>Total</Text>
           <Text style={styles.barValue}>₹{total.toFixed(2)}</Text>
           {!!blocker && !placing && <Text style={styles.blocker}>{blocker}</Text>}
-          {!blocker && !!pickupSlot && (
+          {/* There is no pickup to name here any more, so the line says where
+              the order is going instead — which is the fact the customer has
+              just been asked for and the one worth confirming. */}
+          {!blocker && (
             <Text style={styles.barMeta} numberOfLines={1}>
-              {pickupDays.find((d) => d.value === pickupDate)?.label}, {pickupSlot.label}
+              {addressMode === 'MANUAL'
+                ? `${manualLine.trim()}, ${manualCity.trim()}`
+                : addresses.find((a) => String(a.id) === addressId)?.full_address ?? ''}
             </Text>
           )}
         </View>
@@ -899,46 +863,39 @@ const styles = StyleSheet.create({
     fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.xs,
     fontWeight: '600', color: C.TextSecondary,
   },
-  smallBtnPrimary: { backgroundColor: C.Primary, borderColor: C.Primary, minWidth: 120 },
-  smallBtnPrimaryText: {
-    fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.xs,
-    fontWeight: '700', color: C.OnPrimary,
+  /*
+   * `smallBtnPrimary` / `smallBtnPrimaryText` went with the Save address
+   * button they styled. The typed address is submitted with the order now,
+   * so there is no second primary action on this screen.
+   *
+   * The day and slot chip styles (`chipRow`, `chipWrap`, `dayChip*`,
+   * `slotChip*`) went with the pickers they drew -- the customer chooses
+   * neither a day nor a window here any more.
+   */
+
+  /** The quiet line above the optional contact fields. */
+  formHint: {
+    fontFamily: TYPOGRAPHY.fontFamily, fontSize: 11, color: C.TextSecondary,
+    marginTop: SPACING.sm, marginBottom: SPACING.xs,
   },
 
-  chipRow: { flexDirection: 'row', gap: SPACING.xs, paddingRight: SPACING.md },
-  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.xs },
-  dayChip: {
-    minWidth: 78, alignItems: 'center', paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.sm,
-    borderRadius: BORDER_RADIUS.md, borderWidth: 1, borderColor: C.Border,
-    backgroundColor: C.Surface,
+  /*
+   * WHAT REPLACED THE PICKUP PICKER. Deliberately an information panel and
+   * not a disabled control: there is nothing here for the customer to do,
+   * and a greyed-out picker would read as something they had failed to fill
+   * in.
+   */
+  noticeBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.sm,
+    backgroundColor: C.SurfaceAlt, borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1, borderColor: C.Border,
+    padding: SPACING.sm, marginTop: SPACING.xs,
   },
-  dayChipOn: { backgroundColor: C.Primary, borderColor: C.Primary },
-  dayChipLabel: {
+  noticeText: {
+    flex: 1,
     fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.xs,
-    fontWeight: '700', color: C.TextPrimary,
+    color: C.TextSecondary, lineHeight: 17,
   },
-  dayChipLabelOn: { color: C.OnPrimary },
-  dayChipDate: {
-    fontFamily: TYPOGRAPHY.fontFamily, fontSize: 10, color: C.TextSecondary, marginTop: 1,
-  },
-  dayChipDateOn: { color: 'rgba(255,255,255,0.85)' },
-
-  slotChip: {
-    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
-    borderRadius: BORDER_RADIUS.full, borderWidth: 1, borderColor: C.Border,
-    backgroundColor: C.Surface,
-  },
-  /* The accent marks the ONE selected window. Dark text on it, because
-     #ffbd4a does not carry small white type. */
-  slotChipOn: { backgroundColor: C.Accent, borderColor: C.AccentDark },
-  slotChipOff: { backgroundColor: C.SurfaceAlt, borderColor: C.SurfaceAlt },
-  slotChipText: {
-    fontFamily: TYPOGRAPHY.fontFamily, fontSize: TYPOGRAPHY.sizes.xs,
-    fontWeight: '600', color: C.TextPrimary,
-  },
-  slotChipTextOn: { color: C.OnAccent, fontWeight: '700' },
-  slotChipTextOff: { color: C.TextSecondary, textDecorationLine: 'line-through' },
 
   notes: {
     backgroundColor: C.Surface, borderRadius: BORDER_RADIUS.md,

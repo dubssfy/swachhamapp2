@@ -68,7 +68,8 @@ export default function OrderPlacedScreen({ route, navigation }: any) {
 
         <Text style={styles.title}>Order booked</Text>
         <Text style={styles.subtitle}>
-          We have your laundry down. You will get a message when a rider is on the way.
+          We have your laundry down. We will confirm your pickup date and time once your
+          order is approved, and let you know when a rider is on the way.
         </Text>
 
         {/* The number, given the weight it deserves — it is what the customer
@@ -81,12 +82,25 @@ export default function OrderPlacedScreen({ route, navigation }: any) {
         </View>
 
         <View style={styles.card}>
-          <Row icon="time-outline" label="Pickup" value={pickupLabel || '—'} />
+          {/*
+            THE PICKUP IS NOT NAMED HERE ANY MORE, because at this moment
+            nobody has named one. Checkout no longer asks for a collection
+            time — a Manager assigns it when they approve the order — so this
+            row would have shown either an em-dash or the server's internal
+            placeholder, and a customer reading a placeholder as an
+            appointment is worse than showing nothing.
+
+            `pickupLabel` and `deliveryLabel` are still read from the route
+            above, so an older screen that still passes them is not a crash;
+            they simply have nowhere to go. What the customer needs instead is
+            WHAT HAPPENS NEXT, which the line below says.
+          */}
+          <Row
+            icon="time-outline"
+            label="Pickup"
+            value={pickupLabel || 'Scheduled after approval'}
+          />
           <View style={styles.divider} />
-          {/* Only shown when one was booked: an order may be placed with the
-              pickup alone and the delivery arranged afterwards, and an
-              em-dash here would look like a missing value rather than a
-              choice. */}
           {!!deliveryLabel && (
             <>
               <Row icon="cube-outline" label="Delivery" value={deliveryLabel} />

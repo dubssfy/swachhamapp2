@@ -1,5 +1,8 @@
 import apiClient from './api';
 import { ApiResponse } from '../types';
+/* The address shape is defined beside the component that renders it, so
+   the payload type and the card can never describe different fields. */
+import type { PickupAddress } from '../components/PickupAddressCard';
 
 /**
  * Manager API.
@@ -128,6 +131,18 @@ export interface PendingOrderRequest {
    */
   assigned_pickup_date: string | null;
   assigned_pickup_time: string | null;
+  /**
+   * Where the order is collected from, as the server resolved it.
+   *
+   * ONE FIELD FOR TWO SOURCES: a saved `customer_addresses` row, or an
+   * address the customer typed at checkout and which is stored on the order
+   * itself. `PickupAddressCard` renders it, and nothing on this side has to
+   * know which kind it has.
+   *
+   * NULL on a business booking, which is collected from the establishment
+   * `customer_name` already names.
+   */
+  pickup_address: PickupAddress | null;
   special_notes: string | null;
   created_at: string;
 }

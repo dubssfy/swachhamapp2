@@ -9,6 +9,7 @@ import {
 } from '../utils/jwt';
 import { logger } from '../utils/logger';
 import { smsService } from './sms.service';
+import { sendOtpTemplate, toWhatsAppNumber } from './whatsapp.service';
 import { AppError } from '../utils/appError';
 
 const SALT_ROUNDS = 10;
@@ -63,6 +64,86 @@ function generateNumericOtp(length = 6): string {
   return crypto.randomInt(min, max + 1).toString();
 }
 
+/**
+ * Delivers an ALREADY-GENERATED OTP to the number that asked for it.
+ *
+ * ============================================================
+ * THE ONLY THING THIS CHANGE TOUCHES IS THE CHANNEL
+ * ============================================================
+ *
+ * The code, its hash, its five-minute expiry, the sixty-second resend
+ * cooldown, the five-attempt ceiling, the device binding and every
+ * verification path are exactly as they were. `sendOtpInternal` still
+ * generates the code and writes it to `otp_verifications` before calling
+ * this, and `verifyOtpInternal` still compares against that row. So the code
+ * the user reads on WhatsApp is, necessarily, the same code the existing
+ * verification expects — there is one code and one place it comes from.
+ *
+ * ============================================================
+ * WHATSAPP FIRST, THE EXISTING SMS PATH SECOND
+ * ============================================================
+ *
+ * WHY THERE IS STILL A FALLBACK. Before this change the one line here was
+ * `smsService.sendOtpSms(...)`, and in development that is what prints the
+ * code to the server log — which is how anyone runs this locally without a
+ * Meta account. Replacing it outright would have made local sign-in
+ * impossible and would have turned every WhatsApp outage into a total
+ * lockout.
+ *
+ * So WhatsApp becomes the delivery channel, and the path that was here before
+ * stays as the fallback, unchanged. Nothing regresses, and there is no second
+ * OTP system: both routes carry the SAME code from the SAME row.
+ *
+ * IT NEVER THROWS. `sendOtpTemplate` reports failures rather than raising,
+ * and the fallback is wrapped, so a WhatsApp outage cannot turn a
+ * successfully-issued OTP into an error the caller sees. The row is already
+ * written by the time this runs; failing here would leave the user unable to
+ * request another for sixty seconds while telling them the request failed.
+ */
+async function deliverOtp(normalizedMobile: string, otp: string): Promise<void> {
+  /*
+   * THE NUMBER THE USER TYPED, in the digits-only international form Meta
+   * wants. `toWhatsAppNumber` is the existing helper every other WhatsApp
+   * send already uses, so the country code is applied in one place.
+   */
+  const whatsappNumber = toWhatsAppNumber(normalizedMobile);
+
+  if (whatsappNumber) {
+    const result = await sendOtpTemplate({
+      to: whatsappNumber,
+      otp,
+      // The number, never the code.
+      label: `login OTP for ${normalizedMobile}`,
+    });
+    if (result.ok) return;
+
+    logger.warn(
+      `[Auth] WhatsApp OTP delivery failed for ${normalizedMobile}: ${result.error}. ` +
+        `Falling back to the existing SMS path.`
+    );
+  } else {
+    logger.warn(
+      `[Auth] ${normalizedMobile} is not a usable WhatsApp number. ` +
+        `Falling back to the existing SMS path.`
+    );
+  }
+
+  /*
+   * The path that was here before, untouched. Wrapped because the production
+   * SMS provider throws on failure, and by this point the OTP EXISTS — the
+   * caller must not be told the request failed when the row is written and a
+   * retry is rate-limited for the next minute.
+   */
+  try {
+    await smsService.sendOtpSms(normalizedMobile, otp);
+  } catch (error) {
+    logger.error(
+      `[Auth] Both WhatsApp and SMS delivery failed for ${normalizedMobile}: ` +
+        `${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
 async function sendOtpInternal(mobile: string, purpose: 'REGISTRATION' | 'PASSWORD_RESET' | 'LOGIN_VERIFICATION', deviceId?: string): Promise<void> {
   const normalizedMobile = normalizeMobile(mobile);
   
@@ -92,7 +173,9 @@ async function sendOtpInternal(mobile: string, purpose: 'REGISTRATION' | 'PASSWO
     [normalizedMobile, otpHash, expiresAt, purpose, deviceId ? hashDeviceId(deviceId) : null]
   );
 
-  await smsService.sendOtpSms(normalizedMobile, otp);
+  // Delivery only. Everything above — the code, its hash, its expiry — is
+  // unchanged; see `deliverOtp`.
+  await deliverOtp(normalizedMobile, otp);
 }
 
 async function verifyOtpInternal(mobile: string, otp: string, purpose: 'REGISTRATION' | 'PASSWORD_RESET' | 'LOGIN_VERIFICATION', deviceId?: string): Promise<void> {

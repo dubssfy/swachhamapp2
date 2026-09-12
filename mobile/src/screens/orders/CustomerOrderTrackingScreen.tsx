@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../../constants/theme';
 import { customerOrderApi } from '../../services/customerCartApi';
 import PickupScheduleCard from '../../components/PickupScheduleCard';
+import PickupAddressCard from '../../components/PickupAddressCard';
 import {
   CUSTOMER_STAGES, customerStatusLabel, customerStageIndex, isCancelledStatus,
 } from '../../constants/orderStatus';
@@ -221,6 +222,22 @@ export default function CustomerOrderTrackingScreen({ route, navigation }: any) 
               time={tracking?.assigned_pickup_time}
             />
           )}
+
+          {/*
+            WHERE IT IS BEING COLLECTED FROM.
+
+            Shown for every order, cancelled or not -- unlike the collection
+            above, which is a plan that a cancellation makes untrue. The
+            address is a FACT ABOUT WHAT WAS BOOKED, and a customer looking
+            back at a cancelled order still has reason to check where they
+            had asked us to go.
+
+            IT MATTERS MOST FOR AN ADDRESS TYPED AT CHECKOUT. A saved address
+            can be looked up in the address book; one entered for a single
+            order exists nowhere but on this order, so this screen is the
+            only place the customer can read it back.
+          */}
+          <PickupAddressCard address={tracking?.pickup_address} />
 
           {/*
             THE LADDER, LIT FROM THE CURRENT STATUS.

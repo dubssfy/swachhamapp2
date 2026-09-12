@@ -3,7 +3,8 @@ import { config } from '../config/env';
 import { AppError } from '../utils/appError';
 import { logger } from '../utils/logger';
 import socketService from './socket.service';
-import { createNotification } from './notification.service';
+import { notifyOrderPartyOnce, NOTIFICATION_TYPES } from './orderNotification.service';
+import { pickupAddressOf, OrderPickupAddress } from './manualAddress.service';
 import {
   notifyNearbyRidersOfNewOrder,
   createJobForOrder,
@@ -119,6 +120,20 @@ export interface PendingOrderRow {
    */
   assigned_pickup_date: string | null;
   assigned_pickup_time: string | null;
+  /**
+   * WHERE THIS BOOKING IS TO BE COLLECTED FROM.
+   *
+   * A Manager assigning a collection time is deciding whether a rider can
+   * reach that place by then, and until now this queue did not show them
+   * where it was. That mattered least when every order pointed at an address
+   * the customer had saved and used before; it matters most for an address
+   * TYPED for this one order, which nobody has ever been to and which exists
+   * nowhere but on this row.
+   *
+   * NULL on a business booking, which is collected from the establishment —
+   * `customer_name` already names it.
+   */
+  pickup_address: OrderPickupAddress | null;
   special_notes: string | null;
   created_at: string;
 }
@@ -154,6 +169,15 @@ export async function listPendingOrders(source: RequestSource): Promise<PendingO
             ) AS customer_name,
             COALESCE(bu.mobile_number, u.mobile_number, o.placed_by_mobile) AS customer_contact,
             (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
+            -- The order's own typed address, and the saved one it may point
+            -- at instead. Collapsed into a single field by
+            -- pickupAddressOf below, so this queue and every other screen
+            -- read one shape.
+            o.manual_address_line, o.manual_landmark, o.manual_city,
+            o.manual_state, o.manual_pincode, o.manual_contact_name,
+            o.manual_contact_mobile, o.manual_latitude, o.manual_longitude,
+            ca.address_label, ca.full_address, ca.city, ca.pincode, ca.area,
+            ca.latitude, ca.longitude,
             pk.scheduled_date  AS pickup_date,
             pk.time_slot_start AS pickup_slot_start,
             pk.time_slot_end   AS pickup_slot_end,
@@ -166,6 +190,7 @@ export async function listPendingOrders(source: RequestSource): Promise<PendingO
        LEFT JOIN business_users bu ON bu.id = o.business_user_id
        LEFT JOIN businesses b      ON b.id = bu.business_id
        LEFT JOIN pickups pk        ON pk.order_id = o.id
+       LEFT JOIN customer_addresses ca ON ca.id = o.address_id
       WHERE o.status = ? AND ${predicate}
       ORDER BY o.created_at ASC, o.id ASC`,
     [PENDING_STATUS]
@@ -195,6 +220,9 @@ export async function listPendingOrders(source: RequestSource): Promise<PendingO
     pickup_slot_end: row.pickup_slot_end ?? null,
     assigned_pickup_date: row.assigned_pickup_date ?? null,
     assigned_pickup_time: row.assigned_pickup_time ?? null,
+    // The typed address wins where there is one; otherwise the saved row the
+    // join brought back. Null for a business booking, which has neither.
+    pickup_address: pickupAddressOf(row, row.full_address ? row : null),
     special_notes: row.special_notes ?? null,
     created_at: row.created_at,
   }));
@@ -265,6 +293,15 @@ export async function listScheduledOrders(): Promise<PendingOrderRow[]> {
             ) AS customer_name,
             COALESCE(bu.mobile_number, u.mobile_number, o.placed_by_mobile) AS customer_contact,
             (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
+            -- The order's own typed address, and the saved one it may point
+            -- at instead. Collapsed into a single field by
+            -- pickupAddressOf below, so this queue and every other screen
+            -- read one shape.
+            o.manual_address_line, o.manual_landmark, o.manual_city,
+            o.manual_state, o.manual_pincode, o.manual_contact_name,
+            o.manual_contact_mobile, o.manual_latitude, o.manual_longitude,
+            ca.address_label, ca.full_address, ca.city, ca.pincode, ca.area,
+            ca.latitude, ca.longitude,
             pk.scheduled_date  AS pickup_date,
             pk.time_slot_start AS pickup_slot_start,
             pk.time_slot_end   AS pickup_slot_end,
@@ -275,6 +312,7 @@ export async function listScheduledOrders(): Promise<PendingOrderRow[]> {
        LEFT JOIN business_users bu ON bu.id = o.business_user_id
        LEFT JOIN businesses b      ON b.id = bu.business_id
        LEFT JOIN pickups pk        ON pk.order_id = o.id
+       LEFT JOIN customer_addresses ca ON ca.id = o.address_id
       WHERE o.assigned_pickup_date IS NOT NULL
         AND o.status IN (${RESCHEDULABLE_STATUSES.map(() => '?').join(',')})
         -- Not picked up, and not past its pickup time. See STILL_RESCHEDULABLE_SQL.
@@ -302,6 +340,9 @@ export async function listScheduledOrders(): Promise<PendingOrderRow[]> {
     pickup_slot_end: row.pickup_slot_end ?? null,
     assigned_pickup_date: row.assigned_pickup_date ?? null,
     assigned_pickup_time: row.assigned_pickup_time ?? null,
+    // The typed address wins where there is one; otherwise the saved row the
+    // join brought back. Null for a business booking, which has neither.
+    pickup_address: pickupAddressOf(row, row.full_address ? row : null),
     special_notes: row.special_notes ?? null,
     created_at: row.created_at,
   }));
@@ -495,18 +536,49 @@ export async function acceptOrder(
    * must not turn that into an error the manager sees as a failure.
    */
 
-  // The customer is told now, because NOW it is true. `createOrder` only
-  // acknowledged the booking.
-  if (order.user_id) {
-    void createNotification(
-      String(order.user_id),
-      id,
-      APPROVED_STATUS,
-      'Order Placed!',
-      `Your order ${order.order_number} has been confirmed. `
-        + `Pickup is scheduled for ${formatPickupSentence(date, time.label)}.`
-    ).catch((error) => logger.error('[ManagerApproval] notification failed:', error));
-  }
+  /*
+   * ============================================================
+   * THE CUSTOMER OR THE HOTEL IS TOLD WHEN WE ARE COMING
+   * ============================================================
+   *
+   * NOW, BECAUSE NOW IT IS TRUE. `createOrder` only acknowledged the
+   * booking; this is the moment it became an appointment.
+   *
+   * IT REACHES A HOTEL AS WELL AS A CUSTOMER, which the call it replaces did
+   * not. That call wrote a `notifications` row, whose foreign key points at
+   * `users` — so a business order, which has `business_user_id` and no
+   * `user_id`, silently notified nobody about the one thing it most needed
+   * to know. `notifyOrderPartyOnce` resolves the party first and writes the
+   * table that party can actually read.
+   *
+   * ONE NOTIFICATION, NOT TWO. Approving and scheduling are one decision
+   * here — `acceptOrder` does both in a single transaction — so they are one
+   * message. Sending "Order Placed" and "Pickup Scheduled" a millisecond
+   * apart would buzz a phone twice for one event.
+   *
+   * THE KEY CARRIES THE ASSIGNED TIME. A Manager who opens this order and
+   * saves the SAME collection again produces the same key and sends nothing;
+   * one who moves it to a different time produces a different key and the
+   * customer hears about it. See `reschedulePickup`, which shares the key
+   * shape for exactly that reason, and migration 072.
+   */
+  void notifyOrderPartyOnce(
+    id,
+    `${NOTIFICATION_TYPES.PICKUP_SCHEDULED}:${date} ${time.value}`,
+    {
+      type: NOTIFICATION_TYPES.PICKUP_SCHEDULED,
+      title: 'Pickup Scheduled',
+      body:
+        `Order ${order.order_number} is confirmed. `
+        + `Your pickup has been scheduled for ${formatPickupSentence(date, time.label)}.`,
+      data: {
+        orderStatus: APPROVED_STATUS,
+        assignedPickupDate: date,
+        assignedPickupTime: time.value,
+        pickupLabel: formatPickupSentence(date, time.label),
+      },
+    }
+  ).catch((error) => logger.error('[ManagerApproval] pickup notification failed:', error));
 
   // The same socket event every other status change emits, so any listener
   // already watching this order sees the move without knowing about managers.
@@ -690,17 +762,38 @@ export async function reschedulePickup(
     connection.release();
   }
 
-  // After the commit, and unable to fail it — as in `acceptOrder`.
-  if (order.user_id) {
-    void createNotification(
-      String(order.user_id),
-      id,
-      String(order.status),
-      'Pickup time updated',
-      `The pickup for order ${order.order_number} is now `
-        + `${formatPickupSentence(date, time.label)}.`
-    ).catch((error) => logger.error('[ManagerApproval] reschedule notification failed:', error));
-  }
+  /*
+   * After the commit, and unable to fail it — as in `acceptOrder`.
+   *
+   * THE SAME EVENT KEY SHAPE AS THE ACCEPTANCE, and that is the whole of the
+   * duplicate suppression for this screen. A Manager who re-opens an order
+   * and saves the collection it already has writes the same key and sends
+   * nothing; one who genuinely moves it writes a different key and the
+   * customer or hotel is told. There is no separate "did anything change?"
+   * comparison to drift out of step with the message.
+   *
+   * THE WORDING SAYS IT MOVED, because for a reschedule it did — but the
+   * TYPE is still `PICKUP_SCHEDULED`: the app's job on tapping it is to open
+   * this order and show the new time, which is the same job either way.
+   */
+  void notifyOrderPartyOnce(
+    id,
+    `${NOTIFICATION_TYPES.PICKUP_SCHEDULED}:${date} ${time.value}`,
+    {
+      type: NOTIFICATION_TYPES.PICKUP_SCHEDULED,
+      title: 'Pickup Scheduled',
+      body:
+        `The pickup for order ${order.order_number} has been scheduled for `
+        + `${formatPickupSentence(date, time.label)}.`,
+      data: {
+        orderStatus: String(order.status),
+        assignedPickupDate: date,
+        assignedPickupTime: time.value,
+        pickupLabel: formatPickupSentence(date, time.label),
+        rescheduled: 'true',
+      },
+    }
+  ).catch((error) => logger.error('[ManagerApproval] reschedule notification failed:', error));
 
   // The event every screen watching this order already listens for, so the
   // new time arrives without either app knowing a Manager was involved.

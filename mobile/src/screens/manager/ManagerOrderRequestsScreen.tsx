@@ -11,6 +11,7 @@ import { sa } from '../superadmin/styles';
 import DateStrip from '../../components/business/DateStrip';
 import TimeSlotRow from '../../components/business/TimeSlotRow';
 import PickupScheduleCard from '../../components/PickupScheduleCard';
+import PickupAddressCard from '../../components/PickupAddressCard';
 import { dateRange, todayIST, currentMinutesIST } from '../../utils/istDates';
 import managerApi, {
   ManagerPickupTime, OrderRequestSource, PendingOrderRequest,
@@ -532,6 +533,23 @@ export default function ManagerOrderRequestsScreen({ navigation, route }: any) {
                     <Text style={sa.cardLine} numberOfLines={3}>Notes: {row.special_notes}</Text>
                   )}
                   <Text style={sa.tdMuted}>Booked {when(row.created_at)}</Text>
+
+                  {/*
+                    WHERE THIS ORDER IS TO BE COLLECTED FROM.
+
+                    THE MANAGER IS DECIDING WHEN A RIDER GOES THERE, and until
+                    now this queue did not say where "there" was. That was
+                    tolerable while every order pointed at an address the
+                    customer had used before; it is not for an address TYPED
+                    for this one order, which nobody has ever been to and
+                    which the card marks as such.
+
+                    The SAME component the customer sees, so the two are
+                    never looking at different text. It renders nothing for a
+                    business booking, which is collected from the
+                    establishment named above.
+                  */}
+                  <PickupAddressCard address={row.pickup_address} variant="plain" />
 
                   {isScheduledTab ? (
                     <>

@@ -1,5 +1,5 @@
 import { AppError } from '../utils/appError';
-import { getBusinessNow, timeToMinutes } from '../utils/istTime';
+import { getBusinessNow, timeToMinutes, addDays } from '../utils/istTime';
 
 /**
  * Pickup and delivery scheduling for Business orders.
@@ -221,6 +221,51 @@ export async function getSlotsForDate(
  *   delivery must fall on a later DAY than the pickup, and its datetime
  *   must be after the pickup's.
  */
+/**
+ * The placeholder pickup an order is created with when NOBODY HAS CHOSEN ONE.
+ *
+ * ============================================================
+ * WHY AN ORDER STILL HAS A PICKUP ROW NOBODY ASKED FOR
+ * ============================================================
+ *
+ * Neither a customer nor a business picks a collection time any more — the
+ * Manager does, when they accept the booking (`managerOrderApproval`). But
+ * `pickups` is not optional in this schema: every order has had a row in it
+ * since the first migration, and the rider's job, the delivery-turnaround
+ * rule and several reports all read it. An order with no row there is an
+ * order those readers cannot see.
+ *
+ * So a row is written, with a placeholder, and `orders.assigned_pickup_date`
+ * stays NULL — which is the column every screen actually tests to decide
+ * whether to show a collection at all (see migration 059). The placeholder is
+ * operational scaffolding; it is never shown to anyone and never described as
+ * an appointment.
+ *
+ * ============================================================
+ * WHY IT LIVES HERE AND NOT IN THE APP
+ * ============================================================
+ *
+ * The Business checkout screen used to compute this itself, and said in its
+ * own comment that it should be deleted once the server stopped insisting on
+ * a schedule. The server has now stopped insisting — so the placeholder moved
+ * to the one place that owns the working day, rather than being re-derived on
+ * each client from a hardcoded slot id. Two clients guessing at a placeholder
+ * is two chances to guess differently.
+ *
+ * ============================================================
+ * TOMORROW'S FIRST SLOT, NOT A SLOT TODAY
+ * ============================================================
+ *
+ * A slot today can already have started, and every validator here refuses a
+ * start time in the past — so a placeholder today would be rejected by the
+ * very rules it exists to satisfy. Tomorrow's opening slot is always valid,
+ * and it cannot be mistaken for a promise to collect within the hour.
+ */
+export async function provisionalPickup(): Promise<{ date: string; slot: PickupSlot }> {
+  const now = await getBusinessNow();
+  return { date: addDays(now.date, 1), slot: PICKUP_SLOTS[0] };
+}
+
 export async function resolveSchedule(input: {
   pickupDate?: unknown;
   pickupSlot?: unknown;
@@ -229,6 +274,41 @@ export async function resolveSchedule(input: {
   pickupNotes?: unknown;
   serviceNotes?: unknown;
 }): Promise<OrderSchedule> {
+  /*
+   * THE PICKUP IS NO LONGER ASKED FOR, SO IT IS NO LONGER REQUIRED.
+   *
+   * Neither checkout screen offers a collection time now — the Manager names
+   * it on approval. A request that sends neither half gets the placeholder
+   * `provisionalPickup` describes, rather than a 400 for not choosing
+   * something it was never shown.
+   *
+   * BOTH HALVES OR NEITHER. A request carrying one of the two is a client
+   * bug, not a partial booking, and is still refused by `requireDate` /
+   * `requireSlot` below — failing loudly there is far better than silently
+   * pairing a real date with a placeholder slot.
+   *
+   * A CLIENT THAT STILL SENDS ONE IS STILL HONOURED, and still validated
+   * exactly as before. Older builds in the field keep working, and their
+   * choice is not quietly discarded — the Manager's assignment overwrites it
+   * on approval either way.
+   */
+  const hasPickupDate = isPresent(input.pickupDate);
+  const hasPickupSlot = isPresent(input.pickupSlot);
+
+  if (!hasPickupDate && !hasPickupSlot) {
+    const placeholder = await provisionalPickup();
+    return {
+      pickupDate: placeholder.date,
+      pickup: placeholder.slot,
+      // A delivery cannot be checked against a pickup nobody chose, so it is
+      // not accepted alongside a placeholder. Nothing sends one today.
+      deliveryDate: null,
+      delivery: null,
+      pickupNotes: readNote(input.pickupNotes),
+      serviceNotes: readNote(input.serviceNotes),
+    };
+  }
+
   const pickupDate = requireDate(
     input.pickupDate,
     'Please select a pickup date.',

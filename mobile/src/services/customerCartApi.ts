@@ -140,12 +140,59 @@ export interface PickupSlotOption {
   available: boolean;
 }
 
+/**
+ * An address typed at checkout, for THIS ORDER ONLY.
+ *
+ * It is not saved to the address book — the server stores it on the order
+ * itself, so it cannot later be edited or deleted out from under an order
+ * that was placed to it. See `manualAddress.service` on the backend.
+ *
+ * The three required fields are checked on both sides: here so the customer
+ * is told before they tap Book Order, and on the server so a request that
+ * skipped this screen fails the same way.
+ */
+export interface ManualAddressInput {
+  /** Flat / building / street. Required. */
+  address_line: string;
+  /** Required. */
+  city: string;
+  /** Required, six digits. */
+  pincode: string;
+  landmark?: string;
+  state?: string;
+  /** Who the rider asks for, when it is not the account holder. */
+  contact_name?: string;
+  contact_mobile?: string;
+  /** The fix that filled the form, when "Use my current location" did. */
+  latitude?: number;
+  longitude?: number;
+}
+
 export interface PlaceOrderInput {
-  address_id: string;
-  pickup_date: string;
+  /**
+   * A SAVED address. Send this OR `manual_address`, never both — the server
+   * refuses an order carrying two answers to where it is collected from.
+   */
+  address_id?: string;
+  /** An address typed for this order alone. The other half of the pair. */
+  manual_address?: ManualAddressInput;
+  /*
+   * THE PICKUP IS NO LONGER CHOSEN HERE.
+   *
+   * Checkout used to ask for a collection day and window. It does not any
+   * more: a Manager assigns the pickup when they approve the order, and the
+   * customer is told the time once it is real rather than choosing one
+   * nobody has agreed to. The server writes its own placeholder into the
+   * `pickups` row so every reader of that table still finds one.
+   *
+   * KEPT OPTIONAL RATHER THAN DELETED because the server still honours them
+   * when they are sent, and a caller that has a reason to name a pickup
+   * should not have to work around the type.
+   */
+  pickup_date?: string;
   /** The slot's own `start` / `end`, unparsed — see `PickupSlotOption`. */
-  pickup_slot_start: string;
-  pickup_slot_end: string;
+  pickup_slot_start?: string;
+  pickup_slot_end?: string;
   /*
    * THE DELIVERY LEG. Optional, and all three go together or none do --
    * `order.service` only writes the `deliveries` row when it has the day AND

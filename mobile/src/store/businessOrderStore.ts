@@ -276,10 +276,24 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
     // still sent, and the server still validates it.
 
     if (!laundryType) throw new Error(LAUNDRY_TYPE_REQUIRED_MESSAGE);
-    // The server refuses an unscheduled order too; this stops the request
-    // being sent at all.
-    if (!schedule?.pickupDate) throw new Error(PICKUP_DATE_REQUIRED_MESSAGE);
-    if (!schedule?.pickupSlot) throw new Error(PICKUP_TIME_REQUIRED_MESSAGE);
+
+    /*
+     * THE PICKUP IS NO LONGER REQUIRED, because nobody on this side chooses
+     * one: the Manager assigns the collection when they accept the order,
+     * and the server writes a placeholder into the `pickups` row in the
+     * meantime.
+     *
+     * BOTH OR NEITHER IS STILL ENFORCED. A schedule carrying one half of a
+     * pickup is a caller bug rather than a partial booking, and pairing a
+     * real date with a placeholder slot behind the caller's back would be
+     * worse than refusing it. The server applies the identical rule.
+     */
+    if (schedule?.pickupDate && !schedule?.pickupSlot) {
+      throw new Error(PICKUP_TIME_REQUIRED_MESSAGE);
+    }
+    if (!schedule?.pickupDate && schedule?.pickupSlot) {
+      throw new Error(PICKUP_DATE_REQUIRED_MESSAGE);
+    }
 
     // Delivery is OPTIONAL, but all-or-nothing: an order may be placed with
     // the pickup alone and the delivery arranged later, yet half a delivery
@@ -292,7 +306,13 @@ export const useBusinessOrderStore = create<BusinessOrderState>((set, get) => ({
     }
     // Checked here as well as on the screen, so a caller that builds its own
     // schedule object cannot slip a same-day delivery past the store.
-    if (schedule.deliveryDate && schedule.deliveryDate <= schedule.pickupDate) {
+    // Only comparable when a pickup was actually named; a delivery cannot be
+    // checked against a collection nobody chose.
+    if (
+      schedule.deliveryDate &&
+      schedule.pickupDate &&
+      schedule.deliveryDate <= schedule.pickupDate
+    ) {
       throw new Error(DELIVERY_AFTER_PICKUP_MESSAGE);
     }
 

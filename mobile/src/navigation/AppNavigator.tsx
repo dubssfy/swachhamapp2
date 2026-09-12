@@ -23,6 +23,10 @@ import {
 import { DEMO_MODE } from '../demo/demoMode';
 
 import { registerDeviceForPush } from '../services/pushRegistration';
+import {
+  navigationRef,
+  startNotificationRouting,
+} from '../services/notificationRouting';
 
 import DemoLoginScreen
   from '../screens/demo/DemoLoginScreen';
@@ -875,6 +879,27 @@ export default function AppNavigator() {
     };
   }, [isAuthenticated]);
 
+  /*
+   * TAPPING A NOTIFICATION OPENS THE ORDER IT IS ABOUT.
+   *
+   * Every order notification carries `orderId` and `recipientType` in its
+   * data payload, which is all the destination needs — see
+   * `notificationRouting`.
+   *
+   * TIED TO THE SAME FLAG as the registration above, and for a related
+   * reason: a tap can only be routed to a screen inside the signed-in
+   * navigator, and attaching the listener while signed out would resolve a
+   * tap against a stack that has neither tracking screen in it. Signing out
+   * detaches it; signing back in re-attaches, and the cold-start path inside
+   * re-reads the tap that launched the app.
+   *
+   * NOT IN DEMO MODE, which has no real orders for an id to name.
+   */
+  React.useEffect(() => {
+    if (!isAuthenticated || DEMO_MODE) return;
+    return startNotificationRouting();
+  }, [isAuthenticated]);
+
 
   /*
    * Normalize role.
@@ -926,7 +951,9 @@ export default function AppNavigator() {
        and survives navigation. It renders nothing until an Add to Cart is
        pressed, and never takes touches. */
     <CartFlyProvider>
-    <NavigationContainer>
+    {/* The ref is what lets a notification tap — which arrives from the OS,
+        not from a component — reach the navigator. */}
+    <NavigationContainer ref={navigationRef}>
 
       <Stack.Navigator
         initialRouteName="SplashScreen"

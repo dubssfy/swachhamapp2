@@ -20,7 +20,6 @@ import OrderConfirmationModal from '../../components/OrderConfirmationModal';
    rest of the app. */
 import businessOrderApi from '../../services/businessOrderApi';
 import { useBusinessOrderStore } from '../../store/businessOrderStore';
-import { todayIST, addDays } from '../../utils/istDates';
 
 /**
  * Review Order — the step between the Cart and the order itself.
@@ -43,30 +42,25 @@ import { todayIST, addDays } from '../../utils/istDates';
  * Order Placed -> Pickup -> Processing -> Out for Delivery -> Delivered, and
  * the tracking screen still shows every one of those stages.
  *
- * THE PROVISIONAL PICKUP BELOW IS TEMPORARY. See `resolveProvisionalPickup`.
+ * NOTHING ABOUT A COLLECTION IS SENT FROM HERE ANY MORE. See the note
+ * below on the provisional pickup that used to be.
  */
 
-/**
- * A placeholder pickup, sent only because the server still insists on one.
+/*
+ * THE PROVISIONAL PICKUP THAT USED TO LIVE HERE IS GONE.
  *
- * TODAY the order endpoint rejects a booking with no pickup date and slot —
- * `pickupSlot.service.ts` throws before the order is written. The business
- * side no longer collects either, so one has to be supplied for the order to
- * be accepted at all.
+ * A placeholder collection -- tomorrow's first slot -- was computed on this
+ * screen and sent with every business order, only because the create
+ * endpoint refused an order with no schedule. Its own note said to delete it
+ * once the backend stopped insisting, and the backend has:
+ * `pickupSlot.provisionalPickup` now writes the placeholder into the
+ * `pickups` row server-side, where the working day is actually defined.
  *
- * It is a PLACEHOLDER, not a promise. The order is created at
- * PENDING_APPROVAL and the Manager sets the real collection when they accept
- * it, overwriting this. Tomorrow's first slot is used rather than one later
- * today, for two reasons: it cannot go stale while the screen is open (a slot
- * today can start, and the server then refuses it), and it never reads as a
- * commitment to collect within the hour.
- *
- * DELETE THIS ONCE THE BACKEND STOPS REQUIRING A PICKUP. When the order
- * endpoint accepts a booking with no schedule and the Manager's accept step
- * writes it instead, this helper and its call site are the whole of what has
- * to be removed here — nothing else on this screen depends on it.
+ * Nothing about the order changes. The `pickups` row still exists for the
+ * rider's job and the turnaround rule to read, and
+ * `orders.assigned_pickup_date` still stays NULL until a Manager assigns a
+ * real collection.
  */
-const PROVISIONAL_PICKUP_SLOT_FALLBACK = '09-11';
 
 export default function BusinessTimeSlotScreen({ navigation }: any) {
   const { confirmOrder, isPlacingOrder, cart, laundryType } = useBusinessOrderStore();
@@ -130,25 +124,6 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
     (guestFor === 'ROOM' && roomNumberValue.length > 0);
 
   /**
-   * Picks the placeholder pickup described at the top of this file.
-   *
-   * It asks the server which slots exist for tomorrow rather than hardcoding
-   * one, so a change to the working day is picked up here for free. The
-   * fallback covers only the case where that call fails — an order should not
-   * be blocked by a lookup for a value the Manager is going to replace.
-   */
-  const resolveProvisionalPickup = useCallback(async () => {
-    const date = addDays(todayIST(), 1);
-    try {
-      const response = await businessOrderApi.getTimeSlots(date);
-      const slot = (response.data || []).find((option) => option.available);
-      return { date, slotId: slot?.id || PROVISIONAL_PICKUP_SLOT_FALLBACK };
-    } catch {
-      return { date, slotId: PROVISIONAL_PICKUP_SLOT_FALLBACK };
-    }
-  }, []);
-
-  /**
    * Places the order.
    *
    * There is nothing on this page for the business to get wrong any more, so
@@ -179,13 +154,22 @@ export default function BusinessTimeSlotScreen({ navigation }: any) {
 
     try {
       setError('');
-      // The placeholder the server still requires. The Manager replaces it
-      // when they accept the order — see the note at the top of this file.
-      const provisional = await resolveProvisionalPickup();
 
       const order = await confirmOrder({
-        pickupDate: provisional.date,
-        pickupSlot: provisional.slotId,
+        /*
+         * NO PICKUP IS SENT.
+         *
+         * This screen used to compute a placeholder collection -- tomorrow's
+         * first slot -- solely because the create endpoint refused an order
+         * without one. It no longer does: `pickupSlot.provisionalPickup` on
+         * the server writes the placeholder into the `pickups` row, in the
+         * one place that owns the working day.
+         *
+         * That was the deletion this file's own note asked for, and it
+         * matters beyond tidiness: the customer checkout stopped sending a
+         * pickup at the same time, and two clients each guessing at a
+         * placeholder is two chances to guess differently.
+         */
         /*
          * NO DELIVERY IS BOOKED. Null, not undefined: "deliberately not
          * scheduled" is a state the server stores, and it is already the

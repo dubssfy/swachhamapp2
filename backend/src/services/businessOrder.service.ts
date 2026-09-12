@@ -7,6 +7,7 @@ import { getCart, BusinessCart } from './businessCart.service';
 import { assertComplete } from './businessCompleteness';
 import { generateGarmentsForOrder } from './garment.service';
 import { OrderSchedule, resolveDeliverySchedule } from './pickupSlot.service';
+import { pickupAddressOf, OrderPickupAddress } from './manualAddress.service';
 import { resolveBusinessPrices, priceKey } from './priceList.service';
 import { normaliseMobileOrNull } from './businessContact.service';
 import { catalogueScope, guestCategoryFilter, isGuest } from './guestCatalogue';
@@ -990,12 +991,30 @@ export interface BusinessOrderTracking {
    */
   assigned_pickup_date: string | null;
   assigned_pickup_time: string | null;
+  /**
+   * WHERE THIS ORDER IS COLLECTED FROM, in the one shape every side reads.
+   *
+   * A business order is collected from the ESTABLISHMENT, so this resolves to
+   * the establishment's own address -- the same place `dispatch` sends the
+   * rider. It is returned here because the requirement is that the order's
+   * address is visible wherever the order is viewed, and a hotel reading its
+   * own order was the one side that could not see it.
+   *
+   * An order carrying a TYPED address (the `orders.manual_*` columns) shows
+   * that instead. Nothing on the business side sends one today; the column
+   * check costs nothing and means this screen cannot be the one place a
+   * typed address fails to appear.
+   */
+  pickup_address: OrderPickupAddress | null;
 }
 
 async function getOrderTracking(
   businessUserId: string,
   orderId: string
 ): Promise<BusinessOrderTracking> {
+  /* `any` for the address columns rather than restating seventeen of them:
+     `pickupAddressOf` is the one thing that reads them and it owns their
+     shape. The four fields this function itself touches stay declared. */
   const orderResult = await query<{
     id: string;
     order_number: string;
@@ -1003,15 +1022,27 @@ async function getOrderTracking(
     created_at: Date;
     assigned_pickup_date: string | null;
     assigned_pickup_time: string | null;
+    [column: string]: any;
   }>(
     // The assigned pickup travels with the status, so the tracking screen
     // shows both from one read — and from the same two columns the customer's
     // tracker uses for the same order.
-    `SELECT id, order_number, status, created_at,
-            DATE_FORMAT(assigned_pickup_date, '%Y-%m-%d') AS assigned_pickup_date,
-            assigned_pickup_time
-     FROM orders
-     WHERE id = ? AND business_user_id = ?`,
+    `SELECT o.id, o.order_number, o.status, o.created_at,
+            DATE_FORMAT(o.assigned_pickup_date, '%Y-%m-%d') AS assigned_pickup_date,
+            o.assigned_pickup_time,
+            -- A typed address, if this order ever carries one.
+            o.manual_address_line, o.manual_landmark, o.manual_city,
+            o.manual_state, o.manual_pincode, o.manual_contact_name,
+            o.manual_contact_mobile, o.manual_latitude, o.manual_longitude,
+            -- Otherwise the establishment's own address, shaped to look like
+            -- a saved address row so one resolver handles both.
+            COALESCE(NULLIF(TRIM(b.establishment_name), ''), b.name) AS address_label,
+            COALESCE(b.establishment_address, b.address) AS full_address,
+            b.area, b.latitude, b.longitude
+     FROM orders o
+     LEFT JOIN business_users bu ON bu.id = o.business_user_id
+     LEFT JOIN businesses b      ON b.id = bu.business_id
+     WHERE o.id = ? AND o.business_user_id = ?`,
     [orderId, businessUserId]
   );
 
@@ -1058,6 +1089,10 @@ async function getOrderTracking(
     history,
     assigned_pickup_date: order.assigned_pickup_date ?? null,
     assigned_pickup_time: order.assigned_pickup_time ?? null,
+    pickup_address: pickupAddressOf(
+      order as any,
+      (order as any).full_address ? (order as any) : null
+    ),
   };
 }
 

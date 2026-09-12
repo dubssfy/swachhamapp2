@@ -164,6 +164,26 @@ interface AppConfig {
    * 24-hour customer-service window.
    */
   WHATSAPP_ACCOUNT_READY_TEMPLATE: string;
+  /**
+   * The APPROVED Meta template that carries the LOGIN OTP, in the
+   * AUTHENTICATION category. One body parameter: {{1}} is the code.
+   *
+   * Empty by default, like the templates above, and for the same reason: a
+   * name guessed here would fail for every send. While it is empty the OTP
+   * falls back to the existing sms service exactly as it did before — the
+   * login flow itself is unaffected either way.
+   */
+  WHATSAPP_OTP_TEMPLATE: string;
+  /**
+   * Whether that template carries a "Copy code" / autofill button.
+   *
+   * TRUE by default because Meta requires authentication templates to have
+   * one, and the code must be repeated as the button's own parameter. It is
+   * configurable rather than assumed because sending the button component to
+   * a template without one — or omitting it for a template that has one —
+   * fails the whole message on a parameter-count error.
+   */
+  WHATSAPP_OTP_TEMPLATE_HAS_BUTTON: boolean;
   WHATSAPP_TEMPLATE_LANG: string;
   WHATSAPP_DEFAULT_COUNTRY_CODE: string;
   /** Fallback for the Sorter copy when the sorter account has no mobile. */
@@ -334,6 +354,8 @@ const config: AppConfig = {
   // Empty until the account-ready template is approved at Meta; the notice
   // then falls back to a free-form message. See .env.example.
   WHATSAPP_ACCOUNT_READY_TEMPLATE: optionalEnv('WHATSAPP_ACCOUNT_READY_TEMPLATE', ''),
+  WHATSAPP_OTP_TEMPLATE: optionalEnv('WHATSAPP_OTP_TEMPLATE', ''),
+  WHATSAPP_OTP_TEMPLATE_HAS_BUTTON: booleanEnv('WHATSAPP_OTP_TEMPLATE_HAS_BUTTON', true),
   WHATSAPP_TEMPLATE_LANG: optionalEnv('WHATSAPP_TEMPLATE_LANG', 'en'),
   // Indian numbers are stored as 10 digits; Meta needs them in E.164.
   WHATSAPP_DEFAULT_COUNTRY_CODE: optionalEnv('WHATSAPP_DEFAULT_COUNTRY_CODE', '91'),

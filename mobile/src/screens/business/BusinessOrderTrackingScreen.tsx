@@ -14,6 +14,7 @@ import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../const
 import BusinessHeader from '../../components/business/BusinessHeader';
 import CancelOrderModal from '../../components/business/CancelOrderModal';
 import PickupScheduleCard from '../../components/PickupScheduleCard';
+import PickupAddressCard from '../../components/PickupAddressCard';
 import businessOrderApi, { BusinessOrderTracking } from '../../services/businessOrderApi';
 import { extractErrorMessage } from '../../services/api';
 import { DEMO_MODE } from '../../demo/demoMode';
@@ -170,6 +171,21 @@ export default function BusinessOrderTrackingScreen({ navigation, route }: any) 
               time={tracking.assigned_pickup_time}
             />
           )}
+
+          {/*
+            WHERE THE RIDER IS BEING SENT.
+
+            For a hotel order that is the establishment's own address, which
+            is what makes it worth showing: a business with more than one
+            property can see WHICH of them this collection is from, rather
+            than assuming.
+
+            Shown for a cancelled order too, unlike the collection above: the
+            address is a fact about what was booked, not a plan a
+            cancellation makes untrue. The same component the customer and the
+            Manager see, so nobody reads different text.
+          */}
+          <PickupAddressCard address={tracking.pickup_address} />
 
           <View style={styles.card}>
             {tracking.stages.map((stage, index) => {
