@@ -4,7 +4,7 @@
   "description": "Swachham Laundry App — Express.js + PostgreSQL Backend",
   "main": "dist/server.js",
   "engines": {
-    "node": "20.x"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
