@@ -31,20 +31,16 @@ react {
     entryFile = file(["node", "-e", "require('expo/scripts/resolveAppEntry')", projectRoot, "android", "absolute"].execute(null, rootDir).text.trim())
     reactNativeDir = new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile()
     /*
-     * hermesCommand IS DELIBERATELY NOT SET.
+     * The Hermes compiler, resolved the way the SDK 57 template does it.
      *
-     * It used to point at react-native/sdks/hermesc/%OS-BIN%/hermesc. React
-     * Native 0.86 moved the compiler out of the react-native package into its
-     * own `hermes-compiler` npm package, so that path no longer exists and
-     * every release build died at :app:createBundleReleaseJsAndAssets with
-     * "A problem occurred starting process ... hermesc".
-     *
-     * Setting this at all short-circuits the Gradle plugin's own lookup
-     * (PathUtils.detectOSAwareHermesCommand step 1). Left unset, the plugin
-     * falls through to step 3 and resolves
-     * node_modules/hermes-compiler/hermesc/%OS-BIN%/ itself, which is correct
-     * for this and future versions.
+     * It used to point inside react-native/sdks/hermesc, which React Native
+     * 0.86 removed when the compiler moved to its own `hermes-compiler`
+     * package -- every release build died at
+     * :app:createBundleReleaseJsAndAssets with "A problem occurred starting
+     * process ... hermesc". require.resolve is used rather than a fixed
+     * relative path so a hoisted install is still found.
      */
+    hermesCommand = new File(["node", "--print", "require.resolve('hermes-compiler/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim()).getParentFile().getAbsolutePath() + "/hermesc/%OS-BIN%/hermesc"
     codegenDir = new File(["node", "--print", "require.resolve('@react-native/codegen/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile()
 
     enableBundleCompression = (findProperty('android.enableBundleCompression') ?: false).toBoolean()
