@@ -21,6 +21,16 @@ interface AppConfig {
   DATABASE_PASSWORD: string;
   DATABASE_NAME: string;
   DATABASE_SSL: boolean;
+  /*
+   * The session time zone every pooled connection is put into.
+   *
+   * MySQL stamps CURRENT_TIMESTAMP in the SERVER's zone, and this application
+   * reads those columns back as business (IST) wall-clock time. Aiven runs at
+   * +05:30; a stock MySQL container runs at UTC. Pinning the session here
+   * means the application behaves identically on either, and a move between
+   * providers cannot silently shift every date-keyed query by 5.5 hours.
+   */
+  DATABASE_TIMEZONE: string;
   JWT_SECRET: string;
   JWT_EXPIRES_IN: string;
   JWT_REFRESH_SECRET: string;
@@ -258,6 +268,7 @@ const config: AppConfig = {
   DATABASE_PASSWORD: requireEnv('DATABASE_PASSWORD'),
   DATABASE_NAME: requireEnv('DATABASE_NAME'),
   DATABASE_SSL: booleanEnv('DATABASE_SSL', false),
+  DATABASE_TIMEZONE: optionalEnv('DATABASE_TIMEZONE', '+05:30'),
   JWT_SECRET: requireEnv('JWT_SECRET'),
   JWT_EXPIRES_IN: optionalEnv('JWT_EXPIRES_IN', '7d'),
   JWT_REFRESH_SECRET: optionalEnv('JWT_REFRESH_SECRET', requireEnv('JWT_SECRET') + '_refresh'),

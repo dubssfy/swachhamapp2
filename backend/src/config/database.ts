@@ -22,9 +22,23 @@ const pool = mysql.createPool({
   },
 });
 
-// Log connection events
-pool.on('connection', () => {
-  console.log('[Database] New MySQL connection established');
+/*
+ * EVERY CONNECTION SPEAKS THE BUSINESS CLOCK.
+ *
+ * Issued on each new pooled connection, before the pool hands it out. The
+ * server's own zone therefore stops mattering: dates are written and read in
+ * DATABASE_TIMEZONE whatever provider the database runs on. See the note on
+ * that setting in config/env.ts.
+ */
+pool.on('connection', (connection: any) => {
+  connection.query('SET time_zone = ?', [config.DATABASE_TIMEZONE], (error: any) => {
+    if (error) {
+      console.error(
+        `[Database] Could not set session time_zone to ${config.DATABASE_TIMEZONE}: ${error.message}`
+      );
+    }
+  });
+  console.log(`[Database] New MySQL connection established (time_zone ${config.DATABASE_TIMEZONE})`);
 });
 
 /**
