@@ -72,8 +72,25 @@ const INITIAL = {
  * otherwise ship a release with no service-area gate at all - the one thing
  * this must never do. In a production build it is false whatever the .env says.
  */
+/*
+ * THE SECOND BYPASS: a REMOTE PREVIEW build.
+ *
+ * Set only by the `remote` profile in eas.json, which exists so the app can
+ * be shown to someone outside Ratnagiri on their own handset. It is a
+ * separate variable from the one above ON PURPOSE:
+ *
+ *   - the dev flag stays ANDed with __DEV__, so nothing about it changes;
+ *   - `production` and `preview` never set this one, so a real release still
+ *     cannot ship without the gate;
+ *   - it takes a build of its own to enable, which cannot happen by accident.
+ *
+ * An APK built this way lets anyone in from anywhere. It is for a
+ * demonstration, never for the store.
+ */
+const REMOTE_PREVIEW = process.env.EXPO_PUBLIC_REMOTE_PREVIEW === '1';
+
 const BYPASS_LOCATION_GATE =
-  __DEV__ && process.env.EXPO_PUBLIC_DISABLE_LOCATION_GATE === 'true';
+  (__DEV__ && process.env.EXPO_PUBLIC_DISABLE_LOCATION_GATE === 'true') || REMOTE_PREVIEW;
 
 if (BYPASS_LOCATION_GATE) {
   // Loud on purpose: an app that lets anyone in from anywhere should say so
