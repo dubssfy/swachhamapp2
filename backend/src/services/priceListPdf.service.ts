@@ -1,6 +1,10 @@
 import PDFDocument from 'pdfkit';
-import fs from 'fs';
-import path from 'path';
+/*
+ * `logoPath` IS SHARED WITH EVERY OTHER PDF rather than resolved again here.
+ * This file used to carry its own copy, which is how it came to search only
+ * paths relative to the working directory and so found no logo on Railway.
+ */
+import { logoPath } from './pdfTheme';
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import {
@@ -47,15 +51,6 @@ const PANEL = '#F2F8FB';
 const ZEBRA = '#FAFCFD';
 
 const MARGIN = 40;
-
-/** The Swachham mark, drawn when the asset is present. */
-function logoPath(): string | null {
-  const candidates = [
-    path.resolve(process.cwd(), '../mobile/assets/swachham-logo.png'),
-    path.resolve(process.cwd(), 'assets/swachham-logo.png'),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
-}
 
 /** A Date or an ISO string as "21 August 2026". */
 function longDate(value: unknown): string {

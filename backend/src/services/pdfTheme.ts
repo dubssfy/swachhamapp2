@@ -154,18 +154,40 @@ export function drawPageWatermark(doc: PDFKit.PDFDocument): void {
 }
 
 /**
- * The first of these asset names that exists, checked in both the layouts the
- * backend runs under: from the repo (`backend/` as cwd, assets in the sibling
- * mobile app) and from a deployment that ships its own `assets/`.
+ * The directories a brand asset may live in, most authoritative first.
+ *
+ * ANCHORED ON `__dirname`, NOT ON `process.cwd()`. This module compiles to
+ * `dist/services/`, and runs from `src/services/` under ts-node-dev, so the
+ * backend root is two levels up either way — whereas the working directory is
+ * whatever the process was started from. Railway starts it from the service
+ * root, a `systemd` unit or a `docker run -w` could start it from anywhere,
+ * and a cwd-relative lookup silently produced a logo-less PDF in each case
+ * rather than an error anyone could see.
+ *
+ * `backend/assets/` is the one that matters in production: RAILWAY DEPLOYS
+ * THIS DIRECTORY ALONE, so the sibling mobile app is not on disk there. That
+ * path is kept second only because a checkout has both, and the mobile app's
+ * copy is the artwork's source of truth.
+ */
+const ASSET_DIRS = [
+  path.resolve(__dirname, '../../assets'),
+  path.resolve(__dirname, '../../../mobile/assets'),
+  path.resolve(process.cwd(), 'assets'),
+  path.resolve(process.cwd(), '../mobile/assets'),
+];
+
+/**
+ * The first of these asset names that exists, in the first directory that
+ * has it. Names are tried in order across ALL directories before the next
+ * name, so a deployment carrying only the fallback art still gets the
+ * fallback rather than nothing.
  */
 function firstExisting(names: string[]): string | null {
   for (const name of names) {
-    const candidates = [
-      path.resolve(process.cwd(), `../mobile/assets/${name}`),
-      path.resolve(process.cwd(), `assets/${name}`),
-    ];
-    const found = candidates.find((candidate) => fs.existsSync(candidate));
-    if (found) return found;
+    for (const dir of ASSET_DIRS) {
+      const candidate = path.join(dir, name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
   }
   return null;
 }

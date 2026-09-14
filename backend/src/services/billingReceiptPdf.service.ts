@@ -1,6 +1,10 @@
 import PDFDocument from 'pdfkit';
-import fs from 'fs';
-import path from 'path';
+/*
+ * `logoPath` IS SHARED WITH EVERY OTHER PDF rather than resolved again here.
+ * This file used to carry its own copy, which is how it came to search only
+ * paths relative to the working directory and so found no logo on Railway.
+ */
+import { logoPath } from './pdfTheme';
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { displayInvoiceNumber } from './gstInvoice.service';
@@ -42,14 +46,6 @@ const PANEL = '#F1F7F3';
 const BAND = '#E8F3EC';
 
 const MARGIN = 40;
-
-function logoPath(): string | null {
-  const candidates = [
-    path.resolve(process.cwd(), '../mobile/assets/swachham-logo.png'),
-    path.resolve(process.cwd(), 'assets/swachham-logo.png'),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
-}
 
 /** 1234.5 -> "1,234.50", Indian digit grouping. */
 function inr(value: number): string {
