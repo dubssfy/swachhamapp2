@@ -4,9 +4,7 @@ import { guestLaundryLine } from './guestLaundryLabel';
  * Pure data — a generated string constant, no Expo import — so this file
  * stays buildable and checkable off-device as its header promises.
  */
-import {
-  SWACHHAM_LOGO_DATA_URI, SWACHHAM_WATERMARK_DATA_URI,
-} from './pdfBrandAssets';
+import { PDF_BRANDING_CSS, pdfLogoElement, brandedPage } from './pdfBranding';
 
 /**
  * The Business Order PDF's HTML, and nothing else.
@@ -142,56 +140,13 @@ const ORDER_PDF_DOC_OPEN = `<!DOCTYPE html><html><head><meta charset="utf-8" />
               text-transform: uppercase; color: #2D6A4F; margin: 2px 0 0; }
   .brand { font-size: 26px; font-weight: 700; color: #2D6A4F; margin: 0; letter-spacing: 1px; }
   .tagline { display: block; font-size: 12px; color: #6B7280; font-weight: 400; letter-spacing: .4px; margin: 2px 0 0; }
-  /* 62px -> 82px: noticeably more present at the head of the page, still
-     comfortably under the 26px brand wordmark beside it and well inside the
-     header band, so nothing below it moves.
-     SQUARE BOX + object-fit:contain KEEPS THE ASPECT RATIO. The box is square
-     and the art is not, so contain letterboxes the image inside it rather
-     than stretching it — which is why width and height stay equal here
-     instead of one being tuned to the image.
+  /* Logo, watermark, and the stacking that keeps the mark behind the order.
+     Shared with every other document this app prints -- the size, position
+     and opacity all live in pdfBranding.ts, so they cannot drift between the
+     order, batch and socked documents.
      NOTE: this whole stylesheet sits inside a TS template literal, so no
      backtick may appear in these comments. */
-  /* THE MARK IS CARRIED BY THE STYLESHEET, NOT BY EACH ORDER.
-     The shell is emitted ONCE per document while the body below is emitted
-     once per order, so a combined PDF of fifty orders that inlined the art
-     in its markup would carry fifty copies of it -- about 1.9 MB of base64,
-     which is the size that made the printer snapshot the page before it had
-     decoded the image in the first place. Declared here, each image appears
-     exactly once however many orders the document holds.
-     background-size:contain does what object-fit:contain did for the old
-     img: the box is square and the art is not, so the art is letterboxed
-     inside it rather than stretched. flex:none because .head is a flex row
-     and a div, unlike an img, has no intrinsic width to stop it shrinking. */
-  .logo { width: 82px; height: 82px; flex: none;
-          border: 1px solid #E5E7EB; border-radius: 12px;
-          background-image: url('${SWACHHAM_LOGO_DATA_URI}');
-          background-size: contain; background-position: center;
-          background-repeat: no-repeat; }
-  /* THE WATERMARK, and the stacking that keeps it behind the order.
-     Positioned against .order rather than the page: this stylesheet is
-     shared with the combined document, where the body below is repeated
-     once per order, so anchoring it here puts exactly one mark behind each
-     order instead of one on the first page only. A fixed-position mark was
-     the alternative and it does not repeat reliably across printed pages.
-     OPACITY IS THE ONLY THING STOPPING THIS FROM OBSCURING THE ORDER, so it
-     is set low: the mark is a light orange to begin with, and at .07 the
-     darkest pixel it can produce over white is about 94% white — visible as
-     a tint, never as something competing with 12px table text. The table
-     and every other block are lifted to z-index 1 so no cell can land
-     underneath it.
-     pointer-events is irrelevant in print and set only so that the same
-     markup is harmless if it is ever shown on screen. */
-  .order { position: relative; }
-  .order > * { position: relative; z-index: 1; }
-  /* 360x394 keeps the source art's 384x420 proportions, so the mark is not
-     squashed by being given a box of its own. */
-  .watermark { position: absolute; top: 50%; left: 50%;
-               width: 360px; height: 394px;
-               transform: translate(-50%, -50%); opacity: .07; z-index: 0;
-               pointer-events: none;
-               background-image: url('${SWACHHAM_WATERMARK_DATA_URI}');
-               background-size: contain; background-position: center;
-               background-repeat: no-repeat; }
+  ${PDF_BRANDING_CSS}
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: #2D6A4F; margin: 22px 0 8px; }
   .grid { display: flex; flex-wrap: wrap; }
   .cell { width: 50%; padding: 5px 0; font-size: 12px; }
@@ -385,16 +340,9 @@ export function buildBusinessOrderPdfBody(
       : ''
   }`;
 
-    return `
-<div class="order">
-  <!-- The mark behind the order. Drawn first so it is under everything that
-       follows even before z-index is considered, and carried in the shared
-       body so the single-order and combined documents cannot disagree about
-       whether an order has one. The art itself is in the stylesheet. -->
-  <div class="watermark"></div>
-
+    return brandedPage(`
   <div class="head">
-    ${logo ? '<div class="logo"></div>' : ''}
+    ${pdfLogoElement(logo)}
     <div>
       <p class="brand">SWACHHAM</p>
       <p class="tagline">Business of Laundering</p>
@@ -473,8 +421,7 @@ export function buildBusinessOrderPdfBody(
 ${summary}
 
   <footer>Generated by SWACHHAM · ${escapeHtml(date)} ${escapeHtml(time)}</footer>
-</div>
-`;
+`);
 }
 
 /**

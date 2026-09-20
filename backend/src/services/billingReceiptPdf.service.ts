@@ -4,7 +4,7 @@ import PDFDocument from 'pdfkit';
  * This file used to carry its own copy, which is how it came to search only
  * paths relative to the working directory and so found no logo on Railway.
  */
-import { logoPath } from './pdfTheme';
+import { drawPageWatermark, logoPath } from './pdfTheme';
 import { query } from '../config/database';
 import { AppError } from '../utils/appError';
 import { displayInvoiceNumber } from './gstInvoice.service';
@@ -129,7 +129,20 @@ export function billingReceiptFileName(doc: BillingReceiptDocument): string {
 
 export function renderBillingReceiptPdf(doc: BillingReceiptDocument): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const pdf = new PDFDocument({ size: 'A4', margin: MARGIN });
+    /*
+     * THE WATERMARK GOES ON EVERY PAGE, AND THAT IS WHY THE FIRST PAGE IS
+     * NOT AUTOMATIC.
+     *
+     * `pageAdded` only fires for pages added after the listener exists, and
+     * the constructor's own first page is created before there is a listener
+     * to hear it -- so with `autoFirstPage` left on, every page WOULD get the
+     * mark except page one. Suppressing it and adding the page by hand below
+     * is the same shape `invoicePdf`, `itemQuantityReportPdf` and
+     * `kgReportPdf` already use, so all six documents watermark the same way.
+     */
+    const pdf = new PDFDocument({ size: 'A4', margin: MARGIN, autoFirstPage: false });
+    pdf.on('pageAdded', () => drawPageWatermark(pdf));
+    pdf.addPage();
     const chunks: Buffer[] = [];
 
     pdf.on('data', (chunk: Buffer) => chunks.push(chunk));
