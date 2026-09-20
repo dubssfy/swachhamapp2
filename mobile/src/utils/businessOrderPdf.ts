@@ -1,6 +1,5 @@
-import { Asset } from 'expo-asset';
-import * as FileSystem from 'expo-file-system/legacy';
 import { printPdfAs } from './pdfFile';
+import { SWACHHAM_LOGO_DATA_URI } from './pdfBrandAssets';
 import { BusinessOrderDetail } from '../services/businessOrderApi';
 import {
   buildBusinessOrderPdfHtml, buildCombinedOrderPdfHtml, buildPdfFileName,
@@ -80,84 +79,41 @@ export async function generateCombinedOrderPdf(
  */
 
 /**
- * The logo, resolved ONCE per app session.
- *
- * Null is not cached: a run that failed is retried by the next PDF, so one
- * bad moment cannot cost every document afterwards.
- */
-let logoDataUri: string | null = null;
-
-/**
- * Swachham logo, embedded as a data URI so the PDF renders it offline.
+ * Swachham logo, as a data URI the document can draw offline.
  *
  * Exported so other PDF generators — `batchDetailsPdf.ts` included — use the
- * same asset instead of loading it a second way.
+ * same asset instead of loading it a second way. It stays `async` and
+ * nullable because those callers `await` it; there is simply nothing left
+ * inside that can suspend or fail.
  *
- * WHY THE PDF READS ITS OWN COPY OF THE MARK.
+ * WHY THIS IS A CONSTANT AND NOT AN ASSET READ.
  *
- * `swachham-logo.png` is the 1254px app icon — 953 KB, which is ~1.3 MB once
- * base64'd into the document. That made the logo NINETY-NINE PERCENT of the
- * HTML handed to `Print.printToFileAsync` (1.31 MB against 8-31 KB of actual
- * order), and the print snapshot is taken whether or not the WebView has
- * finished decoding an image that size — which is why the mark appeared on
- * some order PDFs and not others, from the same code, for the same business.
- * `swachham-logo-pdf.png` is that identical artwork at 328px: 87 KB, still
- * 288 dpi in the 82px box it is drawn into, so nothing about how the logo
- * looks changes and the document no longer races its own decode.
+ * It used to resolve the PNG at runtime through `Asset.fromModule` and
+ * `FileSystem.readAsStringAsync`, and returned null — a silently logo-less
+ * document — whenever any step of that failed. Two separate things made it
+ * fail:
  *
- * The result is held above because every PDF used to re-download, re-read and
- * re-encode the file, giving each one its own fresh chance to fail.
+ *   THE ASSET DID NOT ALWAYS RESOLVE TO A READABLE FILE. Under Metro it is
+ *   an http URL; on Expo Go it can land outside the sandbox expo-file-system
+ *   grants this experience; and in an Android release build it resolves to
+ *   `file:///android_res/...`, which expo-asset's own source flags as "not
+ *   direct accessible". The old code handled the first two and still had to
+ *   guess at the third, because the failure is invisible — a document simply
+ *   came out without its mark.
+ *
+ *   THE SNAPSHOT RACED THE DECODE. Even when it resolved, the logo was 93%
+ *   of the HTML handed to `Print.printToFileAsync` (116 KB of base64 against
+ *   ~9 KB of order), and the print snapshot is taken whether or not the
+ *   WebView has finished decoding it. That is why the mark appeared on some
+ *   order PDFs and not others, from the same code, for the same business.
+ *
+ * `pdfBrandAssets` is generated from the SAME `assets/swachham-logo-pdf.png`
+ * by `scripts/build_pdf_brand_assets.py`, downscaled to the 82px box it is
+ * actually drawn in and palette-encoded: 28 KB instead of 116 KB, small
+ * enough to decode inside the layout pass. A constant cannot be refused by a
+ * file system, cannot differ between Expo Go and a release build, and cannot
+ * arrive after the page has been printed.
  */
 export async function getLogoDataUri(): Promise<string | null> {
-  if (logoDataUri) return logoDataUri;
-  try {
-    const asset = Asset.fromModule(require('../../assets/swachham-logo-pdf.png'));
-    await asset.downloadAsync();
-    const uri = asset.localUri || asset.uri;
-    if (!uri) return null;
-
-    /*
-     * `readAsStringAsync` reads FILES. A bundled asset does not always
-     * resolve to one — in development it is an http URL served by Metro —
-     * and handing it a URL threw, which the catch below turned into a
-     * silently logo-less PDF. Anything that is not already a local file is
-     * fetched into the cache first and read from there.
-     */
-    const cached = `${FileSystem.cacheDirectory}swachham-logo-pdf.png`;
-
-    let fileUri = uri;
-    if (!fileUri.startsWith('file://')) {
-      const info = await FileSystem.getInfoAsync(cached);
-      if (!info.exists) await FileSystem.downloadAsync(uri, cached);
-      fileUri = cached;
-    }
-
-    let base64: string;
-    try {
-      base64 = await FileSystem.readAsStringAsync(fileUri, { encoding: 'base64' });
-    } catch {
-      /*
-       * A `file://` asset is not necessarily a file we are ALLOWED to read.
-       *
-       * On Expo Go the asset can resolve into Expo Go's own storage, outside
-       * the sandbox expo-file-system grants this experience — the same
-       * refusal that broke the PDF caching (see `utils/pdfFile`). It surfaces
-       * differently here: the read throws, the catch below returns null, and
-       * every document silently renders without its logo.
-       *
-       * Copying it into our own cache first turns the read into an ordinary
-       * in-sandbox one. `downloadAsync` handles a file:// source as well as
-       * an http one, so this covers both.
-       */
-      await FileSystem.downloadAsync(uri, cached);
-      base64 = await FileSystem.readAsStringAsync(cached, { encoding: 'base64' });
-    }
-
-    logoDataUri = `data:image/png;base64,${base64}`;
-    return logoDataUri;
-  } catch {
-    // A business with no logo, and a logo that could not be read, both leave
-    // the document exactly as it was: the header simply omits the image.
-    return null;
-  }
+  return SWACHHAM_LOGO_DATA_URI;
 }
