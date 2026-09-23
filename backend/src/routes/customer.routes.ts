@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getCustomerProfile, createOrUpdateCustomerProfile } from '../services/customer.service';
+import { deleteOwnAccount } from '../services/accountDeletion.service';
 import { sendSuccess, sendError } from '../utils/response';
 import { authenticate, AuthenticatedRequest } from '../middleware/auth';
 import { query } from '../config/database';
@@ -58,6 +59,37 @@ router.post('/setup', async (req: Request, res: Response, next: NextFunction) =>
     );
     
     sendSuccess(res, userResult.rows[0], 'Profile setup complete', 200);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * DELETE THE SIGNED-IN USER'S OWN ACCOUNT.
+ *
+ * Google Play requires this to exist and to be reachable from inside the app.
+ * The id comes from the verified access token and never from the request, so
+ * this endpoint can only ever delete the caller's own account.
+ *
+ * The confirmation word is a deliberate speed bump, not security: an
+ * accidental DELETE from a stray tap should not destroy an account. The real
+ * protection is that a valid token is required to get here at all.
+ */
+router.delete('/me', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+
+    if (String(req.body?.confirm ?? '').trim().toUpperCase() !== 'DELETE') {
+      sendError(
+        res,
+        'Send { "confirm": "DELETE" } to confirm that this account should be deleted.',
+        400
+      );
+      return;
+    }
+
+    const outcome = await deleteOwnAccount(authReq.user!.id);
+    sendSuccess(res, outcome, outcome.message);
   } catch (error) {
     next(error);
   }

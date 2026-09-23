@@ -71,3 +71,13 @@ mobile/ios/Pods/
 *.log
 .DS_Store
 Thumbs.db
+
+# ---- Signing keys. This file REPLACES .gitignore as the upload filter, so
+#      the *.jks rule added there does not apply here and has to be repeated.
+#      EAS supplies the release keystore to the builder itself, from the
+#      credentials it stores; a copy downloaded into the working directory is
+#      never something the tarball needs to carry. ----
+*.jks
+*.keystore
+!mobile/android/app/debug.keystore
+credentials.json

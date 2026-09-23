@@ -11,7 +11,7 @@ apply plugin: "com.facebook.react"
  * receives a notification, with no error anywhere to explain it.
  *
  * NOT APPLIED TO THE DEMO BUILD. The demo takes the application id
- * `com.anonymous.swachham.demo` (see the block below), and the plugin
+ * `com.swachham.app.demo` (see the block below), and the plugin
  * refuses any package it cannot find in google-services.json — so applying
  * it unconditionally would break the demo APK for a Firebase project the
  * demo has no use for. A demo build talks to no server at all; there is
@@ -118,7 +118,7 @@ android {
 
     namespace 'com.anonymous.swachham'
     defaultConfig {
-        applicationId 'com.anonymous.swachham'
+        applicationId 'com.swachham.app'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
@@ -161,8 +161,34 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
+            /*
+             * RELEASES ARE SIGNED BY EAS, NOT BY THIS LINE.
+             *
+             * The debug config below is the React Native template default and
+             * it is what a LOCAL `./gradlew assembleRelease` would use — so an
+             * APK built on this machine is debug-signed and must never be
+             * distributed. Google Play rejects it, and rightly.
+             *
+             * On EAS Build the line is overridden. The builder writes
+             * `android/app/eas-build.gradle`, appends `apply from:
+             * "./eas-build.gradle"` to this file, and that script ends with
+             *
+             *     android.buildTypes.release {
+             *       signingConfig android.signingConfigs.release
+             *     }
+             *
+             * reassigning the release build type to a signing config it
+             * populates from the `credentials.json` it generates from the
+             * EAS-managed upload keystore. Neither file is in the repository;
+             * both exist only on the builder.
+             *
+             * So do not "fix" this by pointing it at a keystore of your own.
+             * That would take effect locally AND on EAS — the injected script
+             * skips credentials.json when a storeFile is already set and the
+             * build is not an EAS one — which is how a project ends up signed
+             * by two different keys depending on where it was built. The
+             * release path for this app is `eas build --profile production`.
+             */
             signingConfig signingConfigs.debug
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()

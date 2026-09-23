@@ -23,7 +23,8 @@
         "backgroundColor": "#F8FFF9",
         "foregroundImage": "./assets/swachham-logo.png"
       },
-      "package": "com.anonymous.swachham"
+      "package": "com.swachham.app",
+      "googleServicesFile": "./android/app/google-services.json"
     },
     "web": {
       "favicon": "./assets/swachham-logo.png"
@@ -38,7 +39,12 @@
       "expo-font",
       "expo-secure-store",
       "expo-asset",
-      "expo-audio",
+      [
+        "expo-audio",
+        {
+          "recordAudioAndroid": false
+        }
+      ],
       [
         "expo-splash-screen",
         {

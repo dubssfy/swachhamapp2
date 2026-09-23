@@ -17,6 +17,7 @@ import BusinessHeader from '../../components/business/BusinessHeader';
 import businessOrderApi, { NearbyStore } from '../../services/businessOrderApi';
 import { extractErrorMessage } from '../../services/api';
 import { DEMO_MODE } from '../../demo/demoMode';
+import { buildMapHtml, Coords } from '../../components/storeLocator/storeMapHtml';
 
 type Status =
   | 'idle'
@@ -27,106 +28,26 @@ type Status =
   | 'location_unavailable'
   | 'error';
 
-interface Coords {
-  latitude: number;
-  longitude: number;
-}
+
 
 /**
- * Leaflet + OpenStreetMap rendered inside a WebView.
- *
- * react-native-webview is the only dependency this needs, it works on Android
- * without a provider API key, and it keeps the map self-contained: markers,
- * the user pin and the nearest-store highlight are all driven by the data the
- * backend returned.
+ * "9:00 AM - 8:00 PM" from the stored TIME values, or null when either is
+ * missing — half a range is not worth showing.
  */
-function buildMapHtml(user: Coords, stores: NearbyStore[]) {
-  const payload = JSON.stringify({
-    user,
-    stores: stores.map((store, index) => ({
-      name: store.name,
-      address: store.address,
-      latitude: store.latitude,
-      longitude: store.longitude,
-      distance_km: store.distance_km,
-      nearest: index === 0,
-    })),
-  });
+function formatHours(store: { opening_time: string | null; closing_time: string | null }): string | null {
+  const toDisplay = (value: string | null): string | null => {
+    if (!value) return null;
+    const [hourText, minuteText] = value.split(':');
+    const hour = Number(hourText);
+    if (!Number.isFinite(hour)) return null;
+    const suffix = hour < 12 ? 'AM' : 'PM';
+    const twelveHour = hour % 12 === 0 ? 12 : hour % 12;
+    return `${twelveHour}:${minuteText ?? '00'} ${suffix}`;
+  };
 
-  return `<!DOCTYPE html><html><head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<style>
-  html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; background: #F8FFF9; }
-  .pin-label { font: 600 12px -apple-system, Roboto, Helvetica, Arial, sans-serif; }
-  #fallback { display: none; padding: 16px; font: 14px -apple-system, Roboto, Helvetica, Arial, sans-serif; color: #6B7280; }
-</style>
-</head><body>
-<div id="map"></div>
-<div id="fallback">The map could not be loaded. The store list below is still available.</div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-  (function () {
-    var data = ${payload};
-
-    function fail() {
-      document.getElementById('map').style.display = 'none';
-      document.getElementById('fallback').style.display = 'block';
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage('MAP_ERROR');
-      }
-    }
-
-    if (typeof L === 'undefined') { fail(); return; }
-
-    try {
-      var map = L.map('map').setView([data.user.latitude, data.user.longitude], 11);
-
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap contributors'
-      }).addTo(map);
-
-      var bounds = [];
-
-      // User location.
-      L.circleMarker([data.user.latitude, data.user.longitude], {
-        radius: 9, color: '#1D4ED8', fillColor: '#3B82F6', fillOpacity: 1, weight: 3
-      }).addTo(map).bindPopup('<span class="pin-label">You are here</span>');
-      bounds.push([data.user.latitude, data.user.longitude]);
-
-      data.stores.forEach(function (store) {
-        var colour = store.nearest ? '#E63946' : '#2D6A4F';
-        L.circleMarker([store.latitude, store.longitude], {
-          radius: store.nearest ? 11 : 8,
-          color: colour,
-          fillColor: colour,
-          fillOpacity: 0.9,
-          weight: store.nearest ? 4 : 2
-        })
-          .addTo(map)
-          .bindPopup(
-            '<span class="pin-label">' + store.name + (store.nearest ? ' (Nearest)' : '') + '</span><br/>' +
-            (store.address ? store.address + '<br/>' : '') +
-            store.distance_km + ' km away'
-          );
-        bounds.push([store.latitude, store.longitude]);
-      });
-
-      if (bounds.length > 1) {
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 });
-      }
-
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage('MAP_READY');
-      }
-    } catch (e) {
-      fail();
-    }
-  })();
-</script>
-</body></html>`;
+  const open = toDisplay(store.opening_time);
+  const close = toDisplay(store.closing_time);
+  return open && close ? `${open} - ${close}` : null;
 }
 
 export default function StoreLocatorScreen({ navigation }: any) {
@@ -355,6 +276,15 @@ export default function StoreLocatorScreen({ navigation }: any) {
                     </Text>
                     <Text style={styles.nearestDistance}>{nearest.distance_km} km away</Text>
 
+                    {/* Hours are optional: a store that has not published them
+                        shows nothing here rather than a made-up default. */}
+                    {formatHours(nearest) ? (
+                      <View style={styles.hoursRow}>
+                        <Ionicons name="time-outline" size={14} color={COLORS.TextSecondary} />
+                        <Text style={styles.hoursText}>{formatHours(nearest)}</Text>
+                      </View>
+                    ) : null}
+
                     <View style={styles.nearestActions}>
                       <TouchableOpacity
                         style={styles.directionsButton}
@@ -411,6 +341,17 @@ export default function StoreLocatorScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.Background },
+  hoursRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.xs,
+    marginTop: SPACING.xs,
+  },
+  hoursText: {
+    fontFamily: TYPOGRAPHY.fontFamily,
+    fontSize: TYPOGRAPHY.sizes.sm,
+    color: COLORS.TextSecondary,
+  },
   scroll: { padding: SPACING.md, paddingBottom: SPACING.xxl },
   locateButton: {
     flexDirection: 'row',

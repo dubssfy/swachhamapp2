@@ -14,6 +14,52 @@ import { BusinessOrderDetail } from './businessOrderApi';
  * and error shaping are the ones the app already has.
  */
 
+/* ---- Store management ---- */
+
+export interface AdminStore {
+  id: string;
+  name: string;
+  address: string | null;
+  city: string | null;
+  district: string | null;
+  state: string | null;
+  pincode: string | null;
+  latitude: number;
+  longitude: number;
+  contact_number: string | null;
+  email: string | null;
+  /** "HH:MM:SS" or null when hours are not published. */
+  opening_time: string | null;
+  closing_time: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** What the Add/Edit form sends. Omitted keys are left unchanged on edit. */
+export type StorePayload = Partial<{
+  name: string;
+  address: string;
+  city: string;
+  district: string | null;
+  state: string | null;
+  pincode: string | null;
+  latitude: number;
+  longitude: number;
+  contact_number: string;
+  email: string | null;
+  opening_time: string | null;
+  closing_time: string | null;
+  is_active: boolean;
+}>;
+
+export interface StoreRemovalOutcome {
+  id: string;
+  /** False when orders referenced the store and it was hidden instead. */
+  purged: boolean;
+  message: string;
+}
+
 export interface ChannelSummary {
   channel: 'B2B' | 'B2C';
   orders: number;
@@ -1420,6 +1466,54 @@ const superAdminApi = {
    * Adds a price. Send `item_id` to price an existing catalogue item, or
    * `item_name` + `category_id` to create the item and price it in one go.
    */
+  /* ---- Stores ----
+   *
+   * All of these are Super Admin only, enforced on the server by the
+   * `authorize('SUPER_ADMIN')` guard the routes are mounted behind. The
+   * customer-facing locator reads the same table through the public
+   * `/api/stores` endpoint, so a store saved here appears there on the next
+   * fetch with nothing to redeploy. */
+
+  listStores: async (): Promise<AdminStore[]> => {
+    const res = await apiClient.get<ApiResponse<AdminStore[]>>('/api/super-admin/stores');
+    return res.data.data;
+  },
+
+  getStore: async (id: string): Promise<AdminStore> => {
+    const res = await apiClient.get<ApiResponse<AdminStore>>(`/api/super-admin/stores/${id}`);
+    return res.data.data;
+  },
+
+  createStore: async (payload: StorePayload): Promise<AdminStore> => {
+    const res = await apiClient.post<ApiResponse<AdminStore>>('/api/super-admin/stores', payload);
+    return res.data.data;
+  },
+
+  updateStore: async (id: string, payload: StorePayload): Promise<AdminStore> => {
+    const res = await apiClient.put<ApiResponse<AdminStore>>(
+      `/api/super-admin/stores/${id}`,
+      payload
+    );
+    return res.data.data;
+  },
+
+  /** Deactivating is what removes a store from the public locator. */
+  setStoreActive: async (id: string, isActive: boolean): Promise<AdminStore> => {
+    const res = await apiClient.patch<ApiResponse<AdminStore>>(
+      `/api/super-admin/stores/${id}/status`,
+      { is_active: isActive }
+    );
+    return res.data.data;
+  },
+
+  /** Deletes outright, or hides the store when orders still reference it. */
+  deleteStore: async (id: string): Promise<StoreRemovalOutcome> => {
+    const res = await apiClient.delete<ApiResponse<StoreRemovalOutcome>>(
+      `/api/super-admin/stores/${id}`
+    );
+    return res.data.data;
+  },
+
   createCustomerPrice: async (payload: Record<string, unknown>): Promise<CustomerPrice> => {
     const res = await apiClient.post<ApiResponse<CustomerPrice>>(
       '/api/super-admin/prices/customers',

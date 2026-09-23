@@ -1,14 +1,16 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Image } from 'react-native';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../../constants/theme';
 import { useAuthStore } from '../../store/authStore';
+import customerApi from '../../services/customerApi';
 
 const menuItems = [
   { id: 'profile', icon: 'person-outline', title: 'User Profile', subtitle: 'Manage your details' },
   { id: 'addresses', icon: 'location-outline', title: 'Addresses', subtitle: 'Manage your saved pickup and delivery addresses' },
   { id: 'orders', icon: 'bag-outline', title: 'Your Orders', subtitle: 'View your current and past orders' },
+  { id: 'stores', icon: 'storefront-outline', title: 'Store Locator', subtitle: 'Find your nearest Swachham store' },
   { id: 'privacy', icon: 'shield-checkmark-outline', title: 'Privacy Policy', subtitle: 'Privacy Policy' },
   { id: 'express', icon: 'rocket-outline', title: 'Know About Express Service', subtitle: 'Express Service' },
   { id: 'terms', icon: 'document-text-outline', title: 'Terms & Conditions', subtitle: 'Term & Condition' },
@@ -18,6 +20,7 @@ const menuItems = [
 
 export default function ProfileScreen({ navigation }: any) {
   const { user, logout } = useAuthStore();
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const handleMenuPress = (id: string) => {
     switch (id) {
@@ -30,6 +33,9 @@ export default function ProfileScreen({ navigation }: any) {
       case 'orders':
         navigation.navigate('Orders');
         break;
+      case 'stores':
+        navigation.navigate('CustomerStoreLocator');
+        break;
       // Both legal documents are one screen; the id says which to render.
       case 'privacy':
         navigation.navigate('LegalDocument', { document: 'privacy' });
@@ -38,13 +44,50 @@ export default function ProfileScreen({ navigation }: any) {
         navigation.navigate('LegalDocument', { document: 'terms' });
         break;
       case 'delete':
-        Alert.alert('Delete Account', 'Are you sure you want to delete your account?', [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Delete', style: 'destructive', onPress: () => console.log('Delete account') },
-        ]);
+        Alert.alert(
+          'Delete account',
+          'This closes your account and erases your personal details. ' +
+            'Records of past orders are kept, because we are required to keep ' +
+            'billing and tax records, but they will no longer identify you.\n\n' +
+            'This cannot be undone.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Delete', style: 'destructive', onPress: handleDeleteAccount },
+          ]
+        );
         break;
       default:
         console.log('Navigate to', id);
+    }
+  };
+
+  /*
+   * On success the account no longer exists, so the session is ended as soon
+   * as the person has read the result.
+   *
+   * On failure it is deliberately NOT ended. Signing someone out of an account
+   * that still exists would read as "deleted" when nothing was deleted, and
+   * that is the one wrong impression to leave here. They stay signed in and
+   * can try again; the server reports the real reason.
+   */
+  const handleDeleteAccount = async () => {
+    if (isDeleting) return;
+    setIsDeleting(true);
+    try {
+      const response = await customerApi.deleteAccount();
+      Alert.alert(
+        'Account deleted',
+        response?.message || 'Your account has been deleted.',
+        [{ text: 'OK', onPress: () => { void logout(); } }]
+      );
+    } catch (error: any) {
+      Alert.alert(
+        'Account not deleted',
+        error?.response?.data?.message ||
+          'We could not delete your account just now. Please check your connection and try again.'
+      );
+    } finally {
+      setIsDeleting(false);
     }
   };
 

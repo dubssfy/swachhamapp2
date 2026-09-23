@@ -38,7 +38,15 @@ export interface AuthResult {
   refreshToken: string;
 }
 
-function normalizeMobile(mobile: string): string {
+/**
+ * Reduces a typed Indian mobile number to the bare 10 digits stored in
+ * `users.mobile_number`, so "+91 98765 43210", "09876543210" and
+ * "9876543210" all resolve to the same account.
+ *
+ * Exported because the public deletion page accepts a number typed by hand and
+ * has to look it up the same way the rest of auth does.
+ */
+export function normalizeMobile(mobile: string): string {
   let normalized = mobile.replace(/\s+/g, '').replace(/-/g, '');
   if (normalized.startsWith('+91')) {
     normalized = normalized.substring(3);
@@ -144,7 +152,21 @@ async function deliverOtp(normalizedMobile: string, otp: string): Promise<void> 
   }
 }
 
-async function sendOtpInternal(mobile: string, purpose: 'REGISTRATION' | 'PASSWORD_RESET' | 'LOGIN_VERIFICATION', deviceId?: string): Promise<void> {
+/**
+ * What a one-time code was issued for.
+ *
+ * Every lookup in sendOtpInternal/verifyOtpInternal filters on this, so the
+ * value is what keeps the flows apart: a code sent to sign in cannot be spent
+ * to delete an account, and vice versa. Kept in step with the `purpose` enum
+ * on otp_verifications (migration 074 added ACCOUNT_DELETION).
+ */
+export type OtpPurpose =
+  | 'REGISTRATION'
+  | 'PASSWORD_RESET'
+  | 'LOGIN_VERIFICATION'
+  | 'ACCOUNT_DELETION';
+
+async function sendOtpInternal(mobile: string, purpose: OtpPurpose, deviceId?: string): Promise<void> {
   const normalizedMobile = normalizeMobile(mobile);
   
   const recentOtpResult = await query<{ created_at: Date }>(
@@ -178,7 +200,7 @@ async function sendOtpInternal(mobile: string, purpose: 'REGISTRATION' | 'PASSWO
   await deliverOtp(normalizedMobile, otp);
 }
 
-async function verifyOtpInternal(mobile: string, otp: string, purpose: 'REGISTRATION' | 'PASSWORD_RESET' | 'LOGIN_VERIFICATION', deviceId?: string): Promise<void> {
+async function verifyOtpInternal(mobile: string, otp: string, purpose: OtpPurpose, deviceId?: string): Promise<void> {
   const normalizedMobile = normalizeMobile(mobile);
 
   const otpResult = await query<{ id: string; otp_hash: string; expires_at: Date; attempts: number; device_id_hash: string | null }>(
@@ -586,6 +608,24 @@ export async function sendPasswordResetOtp(email: string): Promise<void> {
   }
   const normalizedMobile = normalizeMobile(userResult.rows[0].mobile_number);
   await sendOtpInternal(normalizedMobile, 'PASSWORD_RESET');
+}
+
+/**
+ * Sends the one-time code that authorises a deletion requested from the
+ * public web page.
+ *
+ * Deliberately says nothing about whether an account exists — the caller is
+ * an anonymous web form, and answering that question would turn this endpoint
+ * into a way of testing which numbers are registered. The route reports the
+ * same thing either way; only a real account receives a code.
+ */
+export async function sendAccountDeletionOtp(mobile: string): Promise<void> {
+  await sendOtpInternal(normalizeMobile(mobile), 'ACCOUNT_DELETION');
+}
+
+/** Verifies a deletion code. Throws if it is wrong, expired or spent. */
+export async function verifyAccountDeletionOtp(mobile: string, otp: string): Promise<void> {
+  await verifyOtpInternal(normalizeMobile(mobile), otp, 'ACCOUNT_DELETION');
 }
 
 export async function verifyPasswordResetOtp(mobile: string, otp: string): Promise<void> {

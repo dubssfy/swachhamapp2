@@ -349,6 +349,18 @@ export default function SuperAdminDashboardScreen({ navigation }: any) {
           <Ionicons name="chevron-forward" size={18} color={COLORS.TextSecondary} />
         </TouchableOpacity>
 
+        {/* Store Management: the Swachham locations the customer Store
+            Locator lists. Adding or deactivating one here changes what the
+            locator shows on its next fetch. */}
+        <TouchableOpacity
+          style={[styles.wideAction, { marginBottom: SPACING.sm }]}
+          onPress={() => navigation.navigate('SuperAdminStores')}
+        >
+          <Ionicons name="storefront-outline" size={18} color={COLORS.Primary} />
+          <Text style={styles.wideActionText}>Store Management</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.TextSecondary} />
+        </TouchableOpacity>
+
         {/* Purchase: the bills Swachham receives for running its own
             laundry, their payments and the supplier master. Company-wide —
             these are not a customer's costs. */}

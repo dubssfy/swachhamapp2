@@ -28,6 +28,7 @@ import { recordInvoice } from '../services/invoiceHistory.service';
 import { createCatalogueItem } from '../services/priceList.service';
 import { transactionSummary, saleDetail } from '../services/transactionSummary.service';
 import priceRoutes from './superAdminPrice.routes';
+import storeRoutes from './superAdminStores.routes';
 import requestRoutes from './superAdminRequest.routes';
 import accountRoutes from './superAdminAccounts.routes';
 import businessAccountRoutes from './superAdminBusinessAccount.routes';
@@ -84,6 +85,19 @@ router.use('/', requestRoutes);
  * disabling a user or editing a business master record Super Admin only.
  */
 router.use('/', accountRoutes);
+
+/* ---- Store management: the Swachham locations the Store Locator lists ----
+ *
+ * Mounted here for the same reason as the others: it inherits the
+ * `authenticate` + `authorize('SUPER_ADMIN')` pair, which is what makes
+ * adding, editing, deactivating and deleting a store Super Admin only —
+ * enforced on the server, so the screen being hidden in the app is
+ * presentation rather than protection.
+ *
+ * The public locator reads the same table through `store.service.ts` and
+ * filters on `is_active` and `deleted_at`, so a store saved here shows up
+ * there on the next fetch. There is no cache to clear and no second copy. */
+router.use('/', storeRoutes);
 
 /* ---- Business Account: one business's orders, invoices and payments ----
  *

@@ -260,6 +260,8 @@ import SuperAdminPurchaseFormScreen from '../screens/superadmin/SuperAdminPurcha
 import SuperAdminPurchaseDetailScreen from '../screens/superadmin/SuperAdminPurchaseDetailScreen';
 import SuperAdminSuppliersScreen from '../screens/superadmin/SuperAdminSuppliersScreen';
 import SuperAdminExpenseScreen from '../screens/superadmin/SuperAdminExpenseScreen';
+import SuperAdminStoresScreen from '../screens/superadmin/SuperAdminStoresScreen';
+import CustomerStoreLocatorScreen from '../screens/customer/CustomerStoreLocatorScreen';
 import SuperAdminExpenseFormScreen from '../screens/superadmin/SuperAdminExpenseFormScreen';
 import SuperAdminExpenseDetailScreen from '../screens/superadmin/SuperAdminExpenseDetailScreen';
 import SuperAdminExpenseCategoriesScreen from '../screens/superadmin/SuperAdminExpenseCategoriesScreen';
@@ -486,6 +488,14 @@ function CustomerStack() {
       <Stack.Screen
         name="AddressList"
         component={AddressListScreen}
+      />
+
+      {/* Store Locator, opened from Profile. Reads the public /api/stores,
+          so it shows whatever the Super Admin has left active — no list is
+          held in the app. */}
+      <Stack.Screen
+        name="CustomerStoreLocator"
+        component={CustomerStoreLocatorScreen}
       />
 
       <Stack.Screen
@@ -762,6 +772,9 @@ function SuperAdminStack() {
 
       {/* ---- Expense ---- */}
       <Stack.Screen name="SuperAdminExpense" component={SuperAdminExpenseScreen} />
+      {/* Store Management. Writes to the same `stores` table the public
+          Store Locator reads, so changes here reach it with no redeploy. */}
+      <Stack.Screen name="SuperAdminStores" component={SuperAdminStoresScreen} />
       <Stack.Screen name="SuperAdminExpenseForm" component={SuperAdminExpenseFormScreen} />
       <Stack.Screen name="SuperAdminExpenseDetail" component={SuperAdminExpenseDetailScreen} />
       <Stack.Screen name="SuperAdminExpenseCategories" component={SuperAdminExpenseCategoriesScreen} />

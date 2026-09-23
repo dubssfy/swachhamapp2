@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delete your Swachham account</title>
+<meta name="description" content="Request deletion of your Swachham Laundry account and personal data.">
+<style>
+  :root {
+    --bg: #f6f8f6;
+    --surface: #ffffff;
+    --text: #17241b;
+    --muted: #5b6b60;
+    --line: #dde5df;
+    --accent: #1f7a45;
+    --danger: #b3261e;
+    --ok: #1f7a45;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 64px;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 620px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 28px; }
+  h1 { font-size: 1.6rem; margin: 0 0 6px; }
+  .brand { font-weight: 700; color: var(--accent); letter-spacing: .02em; }
+  .sub { color: var(--muted); margin: 0; }
+  section {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 18px;
+  }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  ol, ul { margin: 0 0 0 20px; padding: 0; }
+  li { margin-bottom: 6px; }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  input {
+    width: 100%;
+    padding: 12px;
+    font-size: 1rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--text);
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .hint { color: var(--muted); font-size: .88rem; margin: 6px 0 0; }
+  button {
+    width: 100%;
+    margin-top: 14px;
+    padding: 13px;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #fff;
+    background: var(--danger);
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  button.secondary { background: var(--accent); }
+  .msg {
+    margin-top: 14px;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: .95rem;
+    display: none;
+  }
+  .msg.show { display: block; }
+  .msg.err { background: #fdecea; color: var(--danger); border: 1px solid #f5c6c2; }
+  .msg.ok  { background: #e8f4ec; color: var(--ok);     border: 1px solid #bfe0cc; }
+  .hidden { display: none; }
+  footer { text-align: center; color: var(--muted); font-size: .85rem; margin-top: 8px; }
+  a { color: var(--accent); }
+  code { background: #eef2ef; padding: 1px 5px; border-radius: 4px; font-size: .9em; }
+</style>
+</head>
+<body>
+<main>
+
+  <header>
+    <h1><span class="brand">Swachham</span> Laundry</h1>
+    <p class="sub">Request deletion of your account and personal data</p>
+  </header>
+
+  <section>
+    <h2>Before you start</h2>
+    <p style="margin-top:0">
+      This page deletes the Swachham customer account registered to a mobile
+      number. You do not need the app installed.
+    </p>
+    <p><strong>Submitting this form does not delete anything on its own.</strong>
+      We send a 6-digit code to the mobile number to confirm the request really
+      comes from the account holder. The deletion happens only after you enter
+      that code.</p>
+  </section>
+
+  <section>
+    <h2>What is deleted, and what is kept</h2>
+    <ul>
+      <li><strong>Deleted:</strong> your name, email address, mobile number,
+        password, profile photo, saved addresses, cart, notifications and
+        reviews.</li>
+      <li><strong>Kept:</strong> records of orders you have already placed.
+        We are required to retain billing and tax records, so those rows stay —
+        but they are detached from your identity and no longer name you.</li>
+      <li>If you have never placed an order, the account is removed outright
+        and nothing is kept.</li>
+    </ul>
+    <p class="hint">This cannot be undone. To use Swachham again afterwards you
+      would need to register a new account.</p>
+  </section>
+
+  <section id="step-request">
+    <h2>Step 1 — Request the code</h2>
+    <label for="mobile">Registered mobile number</label>
+    <input id="mobile" name="mobile" type="tel" inputmode="numeric"
+           autocomplete="tel" placeholder="10-digit mobile number"
+           aria-describedby="mobile-hint">
+    <p class="hint" id="mobile-hint">The number you sign in with. Indian mobile
+      numbers only; <code>+91</code> and spaces are fine.</p>
+    <button id="btn-request" class="secondary" type="button">Send confirmation code</button>
+    <div class="msg" id="msg-request" role="status" aria-live="polite"></div>
+  </section>
+
+  <section id="step-confirm" class="hidden">
+    <h2>Step 2 — Confirm the deletion</h2>
+    <label for="otp">6-digit code</label>
+    <input id="otp" name="otp" type="text" inputmode="numeric"
+           autocomplete="one-time-code" maxlength="6" placeholder="000000">
+    <p class="hint">Sent to the number you entered above. It expires shortly.</p>
+    <button id="btn-confirm" type="button">Delete my account permanently</button>
+    <div class="msg" id="msg-confirm" role="status" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>Need help?</h2>
+    <p style="margin:0">If you cannot receive the code — for example the number
+      is no longer in use — email
+      <a href="mailto:info@swachham.co.in">info@swachham.co.in</a> from the
+      address on the account and we will verify the request another way.
+      We aim to respond within 30 days.</p>
+  </section>
+
+  <footer>Swachham Laundry &middot; <a href="mailto:info@swachham.co.in">info@swachham.co.in</a></footer>
+
+</main>
+
+<script>
+/*
+ * The API this page talks to.
+ *
+ * Both endpoints are public by necessity: the page has to work with the app
+ * uninstalled, so there is no access token to send. They are rate limited
+ * server-side and neither reveals whether a number is registered.
+ */
+var API_BASE = 'https://swachhamapp2-production.up.railway.app';
+
+function $(id) { return document.getElementById(id); }
+
+function show(el, text, kind) {
+  el.textContent = text;
+  el.className = 'msg show ' + kind;
+}
+
+function busy(button, isBusy, idleLabel) {
+  button.disabled = isBusy;
+  button.textContent = isBusy ? 'Please wait…' : idleLabel;
+}
+
+async function post(path, payload) {
+  var response = await fetch(API_BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  var body = {};
+  try { body = await response.json(); } catch (e) { /* non-JSON error page */ }
+  if (!response.ok) {
+    throw new Error(body.message || ('Request failed (' + response.status + ')'));
+  }
+  return body;
+}
+
+$('btn-request').addEventListener('click', async function () {
+  var mobile = $('mobile').value.trim();
+  var out = $('msg-request');
+
+  if (!mobile) {
+    show(out, 'Enter the mobile number registered on the account.', 'err');
+    return;
+  }
+
+  busy(this, true, 'Send confirmation code');
+  try {
+    var result = await post('/api/account-deletion/request', { mobile: mobile });
+    show(out, result.message || 'If an account exists, a code has been sent.', 'ok');
+    $('step-confirm').classList.remove('hidden');
+    $('otp').focus();
+  } catch (error) {
+    show(out, error.message, 'err');
+  } finally {
+    busy(this, false, 'Send confirmation code');
+  }
+});
+
+$('btn-confirm').addEventListener('click', async function () {
+  var mobile = $('mobile').value.trim();
+  var otp = $('otp').value.trim();
+  var out = $('msg-confirm');
+
+  if (!/^[0-9]{6}$/.test(otp)) {
+    show(out, 'Enter the 6-digit code exactly as you received it.', 'err');
+    return;
+  }
+
+  busy(this, true, 'Delete my account permanently');
+  try {
+    var result = await post('/api/account-deletion/confirm', { mobile: mobile, otp: otp });
+    show(out, result.message || 'Your account has been deleted.', 'ok');
+    // The request is finished either way, so close the form rather than
+    // leaving a button that would now fail.
+    $('btn-confirm').classList.add('hidden');
+    $('step-request').classList.add('hidden');
+  } catch (error) {
+    show(out, error.message, 'err');
+    busy(this, false, 'Delete my account permanently');
+  }
+});
+</script>
+
+</body>
+</html>

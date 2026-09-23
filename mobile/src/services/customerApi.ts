@@ -25,6 +25,22 @@ export const customerApi = {
     const response = await apiClient.post<ApiResponse<User>>('/api/customers/setup', data);
     return response.data;
   },
+
+  /**
+   * Deletes the signed-in user's own account.
+   *
+   * `purged` says which of the two outcomes happened: true when the account
+   * row was removed outright, false when past orders had to stay on record and
+   * the personal data on the account was erased instead. `message` explains it
+   * in the words the person should see.
+   */
+  deleteAccount: async (): Promise<ApiResponse<{ purged: boolean; message: string }>> => {
+    const response = await apiClient.delete<ApiResponse<{ purged: boolean; message: string }>>(
+      '/api/customers/me',
+      { data: { confirm: 'DELETE' } }
+    );
+    return response.data;
+  },
 };
 
 export default customerApi;

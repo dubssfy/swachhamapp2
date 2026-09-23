@@ -386,6 +386,10 @@ export interface NearbyStore {
   latitude: number;
   longitude: number;
   contact_number: string | null;
+  email: string | null;
+  /** "HH:MM:SS", or null when the store has not published hours. */
+  opening_time: string | null;
+  closing_time: string | null;
   distance_km: number;
 }
 

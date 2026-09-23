@@ -49,11 +49,11 @@ module.exports = ({ config }) => {
     name: 'Swachham Business Demo',
     android: {
       ...config.android,
-      package: 'com.anonymous.swachham.demo',
+      package: 'com.swachham.app.demo',
     },
     ios: {
       ...config.ios,
-      bundleIdentifier: 'com.anonymous.swachham.demo',
+      bundleIdentifier: 'com.swachham.app.demo',
     },
   };
 };

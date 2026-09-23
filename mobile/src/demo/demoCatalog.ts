@@ -478,6 +478,9 @@ export const DEMO_NEARBY_STORES: NearbyStore[] = [
     latitude: 18.9339,
     longitude: 72.8356,
     contact_number: '02240012233',
+    email: null,
+    opening_time: '09:00:00',
+    closing_time: '20:00:00',
     distance_km: 1.2,
   },
   {
@@ -491,6 +494,9 @@ export const DEMO_NEARBY_STORES: NearbyStore[] = [
     latitude: 18.9949,
     longitude: 72.8258,
     contact_number: '02240012244',
+    email: null,
+    opening_time: '09:00:00',
+    closing_time: '20:00:00',
     distance_km: 4.7,
   },
   {
@@ -504,6 +510,9 @@ export const DEMO_NEARBY_STORES: NearbyStore[] = [
     latitude: 19.1136,
     longitude: 72.8697,
     contact_number: '02240012255',
+    email: null,
+    opening_time: '09:00:00',
+    closing_time: '20:00:00',
     distance_km: 12.4,
   },
 ];

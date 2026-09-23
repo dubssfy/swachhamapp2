@@ -17,6 +17,8 @@ import serviceRoutes from './routes/service.routes';
 import addressRoutes from './routes/address.routes';
 import orderRoutes from './routes/order.routes';
 import customerRoutes from './routes/customer.routes';
+import storesRoutes from './routes/stores.routes';
+import accountDeletionRoutes from './routes/accountDeletion.routes';
 import businessRoutes from './routes/business.routes';
 import businessOrderingRoutes from './routes/businessOrdering.routes';
 import businessPublicRoutes from './routes/businessPublic.routes';
@@ -124,6 +126,12 @@ app.use('/api/services', serviceRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/customers', customerRoutes);
+// Public by design: a store locator has to work before anyone signs in.
+app.use('/api/stores', storesRoutes);
+// Public by design: the deletion page Google Play requires has to work with
+// the app uninstalled, so there is no token to present. Rate limited and
+// OTP-verified inside the router.
+app.use('/api/account-deletion', accountDeletionRoutes);
 app.use('/api/businesses/public', businessPublicRoutes);
 app.use('/api/businesses', businessOrderingRoutes);
 app.use('/api/businesses', businessRoutes);

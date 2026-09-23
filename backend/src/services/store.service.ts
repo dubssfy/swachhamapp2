@@ -18,6 +18,10 @@ export interface NearbyStore {
   latitude: number;
   longitude: number;
   contact_number: string | null;
+  email: string | null;
+  /** "HH:MM:SS" or null when the store has not published hours. */
+  opening_time: string | null;
+  closing_time: string | null;
   /** Great-circle distance from the requested point, in kilometres. */
   distance_km: number;
 }
@@ -52,7 +56,8 @@ async function getNearbyStores(params: {
 
   const result = await query<NearbyStore>(
     `SELECT id, name, address, city, district, state, pincode,
-            latitude, longitude, contact_number,
+            latitude, longitude, contact_number, email,
+            opening_time, closing_time,
             ROUND(
               6371 * ACOS(
                 LEAST(1, GREATEST(-1,
@@ -64,6 +69,7 @@ async function getNearbyStores(params: {
             ) AS distance_km
        FROM stores
       WHERE is_active = true
+        AND deleted_at IS NULL
      HAVING distance_km <= ?
       ORDER BY distance_km ASC
       LIMIT ${MAX_RESULTS}`,
@@ -78,4 +84,34 @@ async function getNearbyStores(params: {
   }));
 }
 
-export { getNearbyStores, DEFAULT_RADIUS_KM };
+
+/**
+ * Every store the public may see, nearest-first only when a point is known.
+ *
+ * The locator needs this because location is optional: the permission may be
+ * refused, or the fix may not have arrived yet, and a locator that shows
+ * nothing until GPS succeeds looks broken. Without coordinates the same rows
+ * come back ordered by name and with no distance.
+ *
+ * Same visibility rule as `getNearbyStores`: active, and not soft-deleted.
+ */
+async function listActiveStores(): Promise<Omit<NearbyStore, 'distance_km'>[]> {
+  const result = await query<NearbyStore>(
+    `SELECT id, name, address, city, district, state, pincode,
+            latitude, longitude, contact_number, email,
+            opening_time, closing_time
+       FROM stores
+      WHERE is_active = true
+        AND deleted_at IS NULL
+      ORDER BY name ASC
+      LIMIT ${MAX_RESULTS}`
+  );
+
+  return result.rows.map((store) => ({
+    ...store,
+    latitude: Number(store.latitude),
+    longitude: Number(store.longitude),
+  }));
+}
+
+export { getNearbyStores, listActiveStores, DEFAULT_RADIUS_KM };

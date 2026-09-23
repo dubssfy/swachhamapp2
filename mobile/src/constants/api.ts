@@ -20,12 +20,46 @@ function resolveDevHost(): string | null {
   return host;
 }
 
+// Loopback and LAN addresses. Cleartext to one of these is a developer talking
+// to their own machine; cleartext to anything else is credentials crossing the
+// open internet.
+const PRIVATE_HOST =
+  /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
+
+function hostOf(url: string): string {
+  return url.replace(/^https?:\/\//, '').split(/[:/]/)[0];
+}
+
+// EXPO_PUBLIC_* values are baked in when the bundle is built, so an empty one
+// in a release build means the EAS profile forgot it. There is nothing sensible
+// to fall back to at that point: the emulator address below reaches a real
+// phone's own loopback, so every request fails and the app looks broken with no
+// clue why. Fail here instead, on the first launch of the first test install.
+function resolveReleaseApiBaseUrl(): string {
+  if (!ENV_API_BASE_URL) {
+    throw new Error(
+      'EXPO_PUBLIC_API_BASE_URL is not set. Every release profile in eas.json ' +
+        'must define it. Refusing to fall back to the emulator address, which ' +
+        'cannot work on a real device.'
+    );
+  }
+  if (!ENV_API_BASE_URL.startsWith('https://') && !PRIVATE_HOST.test(hostOf(ENV_API_BASE_URL))) {
+    throw new Error(
+      `EXPO_PUBLIC_API_BASE_URL must use https:// for a public host, got ` +
+        `"${ENV_API_BASE_URL}". Plain http is only allowed for a LAN or ` +
+        'loopback address in an internal build.'
+    );
+  }
+  return ENV_API_BASE_URL;
+}
+
 function resolveApiBaseUrl(): string {
   if (__DEV__) {
     const host = resolveDevHost();
     if (host) return `http://${host}:${BACKEND_PORT}`;
+    return ENV_API_BASE_URL || `http://10.0.2.2:${BACKEND_PORT}`;
   }
-  return ENV_API_BASE_URL || 'http://10.0.2.2:5000';
+  return resolveReleaseApiBaseUrl();
 }
 
 export const API_BASE_URL = resolveApiBaseUrl();

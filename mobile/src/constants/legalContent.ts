@@ -74,6 +74,38 @@ export const PRIVACY_POLICY: LegalDocument = {
     { type: "paragraph", text: "Certain information may be retained where required by applicable law, regulatory obligations, taxation requirements, audit requirements, fraud prevention purposes, dispute resolution processes, or other legitimate legal obligations. Such information will be retained only for the period required and will be securely deleted thereafter." },
     { type: "paragraph", text: "For account deletion or personal data deletion requests, please contact:" },
     { type: "paragraph", text: "Email: info@swachham.co.in" },
+
+    /* ------------------------------------------------------------------
+     * ADDED, NOT TRANSCRIBED.
+     *
+     * Everything else in this file is verbatim from the source Word
+     * document. The four entries below are NOT: they were added because
+     * Google Play requires the privacy policy to describe the account
+     * deletion routes the app actually offers, and at the time of writing
+     * the source document predates both of them — it names only the
+     * support-email route.
+     *
+     * They describe what the code does and nothing more. The behaviour
+     * they describe is implemented in
+     * `backend/src/services/accountDeletion.service.ts`: an account with no
+     * orders is deleted outright, and one with orders has its personal
+     * fields overwritten while the order rows stay, because
+     * `orders.user_id` is ON DELETE RESTRICT and the rows carry the billing
+     * record.
+     *
+     * NO RETENTION PERIOD IS STATED HERE deliberately. The paragraph above
+     * already commits to "only for the period required", and naming a
+     * number would be inventing a legal undertaking. If a definite period
+     * is wanted, it belongs in the source document, decided by whoever owns
+     * the tax position.
+     *
+     * WHEN THE SOURCE DOCUMENT IS NEXT RE-TRANSCRIBED, fold these in or
+     * replace them with the company's own wording.
+     * ------------------------------------------------------------------ */
+    { type: "paragraph", text: "You can also delete your account yourself, without contacting us. In the app, open Profile and choose \"Delete account\". If you no longer have the app installed, use the account deletion page on our website; it asks only for your registered mobile number." },
+    { type: "paragraph", text: "Both routes confirm the request before anything is deleted. The website route sends a one-time code to the registered mobile number, and the deletion is carried out only after that code is entered, so that an account cannot be deleted by someone who merely knows the number." },
+    { type: "paragraph", text: "When the account is deleted, your name, email address, mobile number, password, profile photograph, saved addresses, cart, notifications and reviews are removed. If you have never placed an order, the account record itself is removed and nothing is kept." },
+    { type: "paragraph", text: "If you have placed orders, the records of those orders are kept, because we are required to retain billing and taxation records. Those records are detached from your identity: the personal details on the account are erased, and what remains does not name you." },
     { type: "heading", text: "DELIVERY PARTNER APP:" },
     { type: "subheading", text: "Data usage" },
     { type: "paragraph", text: "This application is intended exclusively for authorized delivery partners, employees, and operational personnel of SWACHHAM. and is not intended for use by the general public." },
