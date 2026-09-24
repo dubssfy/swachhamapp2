@@ -37,6 +37,20 @@ interface AppConfig {
   JWT_REFRESH_EXPIRES_IN: string;
   PORT: number;
   NODE_ENV: string;
+  /**
+   * The browser origin(s) allowed to call this API, comma-separated.
+   *
+   * A LIST, NOT ONE VALUE. There is more than one legitimate browser client:
+   * a developer on localhost, and the hosted legal pages that Google Play
+   * requires at a public HTTPS URL — `web/delete-account` calls
+   * `/api/account-deletion/*` straight from the page. With a single origin
+   * here, whichever one is not configured fails its CORS preflight, and a
+   * blocked preflight surfaces in the page as nothing at all: no error, no
+   * response, a button that appears to do nothing.
+   *
+   * Whitespace around entries is ignored, so the value can be written
+   * readably in the Railway dashboard.
+   */
   CLIENT_URL: string;
   OTP_PROVIDER: string;
   OTP_API_KEY: string;
@@ -208,6 +222,27 @@ interface AppConfig {
   WHATSAPP_MANAGER_NUMBER: string;
   WHATSAPP_SUPER_ADMIN_NUMBER: string;
 
+  // --- Google Play reviewer access ---
+  //
+  // A SCOPED, DELIBERATE EXEMPTION, AND THE ONLY ONE. Every role in this app
+  // signs in with an OTP sent to an Indian mobile; a Play reviewer cannot
+  // receive that message, and "we could not access the app" is a rejection.
+  // See PLAY_RELEASE.md section 3.
+  //
+  // WHAT IT DOES: for ONE nominated number, the code that would have been
+  // random is the fixed one below instead. Nothing else changes — the code is
+  // still bcrypt-hashed into `otp_verifications`, still expires, still counts
+  // failed attempts, still obeys the resend cooldown. There is no branch in
+  // the verification path at all, so there is no path that skips the hash
+  // comparison.
+  //
+  // OFF UNLESS BOTH ARE SET. Empty is the default and the shipped state; with
+  // either one blank the exemption does not exist. Removing reviewer access
+  // after the review is unsetting one variable in Railway — no deploy, no code
+  // change. Set them in the Railway dashboard only; never commit a value.
+  PLAY_REVIEWER_MOBILE: string;
+  PLAY_REVIEWER_OTP: string;
+
   // --- The processing facility ---
   //
   // Where finished laundry is collected from for delivery. A DELIVERY job is
@@ -375,6 +410,11 @@ const config: AppConfig = {
   // Optional: used only when no Manager / Super Admin account has one.
   WHATSAPP_MANAGER_NUMBER: optionalEnv('WHATSAPP_MANAGER_NUMBER', ''),
   WHATSAPP_SUPER_ADMIN_NUMBER: optionalEnv('WHATSAPP_SUPER_ADMIN_NUMBER', ''),
+
+  // Both empty by default: the exemption ships OFF and is switched on only by
+  // setting these in the deployment environment. See the interface above.
+  PLAY_REVIEWER_MOBILE: optionalEnv('PLAY_REVIEWER_MOBILE', ''),
+  PLAY_REVIEWER_OTP: optionalEnv('PLAY_REVIEWER_OTP', ''),
 
   // The Swachham processing facility in Dapoli. Defaults are the real
   // coordinates, so a deployment that configures nothing still dispatches

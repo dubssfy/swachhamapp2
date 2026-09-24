@@ -60,7 +60,42 @@ if (Number.isFinite(trustProxyHops) && trustProxyHops > 0) {
 
 // Middleware
 app.use(helmet());
-app.use(cors({ origin: config.CLIENT_URL || '*' }));
+/*
+ * CORS — a LIST of allowed browser origins, not one.
+ *
+ * `CLIENT_URL` used to be passed to `cors()` as a single string, which allowed
+ * exactly one origin. That is not enough: the hosted legal pages Google Play
+ * requires (`web/privacy-policy`, `web/delete-account`) are served from a
+ * different origin to any dev client, and the deletion page calls
+ * `/api/account-deletion/*` directly from the browser. Whichever origin was
+ * not the configured one failed its preflight — and a failed preflight shows
+ * the user nothing whatsoever: no error, no response, a button that looks
+ * broken. Accepting a comma-separated list lets both be named.
+ *
+ * UNSET STILL MEANS `*`, exactly as before, so a local checkout with no
+ * CLIENT_URL behaves the way it always has.
+ *
+ * A request with no Origin header (curl, a health check, a mobile app — React
+ * Native does not send one) is allowed through: CORS is a browser
+ * same-origin-policy mechanism and refusing those would break every
+ * non-browser caller while protecting nobody.
+ */
+const allowedOrigins = config.CLIENT_URL.split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.length === 0) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      // Refused as a CORS failure, not as a 500: the browser blocks the read,
+      // and the log says which origin asked so a missing entry is diagnosable.
+      logger.warn(`[CORS] Blocked origin ${origin}. Add it to CLIENT_URL to allow it.`);
+      return callback(null, false);
+    },
+  })
+);
 /**
  * JSON body parsing.
  *

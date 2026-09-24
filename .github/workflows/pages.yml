@@ -1,0 +1,66 @@
+# Publishes the legal pages in `web/` to GitHub Pages.
+#
+# WHY A WORKFLOW AND NOT A BRANCH SETTING. GitHub Pages can serve a repo's
+# root or its `/docs` folder and nothing else, but these pages live in `web/`
+# and moving them would separate them from `build-legal-pages.js`, which
+# renders two of them from the app's own `legalContent.ts`. Uploading `web/`
+# as the artifact keeps the source where it belongs and still serves the pages
+# at the root of the site.
+#
+# Google Play needs two of these at a public HTTPS URL:
+#   <pages-url>/privacy-policy/
+#   <pages-url>/delete-account/
+#
+# ONE-TIME SETUP: repo Settings -> Pages -> Source: "GitHub Actions".
+# Until that is done this workflow runs and fails at the deploy step.
+name: Deploy legal pages
+
+on:
+  push:
+    branches: [main]
+    # Only when the pages themselves change, so ordinary backend and app
+    # commits do not queue a deployment that would publish nothing new.
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  # So the pages can be republished without an empty commit.
+  workflow_dispatch:
+
+# Read the repo, and mint the token the deploy step exchanges for Pages access.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deployments race; let a newer push supersede a queued one but
+# not cancel a run that is already publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The policy and terms pages are GENERATED from the app's own copy, so
+      # they are rebuilt here rather than trusted to be current. If a commit
+      # changed legalContent.ts without re-running the script, this publishes
+      # the correct text anyway instead of silently serving a stale policy --
+      # a mismatch between the hosted policy and the in-app one is exactly
+      # what a Data Safety review looks for.
+      - name: Rebuild the generated pages
+        run: node web/build-legal-pages.js
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

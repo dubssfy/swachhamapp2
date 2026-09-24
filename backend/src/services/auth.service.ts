@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { query } from '../config/database';
+import { config } from '../config/env';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -166,6 +167,65 @@ export type OtpPurpose =
   | 'LOGIN_VERIFICATION'
   | 'ACCOUNT_DELETION';
 
+/**
+ * The Google Play reviewer's fixed code, or null for everyone else.
+ *
+ * WHY THIS EXISTS. Every role here signs in with an OTP sent to an Indian
+ * mobile. A Play reviewer cannot receive one, so without this they cannot open
+ * the app at all and the submission is rejected. PLAY_RELEASE.md section 3 sets
+ * out the options; this is the scoped account, approved explicitly.
+ *
+ * WHY IT IS PLACED HERE, AT GENERATION, AND NOT AT VERIFICATION.
+ *
+ * This is the whole safety argument, so it is worth stating plainly. The
+ * obvious implementation is to let a known code through in
+ * `verifyOtpInternal` — and that would add a branch to the code path that
+ * decides whether a caller is authenticated, which is the one path in this
+ * service that must have no exceptions in it. Instead this only decides WHAT
+ * CODE IS ISSUED. The reviewer's OTP is then hashed, stored, expired,
+ * rate-limited, attempt-capped and compared by exactly the same code as
+ * everyone else's, because it IS everyone else's code path -- untouched.
+ *
+ * What an attacker gains from this function is therefore bounded by what they
+ * gain from knowing one account's OTP: nothing about any other number, and
+ * nothing that survives unsetting the variable.
+ *
+ * FAILS CLOSED. Null unless BOTH variables are set AND the number matches
+ * exactly after normalisation. The shipped default is both empty, so the
+ * exemption does not exist in a default deployment.
+ */
+function reviewerOtpFor(normalizedMobile: string): string | null {
+  const reviewerMobile = config.PLAY_REVIEWER_MOBILE.trim();
+  const reviewerOtp = config.PLAY_REVIEWER_OTP.trim();
+  if (!reviewerMobile || !reviewerOtp) return null;
+
+  // Normalised on both sides: the reviewer types the number in whatever form
+  // the sign-in screen accepts, and the variable is compared as the same
+  // digits rather than as the string someone happened to paste into Railway.
+  if (normalizeMobile(reviewerMobile) !== normalizedMobile) return null;
+
+  /*
+   * The client's OTP box takes six digits. A value of any other shape would
+   * be issued, stored and then be impossible to type, which looks to a
+   * reviewer exactly like a broken login -- the failure this exists to
+   * prevent. Refusing it here falls back to a random code and says why.
+   */
+  if (!/^\d{6}$/.test(reviewerOtp)) {
+    logger.error(
+      '[Auth] PLAY_REVIEWER_OTP is set but is not six digits; ignoring it and ' +
+        'issuing a normal random OTP. Reviewer sign-in will NOT work until it is fixed.'
+    );
+    return null;
+  }
+
+  // Audited on every use, and never with the code in it.
+  logger.warn(
+    `[Auth] Issuing the fixed Play-reviewer OTP for ${normalizedMobile}. ` +
+      'Unset PLAY_REVIEWER_OTP once the review is complete.'
+  );
+  return reviewerOtp;
+}
+
 async function sendOtpInternal(mobile: string, purpose: OtpPurpose, deviceId?: string): Promise<void> {
   const normalizedMobile = normalizeMobile(mobile);
   
@@ -181,7 +241,7 @@ async function sendOtpInternal(mobile: string, purpose: OtpPurpose, deviceId?: s
     }
   }
 
-  const otp = generateNumericOtp(6);
+  const otp = reviewerOtpFor(normalizedMobile) ?? generateNumericOtp(6);
   const otpHash = await bcrypt.hash(otp, SALT_ROUNDS);
   const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
