@@ -19,14 +19,22 @@ export interface ServiceAreaResult {
 }
 
 export const locationApi = {
+  /*
+   * `accessCode` is the Google Play reviewer's way past the service-area
+   * screen, which runs before any sign-in and would otherwise stop a reviewer
+   * outside Ratnagiri from ever reaching the app. It is only ever sent when
+   * somebody typed one, the server decides whether it is right, and it grants
+   * browsing only -- placing an order is still checked against coordinates.
+   */
   checkServiceArea: async (
     latitude: number,
     longitude: number,
-    accuracy?: number
+    accuracy?: number,
+    accessCode?: string
   ): Promise<ApiResponse<ServiceAreaResult>> => {
     const response = await apiClient.post<ApiResponse<ServiceAreaResult>>(
       '/api/location/check-service-area',
-      { latitude, longitude, accuracy },
+      { latitude, longitude, accuracy, ...(accessCode ? { accessCode } : {}) },
       // A location check should not hang the order flow.
       { timeout: 15000 }
     );

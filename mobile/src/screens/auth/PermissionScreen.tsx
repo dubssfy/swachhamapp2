@@ -10,6 +10,7 @@ import {
   Alert,
   Linking,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 
 import { Ionicons } from '@expo/vector-icons';
@@ -85,11 +86,25 @@ export default function PermissionScreen() {
     areaStatus === 'verified';
 
 
+  /*
+   * THE GOOGLE PLAY REVIEWER'S ACCESS CODE.
+   *
+   * This screen runs before any sign-in, so a reviewer outside Ratnagiri is
+   * stopped here and never reaches the login. The field below is how they get
+   * past it; the SERVER decides whether the code is right, and it grants
+   * browsing only -- placing an order is still checked against coordinates.
+   *
+   * It is rendered only on the blocked screen, which nobody inside the
+   * service area ever sees.
+   */
+  const [accessCode, setAccessCode] = useState('');
+  const [codeBusy, setCodeBusy] = useState(false);
+
   const runLocationCheck =
-    async (force = false) => {
+    async (force = false, accessCode?: string) => {
 
       const result =
-        await verifyArea({ force });
+        await verifyArea({ force, accessCode });
 
       setPermissions(prev => ({
         ...prev,
@@ -775,6 +790,44 @@ export default function PermissionScreen() {
 
             </TouchableOpacity>
 
+            {/* ACCESS CODE — the Google Play reviewer's way past this screen.
+                Rendered only on the blocked state, which nobody inside the
+                service area ever reaches. The SERVER decides whether the code
+                is right; a wrong one leaves the screen exactly as it is. */}
+            <View style={styles.accessCodeRow}>
+              <TextInput
+                style={styles.accessCodeInput}
+                value={accessCode}
+                onChangeText={setAccessCode}
+                placeholder="Access code (if you have one)"
+                placeholderTextColor={COLORS.TextSecondary}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                editable={!codeBusy}
+                accessibilityLabel="Reviewer access code"
+              />
+              <TouchableOpacity
+                style={[
+                  styles.accessCodeButton,
+                  (!accessCode.trim() || codeBusy) && styles.accessCodeButtonDisabled,
+                ]}
+                disabled={!accessCode.trim() || codeBusy}
+                onPress={async () => {
+                  setCodeBusy(true);
+                  try {
+                    await runLocationCheck(true, accessCode.trim());
+                  } finally {
+                    setCodeBusy(false);
+                  }
+                }}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.accessCodeButtonText}>
+                  {codeBusy ? '...' : 'GO'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
           </View>
 
         ) : null}
@@ -1243,6 +1296,40 @@ const styles =
         BORDER_RADIUS.sm,
       backgroundColor:
         COLORS.Error,
+    },
+    /* The reviewer access code row. Deliberately quieter than Retry above it:
+       Retry is what an ordinary blocked user wants, and this is for the one
+       person in the world who was given a code. */
+    accessCodeRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: SPACING.xs,
+      marginTop: SPACING.sm,
+    },
+    accessCodeInput: {
+      flex: 1,
+      minHeight: 44,
+      paddingHorizontal: SPACING.sm,
+      borderRadius: BORDER_RADIUS.sm,
+      borderWidth: 1,
+      borderColor: COLORS.Border,
+      color: COLORS.TextPrimary,
+      backgroundColor: COLORS.Surface,
+    },
+    accessCodeButton: {
+      minHeight: 44,
+      paddingHorizontal: SPACING.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: BORDER_RADIUS.sm,
+      backgroundColor: COLORS.Primary,
+    },
+    accessCodeButtonDisabled: {
+      opacity: 0.5,
+    },
+    accessCodeButtonText: {
+      color: COLORS.Surface,
+      fontWeight: '700',
     },
 
 

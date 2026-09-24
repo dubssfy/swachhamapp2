@@ -42,7 +42,9 @@ interface LocationGateState extends LocationGateResult {
    * A verdict already reached this app session is reused unless `force` is
    * passed, which is what the Retry button uses.
    */
-  verify: (options?: { force?: boolean }) => Promise<LocationGateResult>;
+  /* `accessCode` is the Play reviewer's code for the blocked screen; see
+     locationApi.checkServiceArea. Absent for every ordinary check. */
+  verify: (options?: { force?: boolean; accessCode?: string }) => Promise<LocationGateResult>;
   isVerified: () => boolean;
   reset: () => void;
 }
@@ -133,7 +135,7 @@ export const useLocationGateStore = create<LocationGateState>((set, get) => ({
       return next;
     };
 
-    if (!options.force && get().status === 'verified') {
+    if (!options.accessCode && !options.force && get().status === 'verified') {
       const { status, message, district } = get();
       return { status, message, district };
     }
@@ -192,7 +194,8 @@ export const useLocationGateStore = create<LocationGateState>((set, get) => ({
         const response = await locationApi.checkServiceArea(
           latitude,
           longitude,
-          typeof accuracy === 'number' ? accuracy : undefined
+          typeof accuracy === 'number' ? accuracy : undefined,
+          options.accessCode
         );
         const result = response.data;
 

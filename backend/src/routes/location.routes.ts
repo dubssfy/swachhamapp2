@@ -2,6 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { checkServiceArea, boundaryInfo } from '../services/serviceArea.service';
 import { sendSuccess } from '../utils/response';
 import { AppError } from '../utils/appError';
+import { config } from '../config/env';
+import { logger } from '../utils/logger';
 
 /**
  * Service-area endpoints.
@@ -37,6 +39,41 @@ router.post(
         longitude,
         Number.isFinite(accuracy as number) ? (accuracy as number) : undefined
       );
+
+      /*
+       * THE GOOGLE PLAY REVIEWER'S WAY IN, AND THE ONLY ONE.
+       *
+       * Checked AFTER the real verdict and only when that verdict was no, so
+       * this cannot affect anybody the boundary already admits -- a caller
+       * inside Ratnagiri is answered by the boundary, never by this.
+       *
+       * IT DOES NOT DISABLE THE SERVICE AREA. The district test above is
+       * untouched, `requireServiceArea` still guards order placement from the
+       * coordinates themselves, and a caller with the code can browse and
+       * nothing more. The reviewer needs to see the app, not to place an
+       * order into a district Swachham does not serve.
+       *
+       * OFF UNLESS THE VARIABLE IS SET, and compared only when the caller
+       * actually sent a code, so an ordinary refusal never touches it.
+       */
+      const expectedCode = config.PLAY_REVIEWER_ACCESS_CODE.trim();
+      const suppliedCode = String(req.body?.accessCode ?? '').trim();
+
+      if (!result.allowed && expectedCode && suppliedCode) {
+        if (suppliedCode === expectedCode) {
+          logger.warn(
+            `[ServiceArea] Play-reviewer access code accepted for ${latitude},${longitude}. ` +
+              'Expected while the app is on the Play Store.'
+          );
+          return sendSuccess(
+            res,
+            { ...result, allowed: true, district: result.district },
+            'Reviewer access granted.'
+          );
+        }
+        // Logged so a reviewer typing it wrongly is visible rather than silent.
+        logger.warn('[ServiceArea] A reviewer access code was supplied and did not match.');
+      }
 
       return sendSuccess(
         res,

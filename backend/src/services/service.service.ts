@@ -176,10 +176,21 @@ async function getCategories(scope?: string): Promise<Category[]> {
             c.display_order,
             COUNT(DISTINCT s.id) AS item_count
        FROM service_categories c
+       /*
+        * COUNTED ON THE SAME RULE THE ITEM LISTING FILTERS BY, so a category's
+        * tile and the screen behind it agree. Without the price condition here
+        * a category of entirely unpriced hotel lines reported a healthy item
+        * count and then opened empty.
+        */
        LEFT JOIN services s
               ON s.category_id = c.id AND s.is_active = true AND s.kind = 'ITEM'
+             AND EXISTS (SELECT 1 FROM customer_price_list cp
+                          WHERE cp.item_id = s.id AND cp.is_active = true)
       WHERE ${conditions.join(' AND ')}
       GROUP BY c.id
+      /* And a category left with nothing in it is not shown. An empty tile is
+         a dead end for the customer and there is nothing behind it to reach. */
+      HAVING item_count > 0
       ORDER BY c.display_order ASC, c.name ASC`,
     values
   );
@@ -194,6 +205,27 @@ async function getServices(
 
   const conditions = [`s.is_active = true`, `s.kind = 'ITEM'`];
   const values: unknown[] = [];
+
+  /*
+   * AN ITEM WITH NO CUSTOMER PRICE IS NOT LISTED.
+   *
+   * `PRICE_SELECT` falls back to `s.base_price`, which -- as the header of
+   * this file says -- holds 0.00 / 1.00 placeholders and was never a price
+   * list. So an unpriced item did not go missing, it appeared at zero or at
+   * one rupee, which reads to a customer as a broken catalogue and cannot be
+   * ordered at a sane figure anyway.
+   *
+   * The catalogue holds 275 items and 83 of them carry a customer price; the
+   * rest are hotel lines -- room linen, uniforms, banquet F&B -- priced per
+   * business in `business_price_list` and never intended for retail. Filtering
+   * on the price rather than on the category is what keeps this correct as
+   * prices are added: an item becomes visible the moment it is given one, with
+   * no second list to maintain.
+   */
+  conditions.push(
+    `EXISTS (SELECT 1 FROM customer_price_list cp
+              WHERE cp.item_id = s.id AND cp.is_active = true)`
+  );
 
   if (resolved) {
     conditions.push(`s.scope = ?`);
@@ -254,6 +286,27 @@ async function searchServices(params: SearchServicesParams): Promise<Service[]> 
 
   const conditions = [`s.is_active = true`, `s.kind = 'ITEM'`];
   const values: unknown[] = [];
+
+  /*
+   * AN ITEM WITH NO CUSTOMER PRICE IS NOT LISTED.
+   *
+   * `PRICE_SELECT` falls back to `s.base_price`, which -- as the header of
+   * this file says -- holds 0.00 / 1.00 placeholders and was never a price
+   * list. So an unpriced item did not go missing, it appeared at zero or at
+   * one rupee, which reads to a customer as a broken catalogue and cannot be
+   * ordered at a sane figure anyway.
+   *
+   * The catalogue holds 275 items and 83 of them carry a customer price; the
+   * rest are hotel lines -- room linen, uniforms, banquet F&B -- priced per
+   * business in `business_price_list` and never intended for retail. Filtering
+   * on the price rather than on the category is what keeps this correct as
+   * prices are added: an item becomes visible the moment it is given one, with
+   * no second list to maintain.
+   */
+  conditions.push(
+    `EXISTS (SELECT 1 FROM customer_price_list cp
+              WHERE cp.item_id = s.id AND cp.is_active = true)`
+  );
 
   if (resolved) {
     conditions.push(`s.scope = ?`);
@@ -396,10 +449,48 @@ async function getItemServiceOptions(itemId: string): Promise<ItemServiceOption[
                 LIMIT 1)
             ) AS price
        FROM services st
-       JOIN item_service_types m ON m.service_id = st.id
-      WHERE m.item_id = ? AND st.kind = 'SERVICE_TYPE' AND st.is_active = true
+      WHERE st.kind = 'SERVICE_TYPE' AND st.is_active = true
+        AND (
+          /*
+           * MAPPED, OR PRICED. Either is enough to offer the service.
+           *
+           * item_service_types was the only source and it disagrees with the
+           * price list on the three commonest items in the catalogue: Jeans,
+           * Shirt and T shirt are mapped to Wash & Iron alone, which has no
+           * price, while the Dry Clean and Wash & Fold prices they DO carry
+           * were never mapped. The screen therefore offered one unpriced
+           * choice and hid two priced ones.
+           *
+           * Giving an item a price for a service is an explicit decision to
+           * sell that service, so a price is treated as sufficient. The
+           * mapping still stands on its own for an item priced by a fallback
+           * row rather than per service.
+           */
+          EXISTS (SELECT 1 FROM item_service_types m
+                   WHERE m.item_id = ? AND m.service_id = st.id)
+          OR EXISTS (SELECT 1 FROM customer_price_list cp
+                      WHERE cp.item_id = ? AND cp.is_active = true
+                        AND cp.service_id = st.id)
+        )
+      /*
+       * A SERVICE WITH NO PRICE IS NOT OFFERED.
+       *
+       * item_service_types says which services an item COULD have; the price
+       * list says which it actually has. Only two services are priced today --
+       * Wash & Fold and Dry Clean -- and there are no service_id IS NULL
+       * fallback rows at all, so Wash & Iron resolved to null for every item
+       * and was still returned. The screen then offered it as a choice that
+       * shows no price and cannot be costed, which is what "Wash & Iron is not
+       * working" was.
+       *
+       * Filtering on the resolved price rather than on a list of service codes
+       * means Wash & Iron appears by itself the moment it is priced, with
+       * nothing here to change.
+       */
+      HAVING price IS NOT NULL
       ORDER BY st.display_order ASC, st.name ASC`,
-    [itemId, itemId, itemId]
+    // price-for-this-service, price-fallback, mapped, priced
+    [itemId, itemId, itemId, itemId]
   );
   return result.rows.map((row) => ({
     service_id: String(row.service_id),

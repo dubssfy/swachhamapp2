@@ -251,6 +251,28 @@ interface AppConfig {
   // Reviewing both takes two: one that is a business contact, one that is not.
   PLAY_REVIEWER_MOBILE: string;
   PLAY_REVIEWER_OTP: string;
+  /**
+   * Lets a reviewer past the Ratnagiri service-area screen.
+   *
+   * WHY IT IS NEEDED. The location check runs when the app opens, BEFORE any
+   * sign-in, so it stops a Google reviewer before they can reach the accounts
+   * above. Without this the reviewer credentials are unreachable and the
+   * submission is rejected for "we could not access the app".
+   *
+   * WHAT IT DOES NOT DO. It does not turn the service area off, for the
+   * reviewer or for anyone. It admits the holder of this one secret and
+   * nobody else, and it only permits BROWSING: placing an order still runs
+   * `requireServiceArea`, which computes from coordinates the client cannot
+   * forge. So the worst a leak can do is let a stranger look at the
+   * catalogue.
+   *
+   * KEEP IT SET while the app is published, for the same reason as the OTP
+   * above: Google re-reviews updates. Rotate it if exposed; do not disable it.
+   *
+   * Blank by default, which is the shipped state and means the mechanism does
+   * not exist.
+   */
+  PLAY_REVIEWER_ACCESS_CODE: string;
 
   // --- The processing facility ---
   //
@@ -424,6 +446,7 @@ const config: AppConfig = {
   // setting these in the deployment environment. See the interface above.
   PLAY_REVIEWER_MOBILE: optionalEnv('PLAY_REVIEWER_MOBILE', ''),
   PLAY_REVIEWER_OTP: optionalEnv('PLAY_REVIEWER_OTP', ''),
+  PLAY_REVIEWER_ACCESS_CODE: optionalEnv('PLAY_REVIEWER_ACCESS_CODE', ''),
 
   // The Swachham processing facility in Dapoli. Defaults are the real
   // coordinates, so a deployment that configures nothing still dispatches
