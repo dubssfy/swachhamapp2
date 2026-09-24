@@ -1,6 +1,5 @@
 import PDFDocument from 'pdfkit';
 import { GstInvoice } from './gstInvoice.service';
-import { qrPngBuffer } from './upiPayment.service';
 import {
   THEME,
   LOGO_SIZE,
@@ -86,63 +85,6 @@ export function invoiceFileName(invoice: GstInvoice): string {
     ? `_${safeFileNamePart(invoice.laundry_type_label)}`
     : '';
   return `${name}_${period}${type}.pdf`;
-}
-
-/**
- * The "UPI | SCAN TO PAY" badge printed directly under the QR.
- *
- * DRAWN, NOT SHIPPED AS AN IMAGE. A bitmap of a badge would need an asset in
- * the repository, would blur when the PDF is zoomed or printed at anything
- * but its native size, and would have to be kept in step with the palette by
- * hand. Vector primitives stay sharp at any resolution — which matters here,
- * because this label sits right beneath the one thing on the page that has to
- * survive being photographed.
- *
- * It names the rail so the reader knows what to scan it WITH: a bare QR on an
- * invoice could as easily be a tracking link. The tricolour arrow is the UPI
- * mark's, in the national colours it is always drawn in.
- *
- * Returns the y the badge ends at, so the caller can lay out beneath it.
- */
-function drawUpiBadge(doc: PDFKit.PDFDocument, x: number, y: number): number {
-  const HEIGHT = 15;
-  const LABEL = 'SCAN TO PAY';
-  const ARROW_W = 7;
-
-  // Measured, not guessed: the badge is exactly as wide as its own contents,
-  // so a change of wording or type size cannot leave text overhanging.
-  doc.font('Helvetica-BoldOblique').fontSize(8);
-  const upiW = doc.widthOfString('UPI');
-  doc.font('Helvetica-Bold').fontSize(6.5);
-  const leftW = 6 + upiW + 3 + ARROW_W + 5;
-  const rightW = doc.widthOfString(LABEL) + 14;
-
-  /*
-   * The pill, then the green half painted INSIDE a clip of the same rounded
-   * shape — so the badge's outer corners stay rounded while the join between
-   * the two halves stays a straight edge.
-   */
-  doc.save();
-  doc.roundedRect(x, y, leftW + rightW, HEIGHT, 3.5).fill('#ECEFEF');
-  doc.roundedRect(x, y, leftW + rightW, HEIGHT, 3.5).clip();
-  doc.rect(x + leftW, y, rightW, HEIGHT).fill('#16D08A');
-  doc.restore();
-
-  doc.fillColor('#5F6B6C').font('Helvetica-BoldOblique').fontSize(8)
-    .text('UPI', x + 6, y + 4.2, { lineBreak: false });
-
-  // The arrow: saffron above, green below, apex to the right, with a hairline
-  // of the badge's own grey left between them.
-  const ax = x + 6 + upiW + 3;
-  const ay = y + 3.4;
-  const apex = ay + 4.1;
-  doc.moveTo(ax, ay).lineTo(ax + ARROW_W, apex).lineTo(ax, apex - 0.5).fill('#FF9933');
-  doc.moveTo(ax, apex + 0.5).lineTo(ax + ARROW_W, apex).lineTo(ax, ay + 8.2).fill('#138808');
-
-  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(6.5)
-    .text(LABEL, x + leftW, y + 4.6, { width: rightW, align: 'center', lineBreak: false });
-
-  return y + HEIGHT;
 }
 
 export function renderInvoicePdf(invoice: GstInvoice): Promise<Buffer> {
@@ -498,70 +440,27 @@ ${line.ordered_quantity} ordered, ${line.defective_quantity} defective — ` +
         .text(invoice.supplier.terms, left, doc.y + 2, { width: width / 2 - 14 });
     }
     /*
-     * THE SCAN-TO-PAY QR, AT THE LEFT MARGIN UNDER THE TERMS, with the bank
-     * details beside it — the two ways of paying, read as one block.
+     * THE SCAN-TO-PAY QR WAS HERE AND IS GONE.
      *
-     * `qrPngBuffer` decodes the very PNG the invoice object carries, so the
-     * printed code is byte-identical to the one the app previews. Nothing is
-     * encoded here.
+     * It used to occupy a 72pt square at the left margin with "Pay To"
+     * indented past it, so removing the image alone would have left that
+     * indent and an empty column. "Pay To" therefore starts at the left
+     * margin now and takes the full width, and the row's top comes from the
+     * terms block directly rather than from a QR that no longer sets it.
      *
-     * 72pt is about 25mm on paper. The intent encodes to a version-6 symbol
-     * (41 modules), so each module prints at roughly 0.6mm — comfortably
-     * above the ~0.4mm a phone camera needs, with margin for a page that has
-     * been folded or photocopied.
+     * The UPI ID is still printed as TEXT in the bank lines below. It used to
+     * be the fallback for a code that would not scan and is now the only UPI
+     * instruction on the invoice, so removing it as well would take UPI off
+     * the document altogether -- which is not what was asked for.
      */
-    const QR_SIZE = 72;
-    const qrPng = qrPngBuffer(invoice.upi_payment);
-    let leftBottom = doc.y;
-    /*
-     * The top of the QR/Pay To row, fixed BEFORE either is drawn so both
-     * start from it. Deriving it inside the QR branch would leave "Pay To"
-     * without a row to align to on an invoice that has no QR.
-     */
-    const qrTop = leftBottom + 10;
+    const termsBottom = doc.y;
+    const payToTop = termsBottom + 10;
 
-    if (qrPng) {
-      try {
-        // A white plate under the code. The quiet zone is already inside the
-        // PNG; this guarantees it stays white even if the block is ever drawn
-        // over a tint.
-        doc.rect(left - 3, qrTop - 3, QR_SIZE + 6, QR_SIZE + 6).fill('#FFFFFF');
-        doc.image(qrPng, left, qrTop, { fit: [QR_SIZE, QR_SIZE] });
-        leftBottom = drawUpiBadge(doc, left, qrTop + QR_SIZE + 4);
-      } catch {
-        // A QR that will not draw must never cost the invoice its page.
-        leftBottom = doc.y;
-      }
-    } else {
-      /*
-       * WHEN THERE IS NO QR, THE INVOICE SAYS SO rather than leaving a gap
-       * the reader has to interpret — in the column the QR would have taken,
-       * so "Pay To" stays exactly where it is either way.
-       */
-      doc.fillColor(MUTED).font('Helvetica').fontSize(7)
-        .text(invoice.upi_payment.message || 'UPI payment unavailable', left, qrTop, {
-          width: QR_SIZE + 12,
-        });
-      leftBottom = doc.y;
-    }
-
-    const termsBottom = leftBottom;
-
-    /*
-     * "PAY TO" SITS IMMEDIATELY RIGHT OF THE QR, not out at the page's far
-     * side.
-     *
-     * The two are the same instruction — here is how to pay us — and putting
-     * half a page of white between them read as two unrelated blocks. Beside
-     * the code they are one, and the bank lines get the whole remaining width
-     * instead of half of it, so the long bank name stops wrapping.
-     */
-    const payToLeft = left + QR_SIZE + 18;
+    const payToLeft = left;
     const bankWidth = right - payToLeft;
 
     if (invoice.supplier.bank_account || invoice.upi_payment.available) {
-      // Level with the top of the QR, so the two line up as one block.
-      doc.fillColor(BLUE).font('Helvetica-Bold').fontSize(8.5).text('Pay To:', payToLeft, qrTop);
+      doc.fillColor(BLUE).font('Helvetica-Bold').fontSize(8.5).text('Pay To:', payToLeft, payToTop);
 
       doc.fillColor(TEXT).font('Helvetica').fontSize(8.5);
       const bank = [

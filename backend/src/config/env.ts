@@ -237,9 +237,18 @@ interface AppConfig {
   // comparison.
   //
   // OFF UNLESS BOTH ARE SET. Empty is the default and the shipped state; with
-  // either one blank the exemption does not exist. Removing reviewer access
-  // after the review is unsetting one variable in Railway — no deploy, no code
-  // change. Set them in the Railway dashboard only; never commit a value.
+  // either one blank the exemption does not exist. Set them in the Railway
+  // dashboard only; never commit a value.
+  //
+  // KEEP THEM SET FOR AS LONG AS THE APP IS PUBLISHED. Google re-reviews every
+  // update and reuses the credentials filed under App access, so switching
+  // these off between releases breaks the next review. Rotate the values if
+  // they are ever exposed rather than disabling them.
+  //
+  // MOBILE IS A COMMA-SEPARATED LIST. Sign-in resolves a number registered
+  // against a business to the business flow and any other number to a
+  // customer, so ONE number can only ever demonstrate ONE side of the app.
+  // Reviewing both takes two: one that is a business contact, one that is not.
   PLAY_REVIEWER_MOBILE: string;
   PLAY_REVIEWER_OTP: string;
 

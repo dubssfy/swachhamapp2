@@ -195,14 +195,30 @@ export type OtpPurpose =
  * exemption does not exist in a default deployment.
  */
 function reviewerOtpFor(normalizedMobile: string): string | null {
-  const reviewerMobile = config.PLAY_REVIEWER_MOBILE.trim();
   const reviewerOtp = config.PLAY_REVIEWER_OTP.trim();
-  if (!reviewerMobile || !reviewerOtp) return null;
+  if (!reviewerOtp) return null;
 
-  // Normalised on both sides: the reviewer types the number in whatever form
-  // the sign-in screen accepts, and the variable is compared as the same
-  // digits rather than as the string someone happened to paste into Railway.
-  if (normalizeMobile(reviewerMobile) !== normalizedMobile) return null;
+  /*
+   * A LIST, BECAUSE ONE NUMBER CAN ONLY SHOW ONE SIDE OF THE APP.
+   *
+   * `resolveAfterOtp` checks business membership FIRST, so a number
+   * registered against a business can never reach the customer flow and vice
+   * versa. Google has to be able to review both -- they are both login-gated
+   * functionality -- which takes two numbers: one registered as a business
+   * contact, one belonging to nobody so it resolves to a fresh customer.
+   *
+   * Normalised on both sides, so the variable can be written in whatever
+   * form someone pasted into Railway (+91..., 0..., bare) and still match
+   * what the reviewer types on the sign-in screen. Blank entries from a
+   * trailing comma are dropped rather than matching an empty number.
+   */
+  const reviewerMobiles = config.PLAY_REVIEWER_MOBILE.split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => normalizeMobile(entry));
+
+  if (reviewerMobiles.length === 0) return null;
+  if (!reviewerMobiles.includes(normalizedMobile)) return null;
 
   /*
    * The client's OTP box takes six digits. A value of any other shape would
@@ -218,10 +234,20 @@ function reviewerOtpFor(normalizedMobile: string): string | null {
     return null;
   }
 
-  // Audited on every use, and never with the code in it.
+  /*
+   * Audited on every use, and never with the code in it.
+   *
+   * IT SAYS TO KEEP THIS, NOT TO REMOVE IT. Google re-reviews every update,
+   * not only the first submission, and reuses the credentials filed under App
+   * access. Switching this off between releases means a reviewer cannot sign
+   * in to the next one, which is a rejection -- and it is the kind of step
+   * somebody eventually forgets. The exemption is scoped to these numbers and
+   * nothing else, so leaving it on is the safer of the two mistakes. Rotate
+   * the value if it is ever exposed; do not disable it to be tidy.
+   */
   logger.warn(
     `[Auth] Issuing the fixed Play-reviewer OTP for ${normalizedMobile}. ` +
-      'Unset PLAY_REVIEWER_OTP once the review is complete.'
+      'This is expected while the app is on the Play Store.'
   );
   return reviewerOtp;
 }
