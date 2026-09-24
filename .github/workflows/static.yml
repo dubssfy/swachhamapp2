@@ -5,6 +5,13 @@ on:
   # Runs on pushes targeting the default branch
   push:
     branches: ["main"]
+    # Only when the published pages or this workflow change. Without this
+    # filter every backend and mobile commit queues a Pages deployment that
+    # republishes byte-identical files.
+    paths:
+      - "web/**"
+      - "mobile/src/constants/legalContent.ts"
+      - ".github/workflows/static.yml"
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -31,6 +38,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      # `web/privacy-policy` and `web/terms` are GENERATED from the app's own
+      # `mobile/src/constants/legalContent.ts`, so they are rebuilt here rather
+      # than trusted to be current. A commit that edits the in-app policy and
+      # forgets to re-run the script would otherwise publish a stale one, and a
+      # hosted policy that disagrees with the in-app policy is exactly what a
+      # Data Safety review looks for. Rebuilding costs a second and removes the
+      # possibility.
+      - name: Rebuild the generated legal pages
+        run: node web/build-legal-pages.js
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
